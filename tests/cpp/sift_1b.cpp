@@ -9,19 +9,19 @@
 
 using namespace std;
 using namespace hnswlib;
-
+//计时器类
 class StopW {
     std::chrono::steady_clock::time_point time_begin;
  public:
     StopW() {
         time_begin = std::chrono::steady_clock::now();
     }
-
+//返回微秒数
     float getElapsedTimeMicro() {
         std::chrono::steady_clock::time_point time_end = std::chrono::steady_clock::now();
         return (std::chrono::duration_cast<std::chrono::microseconds>(time_end - time_begin).count());
     }
-
+//reset重制起点
     void reset() {
         time_begin = std::chrono::steady_clock::now();
     }
@@ -66,6 +66,7 @@ class StopW {
 * memory use) measured in bytes, or zero if the value cannot be
 * determined on this OS.
 */
+//监测内存占用
 static size_t getPeakRSS() {
 #if defined(_WIN32)
     /* Windows -------------------------------------------------- */
@@ -142,7 +143,9 @@ static size_t getCurrentRSS() {
 #endif
 }
 
-
+//测评的方案
+//给每个query向量生成它的k个最近邻结果
+//bigann里面ground truth 是官方用 暴力搜索（Brute-force L2）预先算好的
 static void
 get_gt(
     unsigned int *massQA,
@@ -163,7 +166,7 @@ get_gt(
         }
     }
 }
-
+//返回recall
 static float
 test_approx(
     unsigned char *massQ,
@@ -199,6 +202,8 @@ test_approx(
     return 1.0f * correct / total;
 }
 
+//它先生成一串 ef 值，从 k 到 29 是逐个枚举，30 到 90 每 10 一个，100 到 460 每 40 一个。
+//最后输出三列：ef、recall、每个 query 的平均微秒数。这个函数就是最终打印实验曲线数据的地方。
 static void
 test_vs_recall(
     unsigned char *massQ,
@@ -232,7 +237,7 @@ test_vs_recall(
         }
     }
 }
-
+//数据存在性检查
 inline bool exists_test(const std::string &name) {
     ifstream f(name.c_str());
     return f.good();
