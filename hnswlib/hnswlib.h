@@ -204,6 +204,10 @@ class SpaceInterface {
         return get_dist_func()(prepared_query, data_point, get_dist_func_param());
     }
 
+    virtual MTYPE result_distance(const void *prepared_query, const void *data_point) {
+        return query_distance(prepared_query, data_point);
+    }
+
     virtual bool supports_batch_query_distance() const {
         return false;
     }

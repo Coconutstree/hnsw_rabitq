@@ -42,7 +42,7 @@ void print_run_config(
     cout << "  query_count=" << qsize << "\n";
     cout << "  dimension=" << vecdim << "\n";
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
-    cout << "  quantizer=RaBitQ centroid_count=" << centroid_count
+    cout << "  quantizer=4-bit ExRaBitQ + in-index uint8 result L2 centroid_count=" << centroid_count
          << " rerank_candidates=" << rerank_candidates
          << " random_seed=" << random_seed << "\n";
     cout << "  base_path=" << path_data << "\n";
@@ -309,7 +309,12 @@ static void get_gt(
     }
 }
 
-static float test_approx(
+struct SearchReport {
+    float recall{0.0f};
+    float total_us_per_query{0.0f};
+};
+
+static SearchReport test_approx(
     float *massQ,
     size_t qsize,
     RaBitQHierarchicalNSW &appr_alg,
@@ -318,30 +323,18 @@ static float test_approx(
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
     size_t rerank_candidates) {
+    (void) base_path;
+    (void) vecdim;
+    (void) rerank_candidates;
     size_t correct = 0;
     size_t total = 0;
-    vector<float> candidate(vecdim, 0.0f);
-    BVecRandomReader base_reader(base_path, vecdim);
+    double approx_us = 0.0;
 
     for (size_t i = 0; i < qsize; i++) {
-        vector<labeltype> candidate_ids = appr_alg.searchCandidateIds(massQ + vecdim * i, rerank_candidates);
-        vector<pair<float, labeltype>> reranked;
-        reranked.reserve(candidate_ids.size());
-        for (labeltype label : candidate_ids) {
-            base_reader.readVector(label, candidate.data());
-            float dist = 0.0f;
-            for (size_t d = 0; d < vecdim; ++d) {
-                const float diff = massQ[vecdim * i + d] - candidate[d];
-                dist += diff * diff;
-            }
-            reranked.emplace_back(dist, label);
-        }
-        if (reranked.size() > k) {
-            partial_sort(reranked.begin(), reranked.begin() + k, reranked.end());
-            reranked.resize(k);
-        } else {
-            sort(reranked.begin(), reranked.end());
-        }
+        StopW approx_timer;
+        vector<pair<float, labeltype>> results = appr_alg.searchKnnCloserFirst(massQ + vecdim * i, k);
+        approx_us += approx_timer.getElapsedTimeMicro();
+
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
         total += gt.size();
@@ -351,13 +344,17 @@ static float test_approx(
             gt.pop();
         }
 
-        for (const auto &entry : reranked) {
+        for (const auto &entry : results) {
             if (g.find(entry.second) != g.end()) {
                 correct++;
             }
         }
     }
-    return total == 0 ? 0.0f : 1.0f * correct / total;
+
+    SearchReport report;
+    report.recall = total == 0 ? 0.0f : 1.0f * correct / total;
+    report.total_us_per_query = static_cast<float>(approx_us / static_cast<double>(qsize));
+    return report;
 }
 
 static void test_vs_recall(
@@ -383,14 +380,12 @@ static void test_vs_recall(
 
     for (size_t ef : efs) {
         appr_alg.setEf(ef);
-        StopW stopw;
+        SearchReport report = test_approx(massQ, qsize, appr_alg, base_path, vecdim, answers, k, rerank_candidates);
 
-        float recall = test_approx(massQ, qsize, appr_alg, base_path, vecdim, answers, k, rerank_candidates);
-        float time_us_per_query = stopw.getElapsedTimeMicro() / qsize;
-
-        cout << ef << "\t" << recall << "\t" << time_us_per_query << " us\n";
-        if (recall > 1.0f) {
-            cout << recall << "\t" << time_us_per_query << " us\n";
+        cout << ef << "\t" << report.recall
+             << "\t" << report.total_us_per_query << " us\n";
+        if (report.recall > 1.0f) {
+            cout << report.recall << "\t" << report.total_us_per_query << " us\n";
             break;
         }
     }
@@ -476,15 +471,34 @@ void sift_test1B() {
 
     RaBitQHierarchicalNSW *appr_alg = new RaBitQHierarchicalNSW(
         vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
+    cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
+         << " (4-bit code + uint8 raw result vector)\n";
 
+    bool need_build = true;
     if (exists_test(path_index)) {
         cout << "Loading index from " << path_index << ":\n";
         if (!exists_test(quantizer_state_path(path_index))) {
-            throw runtime_error("missing RaBitQ quantizer state sidecar; rebuild the index to regenerate it");
+            cout << "Missing RaBitQ quantizer state sidecar; rebuilding the index\n";
+        } else {
+            try {
+                appr_alg->loadIndex(path_index, vecsize);
+                cout << "Actual memory usage: " << getCurrentRSS() / 1000000 << " Mb \n";
+                need_build = false;
+            } catch (const std::exception &error) {
+                cout << "Existing index is incompatible: " << error.what() << "\n";
+                cout << "Rebuilding the index with the current quantizer format\n";
+                delete appr_alg;
+                appr_alg = new RaBitQHierarchicalNSW(
+                    vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
+                cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
+                     << " (4-bit code + uint8 raw result vector)\n";
+                input.clear();
+                input.seekg(0, ios::beg);
+            }
         }
-        appr_alg->loadIndex(path_index, vecsize);
-        cout << "Actual memory usage: " << getCurrentRSS() / 1000000 << " Mb \n";
-    } else {
+    }
+
+    if (need_build) {
         cout << "Building index:\n";
         cout << "Training one global ExRaBitQ center from "
              << min(centroid_train_samples, vecsize) << " base vectors\n";

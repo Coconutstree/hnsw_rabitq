@@ -339,6 +339,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         vl_type visited_array_tag = vl->curV;
 
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+        std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> result_candidates;
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
 
         dist_t lowerBound;
@@ -348,6 +349,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             dist_t dist = space_->query_distance(query_context, ep_data);
             lowerBound = dist;
             top_candidates.emplace(dist, ep_id);
+            result_candidates.emplace(space_->result_distance(query_context, ep_data), ep_id);
             if (!bare_bone_search && stop_condition) {
                 stop_condition->add_point_to_result(getExternalLabel(ep_id), ep_data, dist);
             }
@@ -394,12 +396,80 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             _mm_prefetch((char *) (data + 2), _MM_HINT_T0);
 #endif
 
-            std::vector<tableint> batch_ids;
-            std::vector<const void *> batch_points;
-            if (space_->supports_batch_query_distance()) {
-                batch_ids.reserve(size);
-                batch_points.reserve(size);
-            }
+            static const size_t kQueryBatchSize = 32;
+            tableint batch_ids[kQueryBatchSize];
+            const void *batch_points[kQueryBatchSize];
+            dist_t batch_distances[kQueryBatchSize];
+            size_t batch_count = 0;
+
+            auto process_query_batch = [&]() {
+                if (!space_->supports_batch_query_distance() || batch_count == 0) {
+                    return;
+                }
+
+                space_->batch_query_distance(
+                    query_context,
+                    batch_points,
+                    batch_count,
+                    batch_distances);
+
+                for (size_t batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
+                    const tableint candidate_id = batch_ids[batch_idx];
+                    char *currObj1 = getDataByInternalId(candidate_id);
+                    dist_t dist = batch_distances[batch_idx];
+
+                    bool flag_consider_candidate;
+                    if (!bare_bone_search && stop_condition) {
+                        flag_consider_candidate = stop_condition->should_consider_candidate(dist, lowerBound);
+                    } else {
+                        flag_consider_candidate = top_candidates.size() < ef || lowerBound > dist;
+                    }
+
+                    if (flag_consider_candidate) {
+                        candidate_set.emplace(-dist, candidate_id);
+#ifdef USE_SSE
+                        _mm_prefetch(data_level0_memory_ + candidate_set.top().second * size_data_per_element_ +
+                                        offsetLevel0_,
+                                        _MM_HINT_T0);
+#endif
+
+                        if (bare_bone_search ||
+                            (!isMarkedDeleted(candidate_id) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id))))) {
+                            top_candidates.emplace(dist, candidate_id);
+                            result_candidates.emplace(space_->result_distance(query_context, currObj1), candidate_id);
+                            while (result_candidates.size() > ef) {
+                                result_candidates.pop();
+                            }
+                            if (!bare_bone_search && stop_condition) {
+                                stop_condition->add_point_to_result(getExternalLabel(candidate_id), currObj1, dist);
+                            }
+                        }
+
+                        bool flag_remove_extra = false;
+                        if (!bare_bone_search && stop_condition) {
+                            flag_remove_extra = stop_condition->should_remove_extra();
+                        } else {
+                            flag_remove_extra = top_candidates.size() > ef;
+                        }
+                        while (flag_remove_extra) {
+                            tableint id = top_candidates.top().second;
+                            top_candidates.pop();
+                            if (!bare_bone_search && stop_condition) {
+                                stop_condition->remove_point_from_result(getExternalLabel(id), getDataByInternalId(id), dist);
+                                flag_remove_extra = stop_condition->should_remove_extra();
+                            } else {
+                                flag_remove_extra = top_candidates.size() > ef;
+                            }
+                        }
+
+                        if (!top_candidates.empty()) {
+                            lowerBound = top_candidates.top().first;
+                        }
+                    }
+                }
+
+                batch_count = 0;
+            };
 
             for (size_t j = 1; j <= size; j++) {
                 int candidate_id = *(data + j);
@@ -413,8 +483,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     visited_array[candidate_id] = visited_array_tag;
 
                     if (space_->supports_batch_query_distance()) {
-                        batch_ids.push_back(candidate_id);
-                        batch_points.push_back(getDataByInternalId(candidate_id));
+                        batch_ids[batch_count] = candidate_id;
+                        batch_points[batch_count] = getDataByInternalId(candidate_id);
+                        ++batch_count;
+                        if (batch_count == kQueryBatchSize) {
+                            process_query_batch();
+                        }
                         continue;
                     }
 
@@ -439,6 +513,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                         if (bare_bone_search || 
                             (!isMarkedDeleted(candidate_id) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id))))) {
                             top_candidates.emplace(dist, candidate_id);
+                            result_candidates.emplace(space_->result_distance(query_context, currObj1), candidate_id);
+                            while (result_candidates.size() > ef) {
+                                result_candidates.pop();
+                            }
                             if (!bare_bone_search && stop_condition) {
                                 stop_condition->add_point_to_result(getExternalLabel(candidate_id), currObj1, dist);
                             }
@@ -467,69 +545,14 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 }
             }
 
-            if (space_->supports_batch_query_distance() && !batch_ids.empty()) {
-                std::vector<dist_t> batch_distances(batch_ids.size());
-                space_->batch_query_distance(
-                    query_context,
-                    batch_points.data(),
-                    batch_points.size(),
-                    batch_distances.data());
-
-                for (size_t batch_idx = 0; batch_idx < batch_ids.size(); ++batch_idx) {
-                    const tableint candidate_id = batch_ids[batch_idx];
-                    char *currObj1 = getDataByInternalId(candidate_id);
-                    dist_t dist = batch_distances[batch_idx];
-
-                    bool flag_consider_candidate;
-                    if (!bare_bone_search && stop_condition) {
-                        flag_consider_candidate = stop_condition->should_consider_candidate(dist, lowerBound);
-                    } else {
-                        flag_consider_candidate = top_candidates.size() < ef || lowerBound > dist;
-                    }
-
-                    if (flag_consider_candidate) {
-                        candidate_set.emplace(-dist, candidate_id);
-#ifdef USE_SSE
-                        _mm_prefetch(data_level0_memory_ + candidate_set.top().second * size_data_per_element_ +
-                                        offsetLevel0_,
-                                        _MM_HINT_T0);
-#endif
-
-                        if (bare_bone_search ||
-                            (!isMarkedDeleted(candidate_id) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id))))) {
-                            top_candidates.emplace(dist, candidate_id);
-                            if (!bare_bone_search && stop_condition) {
-                                stop_condition->add_point_to_result(getExternalLabel(candidate_id), currObj1, dist);
-                            }
-                        }
-
-                        bool flag_remove_extra = false;
-                        if (!bare_bone_search && stop_condition) {
-                            flag_remove_extra = stop_condition->should_remove_extra();
-                        } else {
-                            flag_remove_extra = top_candidates.size() > ef;
-                        }
-                        while (flag_remove_extra) {
-                            tableint id = top_candidates.top().second;
-                            top_candidates.pop();
-                            if (!bare_bone_search && stop_condition) {
-                                stop_condition->remove_point_from_result(getExternalLabel(id), getDataByInternalId(id), dist);
-                                flag_remove_extra = stop_condition->should_remove_extra();
-                            } else {
-                                flag_remove_extra = top_candidates.size() > ef;
-                            }
-                        }
-
-                        if (!top_candidates.empty()) {
-                            lowerBound = top_candidates.top().first;
-                        }
-                    }
-                }
-            }
+            process_query_batch();
         }
 
         visited_list_pool_->releaseVisitedList(vl);
-        return top_candidates;
+        if (stop_condition) {
+            return top_candidates;
+        }
+        return result_candidates;
     }
 
 

@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <vector>
@@ -28,12 +29,30 @@ int main() {
     }
 
     const void *query_context = index.space().prepare_query(data.data());
-    const void *points[1] = {encoded.data()};
-    float batch_distance[1] = {0.0f};
     const float single_distance = index.space().query_distance(query_context, encoded.data());
-    index.space().batch_query_distance(query_context, points, 1, batch_distance);
+    std::vector<std::vector<char>> encoded_points;
+    std::vector<const void *> points;
+    encoded_points.reserve(64);
+    points.reserve(64);
+    for (size_t i = 0; i < 64; ++i) {
+        std::vector<float> shifted(data.begin(), data.begin() + dim);
+        shifted[i % dim] += static_cast<float>(i) * 0.01f;
+        encoded_points.push_back(index.space().encodeVector(shifted.data()));
+        points.push_back(encoded_points.back().data());
+    }
+
+    for (size_t count : {size_t(1), size_t(17), size_t(31), size_t(32), size_t(33), size_t(64)}) {
+        std::vector<float> batch_distance(count, 0.0f);
+        index.space().batch_query_distance(query_context, points.data(), count, batch_distance.data());
+        for (size_t i = 0; i < count; ++i) {
+            const float expected = index.space().query_distance(query_context, points[i]);
+            assert(std::fabs(expected - batch_distance[i]) < 1e-4f);
+        }
+    }
+    float one_distance[1] = {0.0f};
+    index.space().batch_query_distance(query_context, &points[0], 1, one_distance);
     index.space().release_query(query_context);
-    assert(std::fabs(single_distance - batch_distance[0]) < 1e-5f);
+    assert(std::fabs(single_distance - one_distance[0]) < 1e-5f);
 
     for (size_t i = 0; i < 4; ++i) {
         index.addPoint(data.data() + i * dim, i);
@@ -42,6 +61,21 @@ int main() {
     auto result = index.searchKnn(data.data(), 1);
     assert(!result.empty());
     assert(result.top().second == 0);
+    assert(std::fabs(result.top().first) < 1e-5f);
+
+    const char *tmp_index = "/tmp/rabitq_hnsw_smoke.index";
+    const char *tmp_state = "/tmp/rabitq_hnsw_smoke.index.rabitq";
+    std::remove(tmp_index);
+    std::remove(tmp_state);
+    index.saveIndex(tmp_index);
+    hnswlib::RaBitQHierarchicalNSW loaded(dim, 4, 1, 8, 32, 0);
+    loaded.loadIndex(tmp_index, 4);
+    auto loaded_result = loaded.searchKnn(data.data(), 1);
+    assert(!loaded_result.empty());
+    assert(loaded_result.top().second == result.top().second);
+    assert(std::fabs(loaded_result.top().first - result.top().first) < 1e-5f);
+    std::remove(tmp_index);
+    std::remove(tmp_state);
 
     std::cout << "RaBitQ HNSW smoke test passed\n";
     return 0;
