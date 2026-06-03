@@ -208,6 +208,20 @@ class SpaceInterface {
         return query_distance(prepared_query, data_point);
     }
 
+    virtual MTYPE result_distance_by_id(const void *prepared_query, size_t internal_id, const void *data_point) {
+        (void) internal_id;
+        return result_distance(prepared_query, data_point);
+    }
+
+    virtual void prepare_data_for_add(const void *raw_data_point) {
+        (void) raw_data_point;
+    }
+
+    virtual void commit_data_for_add(size_t internal_id, const void *data_point) {
+        (void) internal_id;
+        (void) data_point;
+    }
+
     virtual bool supports_batch_query_distance() const {
         return false;
     }
