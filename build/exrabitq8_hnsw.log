@@ -1,0 +1,131 @@
+nohup: ignoring input
+Run config:
+  dataset=BigANN/SIFT1B
+  subset_size_millions=10 (10000000 base vectors)
+  query_count=10000
+  dimension=128
+  M=16 efConstruction=40
+  quantizer=8-bit ExRaBitQ + in-index uint8 result L2 centroid_count=64 rerank_candidates=100 random_seed=100
+  base_path=/home/kai3/coco/hnswlib/bigann/bigann_base.bvecs
+  query_path=/home/kai3/coco/hnswlib/bigann/bigann_query.bvecs
+  gt_path=/home/kai3/coco/hnswlib/bigann/gnd/idx_10M.ivecs
+  index_path=sift1b_rabitq_10m_ef_40_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=156 (8-bit code + sign code; raw rerank store is saved separately)
+Building index:
+Training one global ExRaBitQ center from 200000 base vectors
+1 %, 14.5359 kips  Mem: 2960 Mb 
+2 %, 30.2807 kips  Mem: 3005 Mb 
+3 %, 38.5433 kips  Mem: 3048 Mb 
+4 %, 32.7219 kips  Mem: 3420 Mb 
+5 %, 34.5803 kips  Mem: 3466 Mb 
+6 %, 27.0636 kips  Mem: 3514 Mb 
+7 %, 22.7114 kips  Mem: 3560 Mb 
+8 %, 19.2448 kips  Mem: 3620 Mb 
+9 %, 17.1515 kips  Mem: 3665 Mb 
+10 %, 12.3667 kips  Mem: 3712 Mb 
+11 %, 11.3053 kips  Mem: 3757 Mb 
+12 %, 10.5371 kips  Mem: 4087 Mb 
+13 %, 10.4491 kips  Mem: 4131 Mb 
+14 %, 10.2669 kips  Mem: 4183 Mb 
+15 %, 9.89348 kips  Mem: 4249 Mb 
+16 %, 10.1178 kips  Mem: 4294 Mb 
+17 %, 15.2027 kips  Mem: 4351 Mb 
+18 %, 34.7332 kips  Mem: 4391 Mb 
+19 %, 36.3276 kips  Mem: 4440 Mb 
+20 %, 35.8863 kips  Mem: 4485 Mb 
+21 %, 33.7071 kips  Mem: 4533 Mb 
+22 %, 34.116 kips  Mem: 4582 Mb 
+23 %, 34.2131 kips  Mem: 4625 Mb 
+24 %, 34.7171 kips  Mem: 4673 Mb 
+25 %, 34.6723 kips  Mem: 4719 Mb 
+26 %, 34.4508 kips  Mem: 4766 Mb 
+27 %, 29.8981 kips  Mem: 4816 Mb 
+28 %, 34.2435 kips  Mem: 4859 Mb 
+29 %, 34.6206 kips  Mem: 4907 Mb 
+30 %, 30.2226 kips  Mem: 4981 Mb 
+31 %, 32.1892 kips  Mem: 5024 Mb 
+32 %, 34.044 kips  Mem: 5076 Mb 
+33 %, 31.8954 kips  Mem: 5121 Mb 
+34 %, 33.4845 kips  Mem: 5165 Mb 
+35 %, 32.9791 kips  Mem: 5212 Mb 
+36 %, 33.6541 kips  Mem: 5259 Mb 
+37 %, 31.6546 kips  Mem: 5306 Mb 
+38 %, 31.0809 kips  Mem: 5351 Mb 
+39 %, 29.2619 kips  Mem: 5398 Mb 
+40 %, 30.1106 kips  Mem: 5446 Mb 
+41 %, 29.1547 kips  Mem: 5492 Mb 
+42 %, 31.385 kips  Mem: 5544 Mb 
+43 %, 31.3879 kips  Mem: 5586 Mb 
+44 %, 31.8065 kips  Mem: 5633 Mb 
+45 %, 31.7506 kips  Mem: 5686 Mb 
+46 %, 31.4755 kips  Mem: 5727 Mb 
+47 %, 31.5743 kips  Mem: 5774 Mb 
+48 %, 31.7985 kips  Mem: 5825 Mb 
+49 %, 32.0094 kips  Mem: 5869 Mb 
+50 %, 32.5519 kips  Mem: 5914 Mb 
+51 %, 31.9602 kips  Mem: 5966 Mb 
+52 %, 31.7503 kips  Mem: 6007 Mb 
+53 %, 29.0296 kips  Mem: 6054 Mb 
+54 %, 25.6597 kips  Mem: 6103 Mb 
+55 %, 29.464 kips  Mem: 6148 Mb 
+56 %, 29.2087 kips  Mem: 6195 Mb 
+57 %, 29.7117 kips  Mem: 6242 Mb 
+58 %, 30.2328 kips  Mem: 6290 Mb 
+59 %, 29.906 kips  Mem: 6336 Mb 
+60 %, 24.1658 kips  Mem: 6434 Mb 
+61 %, 29.9277 kips  Mem: 6482 Mb 
+62 %, 29.6575 kips  Mem: 6528 Mb 
+63 %, 29.9377 kips  Mem: 6578 Mb 
+64 %, 29.9328 kips  Mem: 6625 Mb 
+65 %, 29.1491 kips  Mem: 6667 Mb 
+66 %, 35.4562 kips  Mem: 6712 Mb 
+67 %, 36.2221 kips  Mem: 6763 Mb 
+68 %, 36.6054 kips  Mem: 6814 Mb 
+69 %, 36.7294 kips  Mem: 6855 Mb 
+70 %, 36.4053 kips  Mem: 6902 Mb 
+71 %, 36.2482 kips  Mem: 6952 Mb 
+72 %, 36.268 kips  Mem: 6996 Mb 
+73 %, 36.6983 kips  Mem: 7042 Mb 
+74 %, 36.3847 kips  Mem: 7090 Mb 
+75 %, 36.35 kips  Mem: 7137 Mb 
+76 %, 36.6472 kips  Mem: 7182 Mb 
+77 %, 36.9641 kips  Mem: 7229 Mb 
+78 %, 36.7226 kips  Mem: 7277 Mb 
+79 %, 35.6846 kips  Mem: 7323 Mb 
+80 %, 36.4407 kips  Mem: 7370 Mb 
+81 %, 36.1619 kips  Mem: 7417 Mb 
+82 %, 34.1084 kips  Mem: 7469 Mb 
+83 %, 33.7331 kips  Mem: 7511 Mb 
+84 %, 36.7304 kips  Mem: 7558 Mb 
+85 %, 35.5513 kips  Mem: 7606 Mb 
+86 %, 36.0717 kips  Mem: 7653 Mb 
+87 %, 36.41 kips  Mem: 7698 Mb 
+88 %, 36.0148 kips  Mem: 7748 Mb 
+89 %, 36.8921 kips  Mem: 7793 Mb 
+90 %, 36.9863 kips  Mem: 7838 Mb 
+91 %, 35.8088 kips  Mem: 7887 Mb 
+92 %, 36.6703 kips  Mem: 7931 Mb 
+93 %, 35.6525 kips  Mem: 7980 Mb 
+94 %, 36.828 kips  Mem: 8028 Mb 
+95 %, 36.2767 kips  Mem: 8072 Mb 
+96 %, 36.0777 kips  Mem: 8118 Mb 
+97 %, 35.9393 kips  Mem: 8167 Mb 
+98 %, 36.5699 kips  Mem: 8213 Mb 
+99 %, 36.129 kips  Mem: 8260 Mb 
+Build time:361.997  seconds
+Parsing gt:
+10000
+Loaded gt
+100	0.9408	1618.94 us
+140	0.9575	2129.94 us
+180	0.9676	2612.01 us
+220	0.9752	3084.75 us
+260	0.9812	3566.19 us
+300	0.984	4011.52 us
+340	0.9865	4516.82 us
+380	0.9881	5007.6 us
+420	0.9897	5428.52 us
+460	0.9912	5921.21 us
+Actual memory usage: 8311 Mb 

@@ -23,7 +23,7 @@ namespace hnswlib {
 
 class RaBitQSpace : public SpaceInterface<float> {
  public:
-    static constexpr size_t kBaseBits = 4;
+    static constexpr size_t kBaseBits = 8;
     static constexpr uint8_t kBaseMax = (1U << kBaseBits) - 1U;
     static constexpr float kExtendedBias = static_cast<float>(1U << kBaseBits) - 0.5f;
     static constexpr int kQueryBits = 6;
@@ -111,9 +111,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     uint8_t compactCodeValue(const uint8_t *code, size_t dim) const {
-        const uint8_t byte = code[dim >> 1U];
-        return (dim & 1U) == 0 ? static_cast<uint8_t>(byte & 0x0F)
-                               : static_cast<uint8_t>(byte >> 4);
+        return code[dim];
     }
 
     void encodeRawVector(const float *raw_vector, uint8_t *raw_out) const {
@@ -260,11 +258,7 @@ class RaBitQSpace : public SpaceInterface<float> {
                 o_bar = static_cast<int>(kBaseMax) - o_bar;
             }
 
-            if ((i & 1U) == 0) {
-                compact_code[i / 2] = static_cast<uint8_t>(o_bar & 0x0F);
-            } else {
-                compact_code[i / 2] |= static_cast<uint8_t>((o_bar & 0x0F) << 4);
-            }
+            compact_code[i] = static_cast<uint8_t>(o_bar);
         }
 
         if (final_numerator <= eps || !std::isfinite(final_numerator)) {
@@ -377,12 +371,9 @@ class RaBitQSpace : public SpaceInterface<float> {
         const uint8_t *code = codeBytes(encoded);
         uint32_t accum = 0;
 
-        for (size_t i = 0; i < code_dim_; i += 2) {
-            const uint8_t byte = code[i / 2];
+        for (size_t i = 0; i < code_dim_; ++i) {
             accum += static_cast<uint32_t>(query.byte_query[i]) *
-                     static_cast<uint32_t>(byte & 0x0F);
-            accum += static_cast<uint32_t>(query.byte_query[i + 1]) *
-                     static_cast<uint32_t>(byte >> 4);
+                     static_cast<uint32_t>(code[i]);
         }
         return accum;
     }
@@ -401,6 +392,39 @@ class RaBitQSpace : public SpaceInterface<float> {
         const EncodedHeader header = loadHeader(encoded);
         return header.norm_sqr + query.query_norm_sqr -
                header.factor_dq * query.query_norm * exrabitqInnerProduct(query, encoded);
+    }
+
+    void prepareEncodedAsQuery(const void *encoded, QueryContext &query) const {
+        const EncodedHeader header = loadHeader(encoded);
+        const uint8_t *code = codeBytes(encoded);
+        const uint8_t *sign_code = signBytes(encoded);
+
+        query.byte_query.clear();
+        query.raw_query_u8.clear();
+        query.residual.clear();
+        query.rotated.assign(code_dim_, 0.0f);
+        query.query_norm_sqr = header.norm_sqr;
+        query.query_norm = std::sqrt(std::max(0.0f, header.norm_sqr));
+        query.lower_val = 0.0f;
+        query.width = 1.0f;
+        query.sumq = 0;
+
+        float code_norm_sqr = 0.0f;
+        for (size_t i = 0; i < code_dim_; ++i) {
+            const float stored = static_cast<float>(compactCodeValue(code, i));
+            const float signed_code = signBit(sign_code, i)
+                                          ? stored + 0.5f
+                                          : stored - kExtendedBias;
+            query.rotated[i] = signed_code;
+            code_norm_sqr += signed_code * signed_code;
+        }
+
+        if (code_norm_sqr > 0.0f) {
+            const float inv_code_norm = 1.0f / std::sqrt(code_norm_sqr);
+            for (float &value : query.rotated) {
+                value *= inv_code_norm;
+            }
+        }
     }
 
     float rawL2Distance(const uint8_t *query, const uint8_t *base) const {
@@ -463,20 +487,14 @@ class RaBitQSpace : public SpaceInterface<float> {
         size_t idx = 0;
         for (; idx + 16 <= count; idx += 16) {
             __m512i acc = _mm512_setzero_si512();
-            for (size_t dim = 0; dim < code_dim_; dim += 2) {
-                alignas(64) uint32_t lo_values[16];
-                alignas(64) uint32_t hi_values[16];
+            for (size_t dim = 0; dim < code_dim_; ++dim) {
+                alignas(64) uint32_t code_values[16];
                 for (size_t lane = 0; lane < 16; ++lane) {
-                    const uint8_t byte = codeBytes(data_points[idx + lane])[dim / 2];
-                    lo_values[lane] = static_cast<uint32_t>(byte & 0x0F);
-                    hi_values[lane] = static_cast<uint32_t>(byte >> 4);
+                    code_values[lane] = static_cast<uint32_t>(codeBytes(data_points[idx + lane])[dim]);
                 }
-                __m512i lo = _mm512_load_si512(reinterpret_cast<const __m512i *>(lo_values));
-                __m512i hi = _mm512_load_si512(reinterpret_cast<const __m512i *>(hi_values));
-                lo = _mm512_mullo_epi32(lo, _mm512_set1_epi32(query.byte_query[dim]));
-                hi = _mm512_mullo_epi32(hi, _mm512_set1_epi32(query.byte_query[dim + 1]));
-                acc = _mm512_add_epi32(acc, lo);
-                acc = _mm512_add_epi32(acc, hi);
+                __m512i values = _mm512_load_si512(reinterpret_cast<const __m512i *>(code_values));
+                values = _mm512_mullo_epi32(values, _mm512_set1_epi32(query.byte_query[dim]));
+                acc = _mm512_add_epi32(acc, values);
             }
             _mm512_storeu_si512(reinterpret_cast<__m512i *>(&accumulations[idx]), acc);
         }
@@ -493,20 +511,14 @@ class RaBitQSpace : public SpaceInterface<float> {
         size_t idx = 0;
         for (; idx + 8 <= count; idx += 8) {
             __m256i acc = _mm256_setzero_si256();
-            for (size_t dim = 0; dim < code_dim_; dim += 2) {
-                alignas(32) uint32_t lo_values[8];
-                alignas(32) uint32_t hi_values[8];
+            for (size_t dim = 0; dim < code_dim_; ++dim) {
+                alignas(32) uint32_t code_values[8];
                 for (size_t lane = 0; lane < 8; ++lane) {
-                    const uint8_t byte = codeBytes(data_points[idx + lane])[dim / 2];
-                    lo_values[lane] = static_cast<uint32_t>(byte & 0x0F);
-                    hi_values[lane] = static_cast<uint32_t>(byte >> 4);
+                    code_values[lane] = static_cast<uint32_t>(codeBytes(data_points[idx + lane])[dim]);
                 }
-                __m256i lo = _mm256_load_si256(reinterpret_cast<const __m256i *>(lo_values));
-                __m256i hi = _mm256_load_si256(reinterpret_cast<const __m256i *>(hi_values));
-                lo = _mm256_mullo_epi32(lo, _mm256_set1_epi32(query.byte_query[dim]));
-                hi = _mm256_mullo_epi32(hi, _mm256_set1_epi32(query.byte_query[dim + 1]));
-                acc = _mm256_add_epi32(acc, lo);
-                acc = _mm256_add_epi32(acc, hi);
+                __m256i values = _mm256_load_si256(reinterpret_cast<const __m256i *>(code_values));
+                values = _mm256_mullo_epi32(values, _mm256_set1_epi32(query.byte_query[dim]));
+                acc = _mm256_add_epi32(acc, values);
             }
             _mm256_storeu_si256(reinterpret_cast<__m256i *>(&accumulations[idx]), acc);
         }
@@ -517,17 +529,9 @@ class RaBitQSpace : public SpaceInterface<float> {
 #endif
 
     float distanceBetweenEncoded(const char *lhs, const char *rhs) const {
-        thread_local std::vector<float> lhs_approx;
-        thread_local std::vector<float> rhs_approx;
-        decodeApproximate(lhs, lhs_approx);
-        decodeApproximate(rhs, rhs_approx);
-
-        float result = 0.0f;
-        for (size_t i = 0; i < code_dim_; ++i) {
-            const float diff = lhs_approx[i] - rhs_approx[i];
-            result += diff * diff;
-        }
-        return result;
+        thread_local QueryContext encoded_query;
+        prepareEncodedAsQuery(lhs, encoded_query);
+        return queryDistancePrepared(encoded_query, rhs);
     }
 
     void decodeApproximate(const void *encoded, std::vector<float> &decoded) const {
@@ -561,7 +565,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     explicit RaBitQSpace(size_t dim, size_t centroid_count = 1, uint32_t random_seed = 100)
         : dim_(dim),
           code_dim_(roundUp64(dim)),
-          compact_code_bytes_(code_dim_ / 2),
+          compact_code_bytes_(code_dim_),
           sign_code_bytes_(code_dim_ / 8),
           data_size_(sizeof(EncodedHeader) + compact_code_bytes_ + sign_code_bytes_),
           inv_sqrt_code_dim_(1.0f / std::sqrt(static_cast<float>(code_dim_))),
@@ -636,7 +640,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     void saveState(std::ostream &output) const {
-        const std::string magic = "EXRBTQ06";
+        const std::string magic = "EXRBTQ09";
         output.write(magic.data(), magic.size());
 
         const uint64_t dim = static_cast<uint64_t>(dim_);
@@ -655,7 +659,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     void loadState(std::istream &input) {
         char magic[8];
         input.read(magic, sizeof(magic));
-        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ06") {
+        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ09") {
             throw std::runtime_error("RaBitQSpace invalid or old quantizer state; rebuild the index");
         }
 

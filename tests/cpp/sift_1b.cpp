@@ -42,7 +42,7 @@ void print_run_config(
     cout << "  query_count=" << qsize << "\n";
     cout << "  dimension=" << vecdim << "\n";
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
-    cout << "  quantizer=4-bit ExRaBitQ + in-index uint8 result L2 centroid_count=" << centroid_count
+    cout << "  quantizer=8-bit ExRaBitQ + in-index uint8 result L2 centroid_count=" << centroid_count
          << " rerank_candidates=" << rerank_candidates
          << " random_seed=" << random_seed << "\n";
     cout << "  base_path=" << path_data << "\n";
@@ -58,6 +58,12 @@ inline bool exists_test(const std::string &name) {
 
 string quantizer_state_path(const string &index_path) {
     return index_path + ".rabitq";
+}
+
+void remove_stale_index_files(const string &index_path) {
+    std::remove(index_path.c_str());
+    std::remove(quantizer_state_path(index_path).c_str());
+    std::remove((index_path + ".raw").c_str());
 }
 
 void read_bvec_as_float(ifstream &input, float *dst, size_t vecdim, vector<unsigned char> &scratch) {
@@ -366,15 +372,15 @@ static void test_vs_recall(
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
     size_t rerank_candidates) {
+    (void) rerank_candidates;
     vector<size_t> efs;
-    const size_t min_ef = std::max(k, rerank_candidates);
-    for (size_t i = min_ef; i < 30; i++) {
+    for (size_t i = k; i < 30; i++) {
         efs.push_back(i);
     }
-    for (size_t i = std::max<size_t>(30, min_ef); i < 100; i += 10) {
+    for (size_t i = 30; i < 100; i += 10) {
         efs.push_back(i);
     }
-    for (size_t i = std::max<size_t>(100, min_ef); i < 500; i += 40) {
+    for (size_t i = 100; i < 500; i += 40) {
         efs.push_back(i);
     }
 
@@ -472,13 +478,14 @@ void sift_test1B() {
     RaBitQHierarchicalNSW *appr_alg = new RaBitQHierarchicalNSW(
         vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-         << " (4-bit code + uint8 raw result vector)\n";
+         << " (8-bit code + sign code; raw rerank store is saved separately)\n";
 
     bool need_build = true;
     if (exists_test(path_index)) {
         cout << "Loading index from " << path_index << ":\n";
         if (!exists_test(quantizer_state_path(path_index))) {
-            cout << "Missing RaBitQ quantizer state sidecar; rebuilding the index\n";
+            cout << "Missing RaBitQ quantizer state sidecar; deleting stale index files and rebuilding the index\n";
+            remove_stale_index_files(path_index);
         } else {
             try {
                 appr_alg->loadIndex(path_index, vecsize);
@@ -486,12 +493,13 @@ void sift_test1B() {
                 need_build = false;
             } catch (const std::exception &error) {
                 cout << "Existing index is incompatible: " << error.what() << "\n";
-                cout << "Rebuilding the index with the current quantizer format\n";
+                cout << "Deleting stale index files and rebuilding with the current quantizer format\n";
+                remove_stale_index_files(path_index);
                 delete appr_alg;
                 appr_alg = new RaBitQHierarchicalNSW(
                     vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-                     << " (4-bit code + uint8 raw result vector)\n";
+                     << " (8-bit code + sign code; raw rerank store is saved separately)\n";
                 input.clear();
                 input.seekg(0, ios::beg);
             }
