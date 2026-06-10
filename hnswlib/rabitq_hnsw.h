@@ -21,6 +21,10 @@ class RaBitQHierarchicalNSW {
         return location + ".rabitq";
     }
 
+    static std::string rawStatePath(const std::string &location) {
+        return location + ".raw";
+    }
+
  //RabitQ空间对象，负责将原始向量编码成RaBitQ编码，以及计算两个编码向量之间的距离
     RaBitQSpace space_;
     //负责对“编码后的向量”进行索引和搜索
@@ -70,6 +74,17 @@ class RaBitQHierarchicalNSW {
         }
         space_.saveState(quantizer_output);
         quantizer_output.close();
+
+        if (space_.rawStoreCount() != index_.cur_element_count) {
+            throw std::runtime_error("RaBitQHierarchicalNSW raw rerank store is incomplete; rebuild the index");
+        }
+        std::ofstream raw_output(rawStatePath(location), std::ios::binary);
+        if (!raw_output.is_open()) {
+            throw std::runtime_error("RaBitQHierarchicalNSW failed to open raw rerank state file for writing");
+        }
+        space_.saveRawStore(raw_output);
+        raw_output.close();
+
         index_.saveIndex(location);
     }
 //加载索引
@@ -82,9 +97,21 @@ class RaBitQHierarchicalNSW {
         space_.loadState(quantizer_input);
         quantizer_input.close();
         index_.loadIndex(location, &space_, max_elements);
+
+        std::ifstream raw_input(rawStatePath(location), std::ios::binary);
+        if (!raw_input.is_open()) {
+            throw std::runtime_error(
+                "RaBitQHierarchicalNSW missing raw rerank state file; expected " + rawStatePath(location));
+        }
+        space_.loadRawStore(raw_input);
+        raw_input.close();
+        if (space_.rawStoreCount() != index_.cur_element_count) {
+            throw std::runtime_error("RaBitQHierarchicalNSW raw rerank state count does not match the index");
+        }
     }
 //添加数据点，首先将原始向量编码成RaBitQ编码，然后调用index_的addPoint方法插入编码后的向量
     void addPoint(const float *raw_vector, labeltype label, bool replace_deleted = false) {
+        space_.prepare_data_for_add(raw_vector);
         std::vector<char> encoded = space_.encodeVector(raw_vector);
         index_.addPoint(encoded.data(), label, replace_deleted);
     }
