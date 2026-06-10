@@ -42,7 +42,7 @@ void print_run_config(
     cout << "  query_count=" << qsize << "\n";
     cout << "  dimension=" << vecdim << "\n";
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
-    cout << "  quantizer=4-bit ExRaBitQ + in-index uint8 result L2 centroid_count=" << centroid_count
+    cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
          << " rerank_candidates=" << rerank_candidates
          << " random_seed=" << random_seed << "\n";
     cout << "  base_path=" << path_data << "\n";
@@ -73,6 +73,50 @@ void read_bvec_as_float(ifstream &input, float *dst, size_t vecdim, vector<unsig
     for (size_t j = 0; j < vecdim; ++j) {
         dst[j] = static_cast<float>(scratch[j]);
     }
+}
+
+void read_bvec_as_float_and_u8(
+    ifstream &input,
+    float *float_dst,
+    uint8_t *u8_dst,
+    size_t vecdim,
+    vector<unsigned char> &scratch) {
+    read_bvec_as_float(input, float_dst, vecdim, scratch);
+    std::copy(scratch.begin(), scratch.end(), u8_dst);
+}
+
+void read_bvec_as_u8(ifstream &input, uint8_t *dst, size_t vecdim) {
+    int in = 0;
+    input.read((char *)&in, 4);
+    if (!input.good() || in != static_cast<int>(vecdim)) {
+        throw runtime_error("file error");
+    }
+    input.read(reinterpret_cast<char *>(dst), in);
+    if (!input.good()) {
+        throw runtime_error("file error");
+    }
+}
+
+vector<uint8_t> load_bvecs_raw(const string &path, size_t vec_count, size_t vecdim) {
+    ifstream input(path, ios::binary);
+    if (!input.is_open()) {
+        throw runtime_error("cannot open raw bvec file: " + path);
+    }
+
+    vector<uint8_t> raw(vec_count * vecdim, 0);
+    for (size_t i = 0; i < vec_count; ++i) {
+        read_bvec_as_u8(input, raw.data() + i * vecdim, vecdim);
+    }
+    return raw;
+}
+
+float raw_l2_u8(const uint8_t *query, const uint8_t *base, size_t dim) {
+    uint32_t total = 0;
+    for (size_t i = 0; i < dim; ++i) {
+        const int diff = static_cast<int>(query[i]) - static_cast<int>(base[i]);
+        total += static_cast<uint32_t>(diff * diff);
+    }
+    return static_cast<float>(total);
 }
 
 class BVecRandomReader {
@@ -311,11 +355,15 @@ static void get_gt(
 
 struct SearchReport {
     float recall{0.0f};
+    float hnsw_search_us_per_query{0.0f};
+    float raw_rerank_us_per_query{0.0f};
     float total_us_per_query{0.0f};
 };
 
 static SearchReport test_approx(
     float *massQ,
+    const uint8_t *rawQ,
+    const vector<uint8_t> &base_raw,
     size_t qsize,
     RaBitQHierarchicalNSW &appr_alg,
     const string &base_path,
@@ -324,16 +372,34 @@ static SearchReport test_approx(
     size_t k,
     size_t rerank_candidates) {
     (void) base_path;
-    (void) vecdim;
-    (void) rerank_candidates;
     size_t correct = 0;
     size_t total = 0;
-    double approx_us = 0.0;
+    double hnsw_us = 0.0;
+    double rerank_us = 0.0;
 
     for (size_t i = 0; i < qsize; i++) {
-        StopW approx_timer;
-        vector<pair<float, labeltype>> results = appr_alg.searchKnnCloserFirst(massQ + vecdim * i, k);
-        approx_us += approx_timer.getElapsedTimeMicro();
+        StopW hnsw_timer;
+        vector<labeltype> candidate_ids = appr_alg.searchCandidateIds(massQ + vecdim * i, rerank_candidates);
+        hnsw_us += hnsw_timer.getElapsedTimeMicro();
+
+        StopW rerank_timer;
+        vector<pair<float, labeltype>> results;
+        results.reserve(candidate_ids.size());
+        const uint8_t *raw_query = rawQ + i * vecdim;
+        for (labeltype label : candidate_ids) {
+            if (label >= base_raw.size() / vecdim) {
+                continue;
+            }
+            const uint8_t *raw_base = base_raw.data() + label * vecdim;
+            results.emplace_back(raw_l2_u8(raw_query, raw_base, vecdim), label);
+        }
+        if (results.size() > k) {
+            std::partial_sort(results.begin(), results.begin() + k, results.end());
+            results.resize(k);
+        } else {
+            std::sort(results.begin(), results.end());
+        }
+        rerank_us += rerank_timer.getElapsedTimeMicro();
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
@@ -353,12 +419,16 @@ static SearchReport test_approx(
 
     SearchReport report;
     report.recall = total == 0 ? 0.0f : 1.0f * correct / total;
-    report.total_us_per_query = static_cast<float>(approx_us / static_cast<double>(qsize));
+    report.hnsw_search_us_per_query = static_cast<float>(hnsw_us / static_cast<double>(qsize));
+    report.raw_rerank_us_per_query = static_cast<float>(rerank_us / static_cast<double>(qsize));
+    report.total_us_per_query = report.hnsw_search_us_per_query + report.raw_rerank_us_per_query;
     return report;
 }
 
 static void test_vs_recall(
     float *massQ,
+    const uint8_t *rawQ,
+    const vector<uint8_t> &base_raw,
     size_t qsize,
     RaBitQHierarchicalNSW &appr_alg,
     const string &base_path,
@@ -380,10 +450,23 @@ static void test_vs_recall(
 
     for (size_t ef : efs) {
         appr_alg.setEf(ef);
-        SearchReport report = test_approx(massQ, qsize, appr_alg, base_path, vecdim, answers, k, rerank_candidates);
+        SearchReport report = test_approx(
+            massQ,
+            rawQ,
+            base_raw,
+            qsize,
+            appr_alg,
+            base_path,
+            vecdim,
+            answers,
+            k,
+            ef);
 
         cout << ef << "\t" << report.recall
-             << "\t" << report.total_us_per_query << " us\n";
+             << "\t" << report.total_us_per_query << " us"
+             << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
+             << "\t" << "raw_rerank_us_per_query=" << report.raw_rerank_us_per_query
+             << "\t" << "total_us_per_query=" << report.total_us_per_query << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
             break;
@@ -454,13 +537,19 @@ void sift_test1B() {
 
     cout << "Loading queries:\n";
     float *massQ = new float[qsize * vecdim];
+    vector<uint8_t> rawQ(qsize * vecdim, 0);
     ifstream inputQ(path_q, ios::binary);
     if (!inputQ.is_open()) {
         throw runtime_error("cannot open query file");
     }
     vector<unsigned char> scratch(vecdim);
     for (size_t i = 0; i < qsize; i++) {
-        read_bvec_as_float(inputQ, massQ + i * vecdim, vecdim, scratch);
+        read_bvec_as_float_and_u8(
+            inputQ,
+            massQ + i * vecdim,
+            rawQ.data() + i * vecdim,
+            vecdim,
+            scratch);
     }
     inputQ.close();
 
@@ -472,7 +561,7 @@ void sift_test1B() {
     RaBitQHierarchicalNSW *appr_alg = new RaBitQHierarchicalNSW(
         vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-         << " (4-bit code + uint8 raw result vector)\n";
+         << " (4-bit code)\n";
 
     bool need_build = true;
     if (exists_test(path_index)) {
@@ -491,7 +580,7 @@ void sift_test1B() {
                 appr_alg = new RaBitQHierarchicalNSW(
                     vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-                     << " (4-bit code + uint8 raw result vector)\n";
+                     << " (4-bit code)\n";
                 input.clear();
                 input.seekg(0, ios::beg);
             }
@@ -542,11 +631,28 @@ void sift_test1B() {
         appr_alg->saveIndex(path_index);
     }
 
+    cout << "Loading raw base vectors for external rerank:\n";
+    StopW raw_load_timer;
+    vector<uint8_t> base_raw = load_bvecs_raw(path_data, vecsize, vecdim);
+    cout << "  raw_base_bytes=" << base_raw.size()
+         << " load_time=" << 1e-6 * raw_load_timer.getElapsedTimeMicro() << " seconds\n";
+    cout << "Actual memory usage after raw load: " << getCurrentRSS() / 1000000 << " Mb \n";
+
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
     const size_t k = 1;
     cout << "Parsing gt:\n";
     get_gt(massQA, qsize, answers, k);
     cout << "Loaded gt\n";
-    test_vs_recall(massQ, qsize, *appr_alg, path_data, vecdim, answers, k, rerank_candidates);
+    test_vs_recall(
+        massQ,
+        rawQ.data(),
+        base_raw,
+        qsize,
+        *appr_alg,
+        path_data,
+        vecdim,
+        answers,
+        k,
+        rerank_candidates);
     cout << "Actual memory usage: " << getCurrentRSS() / 1000000 << " Mb \n";
 }
