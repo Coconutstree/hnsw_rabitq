@@ -339,9 +339,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         vl_type visited_array_tag = vl->curV;
 
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+        std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> result_candidates;
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
-        std::vector<tableint> accepted_ids;
-        accepted_ids.reserve(ef);
 
         dist_t lowerBound;
         if (bare_bone_search || 
@@ -350,7 +349,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             dist_t dist = space_->query_distance(query_context, ep_data);
             lowerBound = dist;
             top_candidates.emplace(dist, ep_id);
-            accepted_ids.push_back(ep_id);
+            result_candidates.emplace(space_->result_distance(query_context, ep_data), ep_id);
             if (!bare_bone_search && stop_condition) {
                 stop_condition->add_point_to_result(getExternalLabel(ep_id), ep_data, dist);
             }
@@ -437,7 +436,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                         if (bare_bone_search ||
                             (!isMarkedDeleted(candidate_id) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id))))) {
                             top_candidates.emplace(dist, candidate_id);
-                            accepted_ids.push_back(candidate_id);
+                            result_candidates.emplace(space_->result_distance(query_context, currObj1), candidate_id);
+                            while (result_candidates.size() > ef) {
+                                result_candidates.pop();
+                            }
                             if (!bare_bone_search && stop_condition) {
                                 stop_condition->add_point_to_result(getExternalLabel(candidate_id), currObj1, dist);
                             }
@@ -511,7 +513,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                         if (bare_bone_search || 
                             (!isMarkedDeleted(candidate_id) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id))))) {
                             top_candidates.emplace(dist, candidate_id);
-                            accepted_ids.push_back(candidate_id);
+                            result_candidates.emplace(space_->result_distance(query_context, currObj1), candidate_id);
+                            while (result_candidates.size() > ef) {
+                                result_candidates.pop();
+                            }
                             if (!bare_bone_search && stop_condition) {
                                 stop_condition->add_point_to_result(getExternalLabel(candidate_id), currObj1, dist);
                             }
@@ -546,14 +551,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         visited_list_pool_->releaseVisitedList(vl);
         if (stop_condition) {
             return top_candidates;
-        }
-        std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> result_candidates;
-        for (tableint id : accepted_ids) {
-            char *data_point = getDataByInternalId(id);
-            result_candidates.emplace(space_->result_distance_by_id(query_context, id, data_point), id);
-            while (result_candidates.size() > ef) {
-                result_candidates.pop();
-            }
         }
         return result_candidates;
     }
@@ -1113,7 +1110,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     void updatePoint(const void *dataPoint, tableint internalId, float updateNeighborProbability) {
         // update the feature vector associated with existing point with new vector
         memcpy(getDataByInternalId(internalId), dataPoint, data_size_);
-        space_->commit_data_for_add(internalId, dataPoint);
 
         int maxLevelCopy = maxlevel_;
         tableint entryPointCopy = enterpoint_node_;
@@ -1321,7 +1317,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         // Initialisation of the data and label
         memcpy(getExternalLabeLp(cur_c), &label, sizeof(labeltype));
         memcpy(getDataByInternalId(cur_c), data_point, data_size_);
-        space_->commit_data_for_add(cur_c, data_point);
 
         if (curlevel) {
             linkLists_[cur_c] = (char *) malloc(size_links_per_element_ * curlevel + 1);

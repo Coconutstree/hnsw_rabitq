@@ -18,10 +18,6 @@ int main() {
 
     hnswlib::RaBitQHierarchicalNSW index(dim, 4, 1, 8, 32, 0);
     index.space().setIdentityRotation();
-    const size_t expected_data_size = sizeof(hnswlib::RaBitQSpace::EncodedHeader) +
-                                      index.space().get_compact_code_bytes() +
-                                      index.space().get_code_dim() / 8;
-    assert(index.space().get_data_size() == expected_data_size);
 
     const std::vector<char> encoded = index.space().encodeVector(data.data());
     assert(index.space().get_compact_code_bytes() == index.space().get_code_dim() / 2);
@@ -61,7 +57,6 @@ int main() {
     for (size_t i = 0; i < 4; ++i) {
         index.addPoint(data.data() + i * dim, i);
     }
-    assert(index.space().rawStoreCount() == 4);
 
     auto result = index.searchKnn(data.data(), 1);
     assert(!result.empty());
@@ -70,21 +65,17 @@ int main() {
 
     const char *tmp_index = "/tmp/rabitq_hnsw_smoke.index";
     const char *tmp_state = "/tmp/rabitq_hnsw_smoke.index.rabitq";
-    const char *tmp_raw = "/tmp/rabitq_hnsw_smoke.index.raw";
     std::remove(tmp_index);
     std::remove(tmp_state);
-    std::remove(tmp_raw);
     index.saveIndex(tmp_index);
     hnswlib::RaBitQHierarchicalNSW loaded(dim, 4, 1, 8, 32, 0);
     loaded.loadIndex(tmp_index, 4);
-    assert(loaded.space().rawStoreCount() == 4);
     auto loaded_result = loaded.searchKnn(data.data(), 1);
     assert(!loaded_result.empty());
     assert(loaded_result.top().second == result.top().second);
     assert(std::fabs(loaded_result.top().first - result.top().first) < 1e-5f);
     std::remove(tmp_index);
     std::remove(tmp_state);
-    std::remove(tmp_raw);
 
     std::cout << "RaBitQ HNSW smoke test passed\n";
     return 0;

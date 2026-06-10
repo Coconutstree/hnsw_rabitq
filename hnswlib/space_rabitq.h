@@ -8,7 +8,6 @@
 #include <immintrin.h>
 #include <limits>
 #include <istream>
-#include <mutex>
 #include <ostream>
 #include <queue>
 #include <random>
@@ -52,6 +51,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     size_t code_dim_{0};
     size_t compact_code_bytes_{0};
     size_t sign_code_bytes_{0};
+    size_t raw_code_bytes_{0};
     size_t data_size_{0};
     float inv_sqrt_code_dim_{1.0f};
 
@@ -61,8 +61,6 @@ class RaBitQSpace : public SpaceInterface<float> {
     std::vector<float> fht_signs_;
     std::vector<float> global_center_;
     std::vector<float> rotated_global_center_;
-    std::vector<uint8_t> raw_store_;
-    mutable std::mutex raw_store_mutex_;
 
     static size_t roundUp64(size_t value) {
         return ((value + 63U) / 64U) * 64U;
@@ -89,6 +87,14 @@ class RaBitQSpace : public SpaceInterface<float> {
         return reinterpret_cast<uint8_t *>(static_cast<char *>(encoded) + sizeof(EncodedHeader));
     }
 
+    const uint8_t *rawBytes(const void *encoded) const {
+        return signBytes(encoded) + sign_code_bytes_;
+    }
+
+    uint8_t *rawBytes(void *encoded) const {
+        return signBytes(encoded) + sign_code_bytes_;
+    }
+
     const uint8_t *signBytes(const void *encoded) const {
         return codeBytes(encoded) + compact_code_bytes_;
     }
@@ -105,31 +111,10 @@ class RaBitQSpace : public SpaceInterface<float> {
         sign_code[dim >> 3U] |= static_cast<uint8_t>(1U << (dim & 7U));
     }
 
-    static std::vector<uint8_t> &pendingRawStorage() {
-        thread_local std::vector<uint8_t> pending_raw;
-        return pending_raw;
-    }
-
     uint8_t compactCodeValue(const uint8_t *code, size_t dim) const {
         const uint8_t byte = code[dim >> 1U];
         return (dim & 1U) == 0 ? static_cast<uint8_t>(byte & 0x0F)
                                : static_cast<uint8_t>(byte >> 4);
-    }
-
-    void encodeRawVector(const float *raw_vector, uint8_t *raw_out) const {
-        for (size_t i = 0; i < dim_; ++i) {
-            int raw_value = static_cast<int>(std::lround(raw_vector[i]));
-            raw_value = std::min(255, std::max(0, raw_value));
-            raw_out[i] = static_cast<uint8_t>(raw_value);
-        }
-    }
-
-    const uint8_t *rawByInternalId(size_t internal_id) const {
-        const size_t offset = internal_id * dim_;
-        if (dim_ == 0 || offset + dim_ > raw_store_.size()) {
-            return nullptr;
-        }
-        return raw_store_.data() + offset;
     }
 
     void hadamard(std::vector<float> &values) const {
@@ -277,101 +262,16 @@ class RaBitQSpace : public SpaceInterface<float> {
     float exrabitqInnerProduct(const QueryContext &query, const void *encoded) const {
         const uint8_t *code = codeBytes(encoded);
         const uint8_t *sign_code = signBytes(encoded);
-#if defined(__AVX512F__) || defined(__AVX2__)
-        return exrabitqInnerProductSimd(query.rotated.data(), code, sign_code);
-#else
-        return exrabitqInnerProductScalar(query.rotated.data(), code, sign_code);
-#endif
-    }
-
-    float exrabitqInnerProductScalar(
-        const float *query_rotated,
-        const uint8_t *code,
-        const uint8_t *sign_code) const {
         float result = 0.0f;
         for (size_t i = 0; i < code_dim_; ++i) {
             const float stored = static_cast<float>(compactCodeValue(code, i));
             const float signed_code = signBit(sign_code, i)
                                           ? stored + 0.5f
                                           : stored - kExtendedBias;
-            result += query_rotated[i] * signed_code;
+            result += query.rotated[i] * signed_code;
         }
         return result;
     }
-
-#if defined(__AVX512F__) || defined(__AVX2__)
-    float exrabitqInnerProductSimd(
-        const float *query_rotated,
-        const uint8_t *code,
-        const uint8_t *sign_code) const {
-        alignas(64) float signed_code_buffer[32];
-        size_t i = 0;
-#if defined(__AVX512F__)
-        __m512 sum0 = _mm512_setzero_ps();
-        __m512 sum1 = _mm512_setzero_ps();
-        for (; i + 32 <= code_dim_; i += 32) {
-            unpackSignedCodes(code, sign_code, i, 32, signed_code_buffer);
-            const __m512 q0 = _mm512_loadu_ps(query_rotated + i);
-            const __m512 q1 = _mm512_loadu_ps(query_rotated + i + 16);
-            const __m512 c0 = _mm512_load_ps(signed_code_buffer);
-            const __m512 c1 = _mm512_load_ps(signed_code_buffer + 16);
-            sum0 = _mm512_fmadd_ps(q0, c0, sum0);
-            sum1 = _mm512_fmadd_ps(q1, c1, sum1);
-        }
-        float result = _mm512_reduce_add_ps(_mm512_add_ps(sum0, sum1));
-#else
-        __m256 sum0 = _mm256_setzero_ps();
-        __m256 sum1 = _mm256_setzero_ps();
-        __m256 sum2 = _mm256_setzero_ps();
-        __m256 sum3 = _mm256_setzero_ps();
-        for (; i + 32 <= code_dim_; i += 32) {
-            unpackSignedCodes(code, sign_code, i, 32, signed_code_buffer);
-            const __m256 q0 = _mm256_loadu_ps(query_rotated + i);
-            const __m256 q1 = _mm256_loadu_ps(query_rotated + i + 8);
-            const __m256 q2 = _mm256_loadu_ps(query_rotated + i + 16);
-            const __m256 q3 = _mm256_loadu_ps(query_rotated + i + 24);
-            const __m256 c0 = _mm256_load_ps(signed_code_buffer);
-            const __m256 c1 = _mm256_load_ps(signed_code_buffer + 8);
-            const __m256 c2 = _mm256_load_ps(signed_code_buffer + 16);
-            const __m256 c3 = _mm256_load_ps(signed_code_buffer + 24);
-            sum0 = _mm256_add_ps(sum0, _mm256_mul_ps(q0, c0));
-            sum1 = _mm256_add_ps(sum1, _mm256_mul_ps(q1, c1));
-            sum2 = _mm256_add_ps(sum2, _mm256_mul_ps(q2, c2));
-            sum3 = _mm256_add_ps(sum3, _mm256_mul_ps(q3, c3));
-        }
-        __m256 total = _mm256_add_ps(_mm256_add_ps(sum0, sum1), _mm256_add_ps(sum2, sum3));
-        alignas(32) float lanes[8];
-        _mm256_store_ps(lanes, total);
-        float result = 0.0f;
-        for (float lane : lanes) {
-            result += lane;
-        }
-#endif
-        for (; i < code_dim_; ++i) {
-            const float stored = static_cast<float>(compactCodeValue(code, i));
-            const float signed_code = signBit(sign_code, i)
-                                          ? stored + 0.5f
-                                          : stored - kExtendedBias;
-            result += query_rotated[i] * signed_code;
-        }
-        return result;
-    }
-
-    void unpackSignedCodes(
-        const uint8_t *code,
-        const uint8_t *sign_code,
-        size_t offset,
-        size_t count,
-        float *signed_code_out) const {
-        for (size_t j = 0; j < count; ++j) {
-            const size_t dim = offset + j;
-            const float stored = static_cast<float>(compactCodeValue(code, dim));
-            signed_code_out[j] = signBit(sign_code, dim)
-                                     ? stored + 0.5f
-                                     : stored - kExtendedBias;
-        }
-    }
-#endif
 
     uint32_t scalarCodeAccumulation(const QueryContext &query, const void *encoded) const {
         const uint8_t *code = codeBytes(encoded);
@@ -563,7 +463,8 @@ class RaBitQSpace : public SpaceInterface<float> {
           code_dim_(roundUp64(dim)),
           compact_code_bytes_(code_dim_ / 2),
           sign_code_bytes_(code_dim_ / 8),
-          data_size_(sizeof(EncodedHeader) + compact_code_bytes_ + sign_code_bytes_),
+          raw_code_bytes_(dim),
+          data_size_(sizeof(EncodedHeader) + compact_code_bytes_ + sign_code_bytes_ + raw_code_bytes_),
           inv_sqrt_code_dim_(1.0f / std::sqrt(static_cast<float>(code_dim_))),
           fstdistfunc_(exrabitqDistance),
           random_seed_(random_seed),
@@ -636,7 +537,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     void saveState(std::ostream &output) const {
-        const std::string magic = "EXRBTQ06";
+        const std::string magic = "EXRBTQ05";
         output.write(magic.data(), magic.size());
 
         const uint64_t dim = static_cast<uint64_t>(dim_);
@@ -655,7 +556,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     void loadState(std::istream &input) {
         char magic[8];
         input.read(magic, sizeof(magic));
-        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ06") {
+        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ05") {
             throw std::runtime_error("RaBitQSpace invalid or old quantizer state; rebuild the index");
         }
 
@@ -681,54 +582,6 @@ class RaBitQSpace : public SpaceInterface<float> {
             throw std::runtime_error("RaBitQSpace failed to read ExRaBitQ state payload");
         }
         refreshRotatedCenter();
-    }
-
-    void saveRawStore(std::ostream &output) const {
-        std::lock_guard<std::mutex> lock(raw_store_mutex_);
-        const std::string magic = "EXRRAW01";
-        output.write(magic.data(), magic.size());
-
-        const uint64_t dim = static_cast<uint64_t>(dim_);
-        const uint64_t raw_count = dim_ == 0 ? 0 : static_cast<uint64_t>(raw_store_.size() / dim_);
-        output.write(reinterpret_cast<const char *>(&dim), sizeof(dim));
-        output.write(reinterpret_cast<const char *>(&raw_count), sizeof(raw_count));
-        if (!raw_store_.empty()) {
-            output.write(reinterpret_cast<const char *>(raw_store_.data()), raw_store_.size());
-        }
-        if (!output.good()) {
-            throw std::runtime_error("RaBitQSpace failed to save raw rerank store");
-        }
-    }
-
-    void loadRawStore(std::istream &input) {
-        char magic[8];
-        input.read(magic, sizeof(magic));
-        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRRAW01") {
-            throw std::runtime_error("RaBitQSpace invalid raw rerank store; rebuild the index");
-        }
-
-        uint64_t stored_dim = 0;
-        uint64_t raw_count = 0;
-        input.read(reinterpret_cast<char *>(&stored_dim), sizeof(stored_dim));
-        input.read(reinterpret_cast<char *>(&raw_count), sizeof(raw_count));
-        if (!input.good() || stored_dim != dim_) {
-            throw std::runtime_error("RaBitQSpace raw rerank store is incompatible with this index");
-        }
-
-        std::lock_guard<std::mutex> lock(raw_store_mutex_);
-        raw_store_.assign(static_cast<size_t>(raw_count) * dim_, 0);
-        if (!raw_store_.empty()) {
-            input.read(reinterpret_cast<char *>(raw_store_.data()), raw_store_.size());
-        }
-        if (!input.good()) {
-            throw std::runtime_error("RaBitQSpace failed to read raw rerank store payload");
-        }
-        pendingRawStorage().clear();
-    }
-
-    size_t rawStoreCount() const {
-        std::lock_guard<std::mutex> lock(raw_store_mutex_);
-        return dim_ == 0 ? 0 : raw_store_.size() / dim_;
     }
 
     size_t get_data_size() override {
@@ -806,42 +659,12 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     float result_distance(const void *prepared_query, const void *data_point) override {
-        return query_distance(prepared_query, data_point);
-    }
-
-    float result_distance_by_id(const void *prepared_query, size_t internal_id, const void *data_point) override {
         const QueryContext &query = *static_cast<const QueryContext *>(prepared_query);
-        const uint8_t *raw = rawByInternalId(internal_id);
-        if (raw == nullptr) {
-            return query_distance(prepared_query, data_point);
-        }
-        return rawL2Distance(query.raw_query_u8.data(), raw);
-    }
-
-    void prepare_data_for_add(const void *raw_data_point) override {
-        const float *raw_vector = static_cast<const float *>(raw_data_point);
-        std::vector<uint8_t> &pending_raw = pendingRawStorage();
-        pending_raw.assign(dim_, 0);
-        encodeRawVector(raw_vector, pending_raw.data());
-    }
-
-    void commit_data_for_add(size_t internal_id, const void *data_point) override {
-        (void) data_point;
-        std::vector<uint8_t> &pending_raw = pendingRawStorage();
-        if (pending_raw.size() != dim_) {
-            return;
-        }
-        std::lock_guard<std::mutex> lock(raw_store_mutex_);
-        const size_t required = (internal_id + 1) * dim_;
-        if (raw_store_.size() < required) {
-            raw_store_.resize(required, 0);
-        }
-        std::memcpy(raw_store_.data() + internal_id * dim_, pending_raw.data(), dim_);
-        pending_raw.clear();
+        return rawL2Distance(query.raw_query_u8.data(), rawBytes(data_point));
     }
 
     bool supports_batch_query_distance() const override {
-        return true;
+        return false;
     }
 
     void batch_query_distance(
@@ -878,6 +701,12 @@ class RaBitQSpace : public SpaceInterface<float> {
         uint8_t *code = codeBytes(encoded_out);
         uint8_t *sign_code = signBytes(encoded_out);
         exrabitqGlobalCode(rotated_unit.data(), residual_norm, code, sign_code, header);
+        uint8_t *raw = rawBytes(encoded_out);
+        for (size_t i = 0; i < dim_; ++i) {
+            int raw_value = static_cast<int>(std::lround(raw_vector[i]));
+            raw_value = std::min(255, std::max(0, raw_value));
+            raw[i] = static_cast<uint8_t>(raw_value);
+        }
         std::memcpy(encoded_out, &header, sizeof(header));
     }
 
