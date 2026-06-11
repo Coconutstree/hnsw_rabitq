@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -7,6 +8,7 @@
 
 #include "../../hnswlib/hnswlib.h"
 #include "../../hnswlib/rabitq_hnsw.h"
+
 int main() {
     const size_t dim = 4;
     const std::vector<float> data = {
@@ -23,12 +25,11 @@ int main() {
     assert(index.space().get_data_size() == expected_data_size);
 
     const std::vector<char> encoded = index.space().encodeVector(data.data());
-    assert(index.space().get_compact_code_bytes() == (index.space().get_code_dim() + 1) / 2);
+    assert(index.space().get_compact_code_bytes() == index.space().get_code_dim());
     const auto *code = reinterpret_cast<const unsigned char *>(
         encoded.data() + sizeof(hnswlib::RaBitQSpace::EncodedHeader));
-    for (size_t i = 0; i < index.space().get_compact_code_bytes(); ++i) {
-        assert((code[i] & 0x0F) <= hnswlib::RaBitQSpace::kBaseMax);
-        assert((code[i] >> 4) <= hnswlib::RaBitQSpace::kBaseMax);
+    for (size_t i = 0; i < index.space().get_code_dim(); ++i) {
+        assert(static_cast<uint32_t>(code[i]) <= hnswlib::RaBitQSpace::kMaxCode);
     }
 
     const void *query_context = index.space().prepare_query(data.data());

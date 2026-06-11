@@ -7,6 +7,7 @@
 namespace hnswlib {
 typedef unsigned short int vl_type;
 
+//这个类是一个访问列表，记录在搜索过程中哪些节点已经被访问过了，避免重复访问
 class VisitedList {
  public:
     vl_type curV;
