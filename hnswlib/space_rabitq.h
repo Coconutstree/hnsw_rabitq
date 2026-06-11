@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <immintrin.h>
 #include <istream>
 #include <limits>
 #include <ostream>
@@ -31,6 +32,7 @@ class RaBitQSpace : public SpaceInterface<float> {
 
     struct EncodedHeader {
         float norm_sqr;
+        float norm;
         float inv_dot_y_o_prime;
     };
 
@@ -164,6 +166,7 @@ class RaBitQSpace : public SpaceInterface<float> {
 
         std::memset(code, 0, compact_code_bytes_);
         header.norm_sqr = residual_norm * residual_norm;
+        header.norm = residual_norm;
         header.inv_dot_y_o_prime = 0.0f;
 
         if (residual_norm == 0.0f) {
@@ -260,12 +263,65 @@ class RaBitQSpace : public SpaceInterface<float> {
 
     float dotUint8Float(const QueryContext &query, const void *encoded) const {
         const uint8_t *code = codeBytes(encoded);
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+        return dotUint8FloatAvx512(code, query.rotated.data());
+#elif defined(__AVX2__)
+        return dotUint8FloatAvx2(code, query.rotated.data());
+#else
+        return dotUint8FloatScalar(code, query.rotated.data());
+#endif
+    }
+
+    float dotUint8FloatScalar(const uint8_t *code, const float *query_rotated) const {
         float result = 0.0f;
         for (size_t i = 0; i < code_dim_; ++i) {
-            result += static_cast<float>(code[i]) * query.rotated[i];
+            result += static_cast<float>(code[i]) * query_rotated[i];
         }
         return result;
     }
+
+#if defined(__AVX2__)
+    float dotUint8FloatAvx2(const uint8_t *code, const float *query_rotated) const {
+        __m256 sum = _mm256_setzero_ps();
+        size_t i = 0;
+        for (; i + 8 <= code_dim_; i += 8) {
+            const __m128i code8 = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(code + i));
+            const __m256 code_f = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(code8));
+            const __m256 query_f = _mm256_loadu_ps(query_rotated + i);
+            sum = _mm256_add_ps(sum, _mm256_mul_ps(code_f, query_f));
+        }
+
+        alignas(32) float lanes[8];
+        _mm256_store_ps(lanes, sum);
+        float result = 0.0f;
+        for (float lane : lanes) {
+            result += lane;
+        }
+        for (; i < code_dim_; ++i) {
+            result += static_cast<float>(code[i]) * query_rotated[i];
+        }
+        return result;
+    }
+#endif
+
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+    float dotUint8FloatAvx512(const uint8_t *code, const float *query_rotated) const {
+        __m512 sum = _mm512_setzero_ps();
+        size_t i = 0;
+        for (; i + 16 <= code_dim_; i += 16) {
+            const __m128i code8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(code + i));
+            const __m512 code_f = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(code8));
+            const __m512 query_f = _mm512_loadu_ps(query_rotated + i);
+            sum = _mm512_fmadd_ps(code_f, query_f, sum);
+        }
+
+        float result = _mm512_reduce_add_ps(sum);
+        for (; i < code_dim_; ++i) {
+            result += static_cast<float>(code[i]) * query_rotated[i];
+        }
+        return result;
+    }
+#endif
 
     float queryDistancePrepared(const QueryContext &query, const void *encoded) const {
         const EncodedHeader header = loadHeader(encoded);
@@ -275,7 +331,7 @@ class RaBitQSpace : public SpaceInterface<float> {
         const float dot_centered = dotUint8Float(query, encoded) - kOffset * query.sum_q;
         const float estimated_inner = dot_centered * header.inv_dot_y_o_prime;
         return header.norm_sqr + query.query_norm_sqr -
-               2.0f * std::sqrt(header.norm_sqr) * query.query_norm * estimated_inner;
+               2.0f * header.norm * query.query_norm * estimated_inner;
     }
 
     float distanceBetweenEncoded(const char *lhs, const char *rhs) const {
@@ -390,7 +446,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     void saveState(std::ostream &output) const {
-        const std::string magic = "EXRBTQ10";
+        const std::string magic = "EXRBTQ11";
         output.write(magic.data(), magic.size());
 
         const uint64_t dim = static_cast<uint64_t>(dim_);
@@ -409,9 +465,9 @@ class RaBitQSpace : public SpaceInterface<float> {
     void loadState(std::istream &input) {
         char magic[8];
         input.read(magic, sizeof(magic));
-        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ10") {
+        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ11") {
             throw std::runtime_error(
-                "Old RaBitQ index format is incompatible with B=8 layout. Please rebuild.");
+                "Old RaBitQ index format is incompatible with optimized B=8 layout. Please rebuild.");
         }
 
         uint64_t stored_dim = 0;
@@ -526,7 +582,7 @@ class RaBitQSpace : public SpaceInterface<float> {
         thread_local std::vector<float> rotated_unit;
         rotate(residual.data(), rotated_unit);
 
-        EncodedHeader header{0.0f, 0.0f};
+        EncodedHeader header{0.0f, 0.0f, 0.0f};
         uint8_t *code = codeBytes(encoded_out);
         exrabitqGlobalCode(rotated_unit.data(), residual_norm, code, header);
         std::memcpy(encoded_out, &header, sizeof(header));
