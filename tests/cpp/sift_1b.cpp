@@ -22,7 +22,7 @@ using namespace hnswlib;
 namespace {
 
 void print_run_config(
-    int subset_size_millions,
+    const char *dataset_name,
     size_t vecsize,
     size_t qsize,
     size_t vecdim,
@@ -36,9 +36,8 @@ void print_run_config(
     const char *path_q,
     const char *path_gt) {
     cout << "Run config:\n";
-    cout << "  dataset=BigANN/SIFT1B\n";
-    cout << "  subset_size_millions=" << subset_size_millions
-         << " (" << vecsize << " base vectors)\n";
+    cout << "  dataset=" << dataset_name << "\n";
+    cout << "  base_count=" << vecsize << "\n";
     cout << "  query_count=" << qsize << "\n";
     cout << "  dimension=" << vecdim << "\n";
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
@@ -117,6 +116,53 @@ float raw_l2_u8(const uint8_t *query, const uint8_t *base, size_t dim) {
         total += static_cast<uint32_t>(diff * diff);
     }
     return static_cast<float>(total);
+}
+
+float raw_l2_float(const float *query, const float *base, size_t dim) {
+    float total = 0.0f;
+    for (size_t i = 0; i < dim; ++i) {
+        const float diff = query[i] - base[i];
+        total += diff * diff;
+    }
+    return total;
+}
+
+size_t fvec_count_from_file_size(const string &path, size_t vecdim) {
+    ifstream input(path, ios::binary | ios::ate);
+    if (!input.is_open()) {
+        throw runtime_error("cannot open fvec file: " + path);
+    }
+    const size_t bytes = static_cast<size_t>(input.tellg());
+    const size_t record_bytes = sizeof(int) + vecdim * sizeof(float);
+    if (record_bytes == 0 || bytes % record_bytes != 0) {
+        throw runtime_error("fvec file size is not divisible by record size: " + path);
+    }
+    return bytes / record_bytes;
+}
+
+void read_fvec_as_float(ifstream &input, float *dst, size_t vecdim) {
+    int in = 0;
+    input.read(reinterpret_cast<char *>(&in), 4);
+    if (!input.good() || in != static_cast<int>(vecdim)) {
+        throw runtime_error("file error");
+    }
+    input.read(reinterpret_cast<char *>(dst), static_cast<std::streamsize>(vecdim * sizeof(float)));
+    if (!input.good()) {
+        throw runtime_error("file error");
+    }
+}
+
+vector<float> load_fvecs_raw(const string &path, size_t vec_count, size_t vecdim) {
+    ifstream input(path, ios::binary);
+    if (!input.is_open()) {
+        throw runtime_error("cannot open raw fvec file: " + path);
+    }
+
+    vector<float> raw(vec_count * vecdim, 0.0f);
+    for (size_t i = 0; i < vec_count; ++i) {
+        read_fvec_as_float(input, raw.data() + i * vecdim, vecdim);
+    }
+    return raw;
 }
 
 class BVecRandomReader {
@@ -239,8 +285,7 @@ vector<float> train_global_center(
     ifstream &input,
     size_t vecdim,
     size_t vecsize,
-    size_t sample_count,
-    vector<unsigned char> &scratch) {
+    size_t sample_count) {
     input.clear();
     input.seekg(0, ios::beg);
 
@@ -252,7 +297,7 @@ vector<float> train_global_center(
     vector<float> center(vecdim, 0.0f);
     vector<float> sample(vecdim, 0.0f);
     for (size_t i = 0; i < actual_sample_count; ++i) {
-        read_bvec_as_float(input, sample.data(), vecdim, scratch);
+        read_fvec_as_float(input, sample.data(), vecdim);
         for (size_t d = 0; d < vecdim; ++d) {
             center[d] += sample[d];
         }
@@ -362,8 +407,7 @@ struct SearchReport {
 
 static SearchReport test_approx(
     float *massQ,
-    const uint8_t *rawQ,
-    const vector<uint8_t> &base_raw,
+    const vector<float> &base_raw,
     size_t qsize,
     RaBitQHierarchicalNSW &appr_alg,
     const string &base_path,
@@ -385,13 +429,13 @@ static SearchReport test_approx(
         StopW rerank_timer;
         vector<pair<float, labeltype>> results;
         results.reserve(candidate_ids.size());
-        const uint8_t *raw_query = rawQ + i * vecdim;
+        const float *raw_query = massQ + i * vecdim;
         for (labeltype label : candidate_ids) {
             if (label >= base_raw.size() / vecdim) {
                 continue;
             }
-            const uint8_t *raw_base = base_raw.data() + label * vecdim;
-            results.emplace_back(raw_l2_u8(raw_query, raw_base, vecdim), label);
+            const float *raw_base = base_raw.data() + label * vecdim;
+            results.emplace_back(raw_l2_float(raw_query, raw_base, vecdim), label);
         }
         if (results.size() > k) {
             std::partial_sort(results.begin(), results.begin() + k, results.end());
@@ -427,8 +471,7 @@ static SearchReport test_approx(
 
 static void test_vs_recall(
     float *massQ,
-    const uint8_t *rawQ,
-    const vector<uint8_t> &base_raw,
+    const vector<float> &base_raw,
     size_t qsize,
     RaBitQHierarchicalNSW &appr_alg,
     const string &base_path,
@@ -452,7 +495,6 @@ static void test_vs_recall(
         appr_alg.setEf(ef);
         SearchReport report = test_approx(
             massQ,
-            rawQ,
             base_raw,
             qsize,
             appr_alg,
@@ -475,7 +517,7 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const int subset_size_millions = 10;
+    const char *dataset_name = "SymphonyQG/sift10m";
     const int efConstruction = 40;
     const int M = 16;
     const int centroid_count = 64;
@@ -483,26 +525,24 @@ void sift_test1B() {
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
-    const size_t vecsize = subset_size_millions * 1000000ULL;
-    const size_t qsize = 10000;
     const size_t vecdim = 128;
 
     char path_index[1024];
-    char path_gt[1024];
-    const char *path_q = "/home/kai3/coco/hnswlib/bigann/bigann_query.bvecs";
-    const char *path_data = "/home/kai3/coco/hnswlib/bigann/bigann_base.bvecs";
+    const char *path_q = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_query.fvecs";
+    const char *path_data = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_base.fvecs";
+    const char *path_gt = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_groundtruth.ivecs";
+    const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
+    const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "sift1b_rabitq_%dm_ef_%d_M_%d_C_%d.bin",
-        subset_size_millions,
+        "sift10m_symphonyqg_rabitq_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
-    snprintf(path_gt, sizeof(path_gt), "/home/kai3/coco/hnswlib/bigann/gnd/idx_%dM.ivecs", subset_size_millions);
 
     print_run_config(
-        subset_size_millions,
+        dataset_name,
         vecsize,
         qsize,
         vecdim,
@@ -537,19 +577,12 @@ void sift_test1B() {
 
     cout << "Loading queries:\n";
     float *massQ = new float[qsize * vecdim];
-    vector<uint8_t> rawQ(qsize * vecdim, 0);
     ifstream inputQ(path_q, ios::binary);
     if (!inputQ.is_open()) {
         throw runtime_error("cannot open query file");
     }
-    vector<unsigned char> scratch(vecdim);
     for (size_t i = 0; i < qsize; i++) {
-        read_bvec_as_float_and_u8(
-            inputQ,
-            massQ + i * vecdim,
-            rawQ.data() + i * vecdim,
-            vecdim,
-            scratch);
+        read_fvec_as_float(inputQ, massQ + i * vecdim, vecdim);
     }
     inputQ.close();
 
@@ -595,12 +628,11 @@ void sift_test1B() {
             input,
             vecdim,
             vecsize,
-            centroid_train_samples,
-            scratch);
+            centroid_train_samples);
         appr_alg->space().setGlobalCenter(global_center.data());
 
         vector<float> first(vecdim);
-        read_bvec_as_float(input, first.data(), vecdim, scratch);
+        read_fvec_as_float(input, first.data(), vecdim);
         appr_alg->addPoint(first.data(), (size_t)0);
 
         int j1 = 0;
@@ -614,7 +646,7 @@ void sift_test1B() {
             int label = 0;
 #pragma omp critical
             {
-                read_bvec_as_float(input, local_mass, vecdim, scratch);
+                read_fvec_as_float(input, local_mass, vecdim);
                 j1++;
                 label = j1;
                 if (j1 % report_every == 0) {
@@ -633,8 +665,8 @@ void sift_test1B() {
 
     cout << "Loading raw base vectors for external rerank:\n";
     StopW raw_load_timer;
-    vector<uint8_t> base_raw = load_bvecs_raw(path_data, vecsize, vecdim);
-    cout << "  raw_base_bytes=" << base_raw.size()
+    vector<float> base_raw = load_fvecs_raw(path_data, vecsize, vecdim);
+    cout << "  raw_base_bytes=" << base_raw.size() * sizeof(float)
          << " load_time=" << 1e-6 * raw_load_timer.getElapsedTimeMicro() << " seconds\n";
     cout << "Actual memory usage after raw load: " << getCurrentRSS() / 1000000 << " Mb \n";
 
@@ -645,7 +677,6 @@ void sift_test1B() {
     cout << "Loaded gt\n";
     test_vs_recall(
         massQ,
-        rawQ.data(),
         base_raw,
         qsize,
         *appr_alg,
