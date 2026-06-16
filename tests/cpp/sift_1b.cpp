@@ -35,6 +35,7 @@ void print_run_config(
     const char *path_data,
     const char *path_q,
     const char *path_gt) {
+    (void) rerank_candidates;
     cout << "Run config:\n";
     cout << "  dataset=" << dataset_name << "\n";
     cout << "  base_count=" << vecsize << "\n";
@@ -42,7 +43,6 @@ void print_run_config(
     cout << "  dimension=" << vecdim << "\n";
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
     cout << "  quantizer=8-bit ExRaBitQ centroid_count=" << centroid_count
-         << " rerank_candidates=" << rerank_candidates
          << " random_seed=" << random_seed << "\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
@@ -479,15 +479,21 @@ static void test_vs_recall(
     size_t k,
     size_t rerank_candidates) {
     vector<size_t> efs;
-    const size_t min_ef = std::max(k, rerank_candidates);
-    for (size_t i = min_ef; i < 30; i++) {
-        efs.push_back(i);
+    (void) rerank_candidates;
+    for (size_t i = 1; i <= 30; i++) {
+        if (i >= k) {
+            efs.push_back(i);
+        }
     }
-    for (size_t i = std::max<size_t>(30, min_ef); i < 100; i += 10) {
-        efs.push_back(i);
+    for (size_t i = 40; i <= 100; i += 10) {
+        if (i >= k) {
+            efs.push_back(i);
+        }
     }
-    for (size_t i = std::max<size_t>(100, min_ef); i < 500; i += 40) {
-        efs.push_back(i);
+    for (size_t i = 140; i <= 460; i += 40) {
+        if (i >= k) {
+            efs.push_back(i);
+        }
     }
 
     for (size_t ef : efs) {
@@ -505,12 +511,6 @@ static void test_vs_recall(
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
-             << "\t" << "redundant_rerank_us_per_query=" << report.redundant_rerank_us_per_query
-             << "\t" << "lower_bound_checked=" << report.lower_bound_checked
-             << "\t" << "lower_bound_pruned=" << report.lower_bound_pruned
-             << "\t" << "survivor_long_computed=" << report.survivor_long_computed
-             << "\t" << "long_computations_per_query=" << report.long_computations_per_query
-             << "\t" << "prune_rate=" << report.prune_rate
              << "\t" << "total_us_per_query=" << report.total_us_per_query << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
