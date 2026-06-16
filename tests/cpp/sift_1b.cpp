@@ -401,13 +401,16 @@ static void get_gt(
 struct SearchReport {
     float recall{0.0f};
     float hnsw_search_us_per_query{0.0f};
-    float raw_rerank_us_per_query{0.0f};
+    float redundant_rerank_us_per_query{0.0f};
     float total_us_per_query{0.0f};
+    long lower_bound_checked{0};
+    long lower_bound_pruned{0};
+    long survivor_long_computed{0};
+    float prune_rate{0.0f};
 };
 
 static SearchReport test_approx(
     float *massQ,
-    const vector<float> &base_raw,
     size_t qsize,
     RaBitQHierarchicalNSW &appr_alg,
     const string &base_path,
@@ -416,34 +419,19 @@ static SearchReport test_approx(
     size_t k,
     size_t rerank_candidates) {
     (void) base_path;
+    (void) rerank_candidates;
     size_t correct = 0;
     size_t total = 0;
     double hnsw_us = 0.0;
-    double rerank_us = 0.0;
+    appr_alg.index().metric_lower_bound_checked = 0;
+    appr_alg.index().metric_lower_bound_pruned = 0;
+    appr_alg.index().metric_survivor_long_computed = 0;
 
     for (size_t i = 0; i < qsize; i++) {
         StopW hnsw_timer;
-        vector<labeltype> candidate_ids = appr_alg.searchCandidateIds(massQ + vecdim * i, rerank_candidates);
+        vector<pair<float, labeltype>> results =
+            appr_alg.searchKnnCloserFirst(massQ + vecdim * i, k);
         hnsw_us += hnsw_timer.getElapsedTimeMicro();
-
-        StopW rerank_timer;
-        vector<pair<float, labeltype>> results;
-        results.reserve(candidate_ids.size());
-        const float *raw_query = massQ + i * vecdim;
-        for (labeltype label : candidate_ids) {
-            if (label >= base_raw.size() / vecdim) {
-                continue;
-            }
-            const float *raw_base = base_raw.data() + label * vecdim;
-            results.emplace_back(raw_l2_float(raw_query, raw_base, vecdim), label);
-        }
-        if (results.size() > k) {
-            std::partial_sort(results.begin(), results.begin() + k, results.end());
-            results.resize(k);
-        } else {
-            std::sort(results.begin(), results.end());
-        }
-        rerank_us += rerank_timer.getElapsedTimeMicro();
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
@@ -464,14 +452,21 @@ static SearchReport test_approx(
     SearchReport report;
     report.recall = total == 0 ? 0.0f : 1.0f * correct / total;
     report.hnsw_search_us_per_query = static_cast<float>(hnsw_us / static_cast<double>(qsize));
-    report.raw_rerank_us_per_query = static_cast<float>(rerank_us / static_cast<double>(qsize));
-    report.total_us_per_query = report.hnsw_search_us_per_query + report.raw_rerank_us_per_query;
+    report.redundant_rerank_us_per_query = 0.0f;
+    report.total_us_per_query = report.hnsw_search_us_per_query;
+    report.lower_bound_checked = appr_alg.index().metric_lower_bound_checked.load();
+    report.lower_bound_pruned = appr_alg.index().metric_lower_bound_pruned.load();
+    report.survivor_long_computed = appr_alg.index().metric_survivor_long_computed.load();
+    report.prune_rate = report.lower_bound_checked == 0
+                            ? 0.0f
+                            : static_cast<float>(
+                                  static_cast<double>(report.lower_bound_pruned) /
+                                  static_cast<double>(report.lower_bound_checked));
     return report;
 }
 
 static void test_vs_recall(
     float *massQ,
-    const vector<float> &base_raw,
     size_t qsize,
     RaBitQHierarchicalNSW &appr_alg,
     const string &base_path,
@@ -495,7 +490,6 @@ static void test_vs_recall(
         appr_alg.setEf(ef);
         SearchReport report = test_approx(
             massQ,
-            base_raw,
             qsize,
             appr_alg,
             base_path,
@@ -507,7 +501,11 @@ static void test_vs_recall(
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
-             << "\t" << "raw_rerank_us_per_query=" << report.raw_rerank_us_per_query
+             << "\t" << "redundant_rerank_us_per_query=" << report.redundant_rerank_us_per_query
+             << "\t" << "lower_bound_checked=" << report.lower_bound_checked
+             << "\t" << "lower_bound_pruned=" << report.lower_bound_pruned
+             << "\t" << "survivor_long_computed=" << report.survivor_long_computed
+             << "\t" << "prune_rate=" << report.prune_rate
              << "\t" << "total_us_per_query=" << report.total_us_per_query << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
@@ -663,13 +661,6 @@ void sift_test1B() {
         appr_alg->saveIndex(path_index);
     }
 
-    cout << "Loading raw base vectors for external rerank:\n";
-    StopW raw_load_timer;
-    vector<float> base_raw = load_fvecs_raw(path_data, vecsize, vecdim);
-    cout << "  raw_base_bytes=" << base_raw.size() * sizeof(float)
-         << " load_time=" << 1e-6 * raw_load_timer.getElapsedTimeMicro() << " seconds\n";
-    cout << "Actual memory usage after raw load: " << getCurrentRSS() / 1000000 << " Mb \n";
-
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
     const size_t k = 1;
     cout << "Parsing gt:\n";
@@ -677,7 +668,6 @@ void sift_test1B() {
     cout << "Loaded gt\n";
     test_vs_recall(
         massQ,
-        base_raw,
         qsize,
         *appr_alg,
         path_data,

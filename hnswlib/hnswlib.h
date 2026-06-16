@@ -204,6 +204,24 @@ class SpaceInterface {
         return get_dist_func()(prepared_query, data_point, get_dist_func_param());
     }
 
+    virtual bool supports_query_distance_lower_bound() const {
+        return false;
+    }
+
+    virtual MTYPE query_distance_lower_bound(const void *prepared_query, const void *data_point) {
+        return query_distance(prepared_query, data_point);
+    }
+
+    virtual bool query_distance_if_lower_bound_below(
+        const void *prepared_query,
+        const void *data_point,
+        MTYPE threshold,
+        MTYPE *distance) {
+        (void) threshold;
+        *distance = query_distance(prepared_query, data_point);
+        return true;
+    }
+
     virtual MTYPE result_distance(const void *prepared_query, const void *data_point) {
         return query_distance(prepared_query, data_point);
     }
@@ -234,6 +252,33 @@ class SpaceInterface {
         for (size_t i = 0; i < count; ++i) {
             distances[i] = query_distance(prepared_query, data_points[i]);
         }
+    }
+
+    virtual void batch_query_distance_lower_bound(
+        const void *prepared_query,
+        const void *const *data_points,
+        size_t count,
+        MTYPE *lower_bounds) {
+        for (size_t i = 0; i < count; ++i) {
+            lower_bounds[i] = query_distance_lower_bound(prepared_query, data_points[i]);
+        }
+    }
+
+    virtual size_t batch_query_distance_if_lower_bound_below(
+        const void *prepared_query,
+        const void *const *data_points,
+        size_t count,
+        MTYPE threshold,
+        bool use_threshold,
+        MTYPE *distances,
+        size_t *survivor_indices) {
+        (void) threshold;
+        (void) use_threshold;
+        for (size_t i = 0; i < count; ++i) {
+            distances[i] = query_distance(prepared_query, data_points[i]);
+            survivor_indices[i] = i;
+        }
+        return count;
     }
 
     virtual ~SpaceInterface() {}

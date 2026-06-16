@@ -1,0 +1,134 @@
+nohup: ignoring input
+Run config:
+  dataset=BigANN/SIFT1B
+  subset_size_millions=10 (10000000 base vectors)
+  query_count=10000
+  dimension=128
+  M=16 efConstruction=40
+  quantizer=8-bit ExRaBitQ centroid_count=64 rerank_candidates=100 random_seed=100
+  base_path=/home/kai3/coco/hnswlib/bigann/bigann_base.bvecs
+  query_path=/home/kai3/coco/hnswlib/bigann/bigann_query.bvecs
+  gt_path=/home/kai3/coco/hnswlib/bigann/gnd/idx_10M.ivecs
+  index_path=sift1b_rabitq_10m_ef_40_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=140 (8-bit code)
+Building index:
+Training one global ExRaBitQ center from 200000 base vectors
+1 %, 30.0215 kips  Mem: 3341 Mb 
+2 %, 28.2199 kips  Mem: 3602 Mb 
+3 %, 42.1051 kips  Mem: 3691 Mb 
+4 %, 40.3841 kips  Mem: 3725 Mb 
+5 %, 40.9166 kips  Mem: 3757 Mb 
+6 %, 40.0281 kips  Mem: 3789 Mb 
+7 %, 39.7563 kips  Mem: 3821 Mb 
+8 %, 37.4876 kips  Mem: 3863 Mb 
+9 %, 37.5211 kips  Mem: 3891 Mb 
+10 %, 35.1368 kips  Mem: 3925 Mb 
+11 %, 32.9949 kips  Mem: 3956 Mb 
+12 %, 29.2558 kips  Mem: 3990 Mb 
+13 %, 30.2992 kips  Mem: 4021 Mb 
+14 %, 29.6942 kips  Mem: 4055 Mb 
+15 %, 27.5391 kips  Mem: 4097 Mb 
+16 %, 30.1128 kips  Mem: 4132 Mb 
+17 %, 29.9522 kips  Mem: 4164 Mb 
+18 %, 37.2293 kips  Mem: 4199 Mb 
+19 %, 41.5034 kips  Mem: 4231 Mb 
+20 %, 41.4249 kips  Mem: 4267 Mb 
+21 %, 41.4338 kips  Mem: 4295 Mb 
+22 %, 41.6792 kips  Mem: 4328 Mb 
+23 %, 41.1523 kips  Mem: 4361 Mb 
+24 %, 41.7018 kips  Mem: 4392 Mb 
+25 %, 41.5219 kips  Mem: 4426 Mb 
+26 %, 41.7405 kips  Mem: 4459 Mb 
+27 %, 41.7432 kips  Mem: 4491 Mb 
+28 %, 40.9083 kips  Mem: 4525 Mb 
+29 %, 41.6347 kips  Mem: 4555 Mb 
+30 %, 35.7684 kips  Mem: 4613 Mb 
+31 %, 40.3849 kips  Mem: 4645 Mb 
+32 %, 41.6468 kips  Mem: 4677 Mb 
+33 %, 41.7748 kips  Mem: 4713 Mb 
+34 %, 41.2832 kips  Mem: 4743 Mb 
+35 %, 41.3849 kips  Mem: 4776 Mb 
+36 %, 41.3718 kips  Mem: 4807 Mb 
+37 %, 41.4049 kips  Mem: 4841 Mb 
+38 %, 41.3579 kips  Mem: 4873 Mb 
+39 %, 41.9126 kips  Mem: 4904 Mb 
+40 %, 41.4864 kips  Mem: 4938 Mb 
+41 %, 41.8015 kips  Mem: 4970 Mb 
+42 %, 41.3309 kips  Mem: 5004 Mb 
+43 %, 40.9758 kips  Mem: 5036 Mb 
+44 %, 41.1649 kips  Mem: 5069 Mb 
+45 %, 41.0616 kips  Mem: 5100 Mb 
+46 %, 40.8302 kips  Mem: 5134 Mb 
+47 %, 41.3105 kips  Mem: 5166 Mb 
+48 %, 40.8733 kips  Mem: 5198 Mb 
+49 %, 40.8581 kips  Mem: 5230 Mb 
+50 %, 40.6055 kips  Mem: 5264 Mb 
+51 %, 40.8305 kips  Mem: 5297 Mb 
+52 %, 41.5538 kips  Mem: 5327 Mb 
+53 %, 41.4489 kips  Mem: 5361 Mb 
+54 %, 41.7047 kips  Mem: 5394 Mb 
+55 %, 42.171 kips  Mem: 5427 Mb 
+56 %, 41.9494 kips  Mem: 5462 Mb 
+57 %, 41.8968 kips  Mem: 5492 Mb 
+58 %, 41.4416 kips  Mem: 5524 Mb 
+59 %, 41.2182 kips  Mem: 5556 Mb 
+60 %, 31.7264 kips  Mem: 5637 Mb 
+61 %, 40.8975 kips  Mem: 5672 Mb 
+62 %, 41.592 kips  Mem: 5704 Mb 
+63 %, 41.3171 kips  Mem: 5734 Mb 
+64 %, 41.2232 kips  Mem: 5767 Mb 
+65 %, 40.8651 kips  Mem: 5800 Mb 
+66 %, 40.7036 kips  Mem: 5836 Mb 
+67 %, 41.0772 kips  Mem: 5866 Mb 
+68 %, 41.5671 kips  Mem: 5897 Mb 
+69 %, 41.3581 kips  Mem: 5930 Mb 
+70 %, 41.1648 kips  Mem: 5963 Mb 
+71 %, 41.5102 kips  Mem: 6004 Mb 
+72 %, 41.4908 kips  Mem: 6033 Mb 
+73 %, 41.2719 kips  Mem: 6064 Mb 
+74 %, 41.1192 kips  Mem: 6096 Mb 
+75 %, 40.9726 kips  Mem: 6127 Mb 
+76 %, 41.4231 kips  Mem: 6159 Mb 
+77 %, 41.4113 kips  Mem: 6193 Mb 
+78 %, 41.0135 kips  Mem: 6225 Mb 
+79 %, 40.8355 kips  Mem: 6256 Mb 
+80 %, 41.0778 kips  Mem: 6290 Mb 
+81 %, 40.6763 kips  Mem: 6322 Mb 
+82 %, 40.4097 kips  Mem: 6363 Mb 
+83 %, 40.2342 kips  Mem: 6386 Mb 
+84 %, 41.2266 kips  Mem: 6419 Mb 
+85 %, 40.6708 kips  Mem: 6452 Mb 
+86 %, 41.2579 kips  Mem: 6484 Mb 
+87 %, 41.0768 kips  Mem: 6519 Mb 
+88 %, 40.9265 kips  Mem: 6550 Mb 
+89 %, 41.2292 kips  Mem: 6583 Mb 
+90 %, 41.4748 kips  Mem: 6614 Mb 
+91 %, 40.9014 kips  Mem: 6646 Mb 
+92 %, 41.243 kips  Mem: 6679 Mb 
+93 %, 41.1685 kips  Mem: 6712 Mb 
+94 %, 41.6238 kips  Mem: 6744 Mb 
+95 %, 41.399 kips  Mem: 6777 Mb 
+96 %, 41.2333 kips  Mem: 6808 Mb 
+97 %, 41.0366 kips  Mem: 6841 Mb 
+98 %, 41.6915 kips  Mem: 6874 Mb 
+99 %, 37.4936 kips  Mem: 6912 Mb 
+Build time:277.7  seconds
+Loading raw base vectors for external rerank:
+  raw_base_bytes=1280000000 load_time=1.41287 seconds
+Actual memory usage after raw load: 8217 Mb 
+Parsing gt:
+10000
+Loaded gt
+100	0.944	337.184 us	hnsw_search_us_per_query=324.11	raw_rerank_us_per_query=13.0742	total_us_per_query=337.184
+140	0.9604	456.283 us	hnsw_search_us_per_query=437.853	raw_rerank_us_per_query=18.4295	total_us_per_query=456.283
+180	0.9715	572.208 us	hnsw_search_us_per_query=548.595	raw_rerank_us_per_query=23.6139	total_us_per_query=572.208
+220	0.9774	708.009 us	hnsw_search_us_per_query=678.364	raw_rerank_us_per_query=29.6452	total_us_per_query=708.009
+260	0.9818	856.56 us	hnsw_search_us_per_query=822.4	raw_rerank_us_per_query=34.1592	total_us_per_query=856.56
+300	0.9846	971.054 us	hnsw_search_us_per_query=909.607	raw_rerank_us_per_query=61.447	total_us_per_query=971.054
+340	0.9863	1114.02 us	hnsw_search_us_per_query=1020	raw_rerank_us_per_query=94.0211	total_us_per_query=1114.02
+380	0.9879	1234.92 us	hnsw_search_us_per_query=1125.5	raw_rerank_us_per_query=109.419	total_us_per_query=1234.92
+420	0.9888	1344.57 us	hnsw_search_us_per_query=1217.03	raw_rerank_us_per_query=127.54	total_us_per_query=1344.57
+460	0.9905	1468.34 us	hnsw_search_us_per_query=1319.13	raw_rerank_us_per_query=149.216	total_us_per_query=1468.34
+Actual memory usage: 8218 Mb 

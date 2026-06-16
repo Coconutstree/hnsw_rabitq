@@ -69,6 +69,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     mutable std::atomic<long> metric_distance_computations{0};
     mutable std::atomic<long> metric_hops{0};
+    mutable std::atomic<long> metric_lower_bound_checked{0};
+    mutable std::atomic<long> metric_lower_bound_pruned{0};
+    mutable std::atomic<long> metric_survivor_long_computed{0};
 
     bool allow_replace_deleted_ = false;  // flag to replace deleted elements (marked as deleted) during insertions
 
@@ -397,24 +400,56 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             static const size_t kQueryBatchSize = 32;
             tableint batch_ids[kQueryBatchSize];
             const void *batch_points[kQueryBatchSize];
-            dist_t batch_distances[kQueryBatchSize];
+            size_t survivor_indices[kQueryBatchSize];
+            dist_t survivor_distances[kQueryBatchSize];
             size_t batch_count = 0;
+            bool lower_bound_pruning_enabled = true;
+            size_t no_prune_batch_streak = 0;
 
             auto process_query_batch = [&]() {
                 if (!space_->supports_batch_query_distance() || batch_count == 0) {
                     return;
                 }
 
-                space_->batch_query_distance(
+                const bool use_lower_bound =
+                    stop_condition == nullptr &&
+                    lower_bound_pruning_enabled &&
+                    space_->supports_query_distance_lower_bound() &&
+                    top_candidates.size() >= ef;
+                const size_t survivor_count = space_->batch_query_distance_if_lower_bound_below(
                     query_context,
                     batch_points,
                     batch_count,
-                    batch_distances);
+                    lowerBound,
+                    use_lower_bound,
+                    survivor_distances,
+                    survivor_indices);
 
-                for (size_t batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
-                    const tableint candidate_id = batch_ids[batch_idx];
+                if (use_lower_bound) {
+                    const size_t pruned_count = batch_count - survivor_count;
+                    metric_lower_bound_checked += static_cast<long>(batch_count);
+                    metric_lower_bound_pruned += static_cast<long>(pruned_count);
+                    if (pruned_count == 0) {
+                        ++no_prune_batch_streak;
+                        if (no_prune_batch_streak >= 4) {
+                            lower_bound_pruning_enabled = false;
+                        }
+                    } else {
+                        no_prune_batch_streak = 0;
+                    }
+                }
+
+                if (survivor_count == 0) {
+                    batch_count = 0;
+                    return;
+                }
+
+                metric_survivor_long_computed += static_cast<long>(survivor_count);
+
+                for (size_t batch_idx = 0; batch_idx < survivor_count; ++batch_idx) {
+                    const tableint candidate_id = batch_ids[survivor_indices[batch_idx]];
                     char *currObj1 = getDataByInternalId(candidate_id);
-                    dist_t dist = batch_distances[batch_idx];
+                    dist_t dist = survivor_distances[batch_idx];
 
                     bool flag_consider_candidate;
                     if (!bare_bone_search && stop_condition) {
@@ -1397,12 +1432,29 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                         tableint cand = datal[i];
                         if (cand < 0 || cand > max_elements_)
                             throw std::runtime_error("cand error");
-                        dist_t d = space_->query_distance(query_context, getDataByInternalId(cand));
+                        char *cand_data = getDataByInternalId(cand);
+                        if (space_->supports_query_distance_lower_bound()) {
+                            dist_t d;
+                            metric_lower_bound_checked++;
+                            if (!space_->query_distance_if_lower_bound_below(query_context, cand_data, curdist, &d)) {
+                                metric_lower_bound_pruned++;
+                                continue;
+                            }
+                            metric_survivor_long_computed++;
 
-                        if (d < curdist) {
-                            curdist = d;
-                            currObj = cand;
-                            changed = true;
+                            if (d < curdist) {
+                                curdist = d;
+                                currObj = cand;
+                                changed = true;
+                            }
+                        } else {
+                            dist_t d = space_->query_distance(query_context, cand_data);
+
+                            if (d < curdist) {
+                                curdist = d;
+                                currObj = cand;
+                                changed = true;
+                            }
                         }
                     }
                 }
