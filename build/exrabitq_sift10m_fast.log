@@ -1,0 +1,30 @@
+Run config:
+  dataset=SymphonyQG/sift10m
+  base_count=10000000
+  query_count=1000
+  dimension=128
+  M=16 efConstruction=40
+  quantizer=8-bit ExRaBitQ centroid_count=64 rerank_candidates=100 random_seed=100
+  base_path=/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_base.fvecs
+  query_path=/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_query.fvecs
+  gt_path=/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_groundtruth.ivecs
+  index_path=sift10m_symphonyqg_rabitq_ef_40_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=144 (8-bit code)
+Loading index from sift10m_symphonyqg_rabitq_ef_40_M_16_C_64.bin:
+Actual memory usage: 3Actual memory usage: 3841 Mb 
+Parsing gt:
+1000
+Loaded gt
+100	0.927	286.789 us	hnsw_search_us_per_query=286.789	redundant_rerank_us_per_query=0	lower_bound_checked=1593402	lower_bound_pruned=443799	survivor_long_computed=1258745	long_computations_per_query=1258.74	prune_rate=0.278523	total_us_per_query=286.789
+140	0.946	367.095 us	hnsw_search_us_per_query=367.095	redundant_rerank_us_per_query=0	lower_bound_checked=2075459	lower_bound_pruned=575994	survivor_long_computed=1648193	long_computations_per_query=1648.19	prune_rate=0.277526	total_us_per_query=367.095
+180	0.955	460.951 us	hnsw_search_us_per_query=460.951	redundant_rerank_us_per_query=0	lower_bound_checked=2539227	lower_bound_pruned=705281	survivor_long_computed=2022941	long_computations_per_query=2022.94	prune_rate=0.277754	total_us_per_query=460.951
+220	0.961	545.832 us	hnsw_search_us_per_query=545.832	redundant_rerank_us_per_query=0	lower_bound_checked=2990365	lower_bound_pruned=832342	survivor_long_computed=2386590	long_computations_per_query=2386.59	prune_rate=0.278341	total_us_per_query=545.832
+260	0.966	640.663 us	hnsw_search_us_per_query=640.663	redundant_rerank_us_per_query=0	lower_bound_checked=3432484	lower_bound_pruned=958443	survivor_long_computed=2742582	long_computations_per_query=2742.58	prune_rate=0.279227	total_us_per_query=640.663
+300	0.97	721.958 us	hnsw_search_us_per_query=721.958	redundant_rerank_us_per_query=0	lower_bound_checked=3861034	lower_bound_pruned=1081572	survivor_long_computed=3087385	long_computations_per_query=3087.39	prune_rate=0.280125	total_us_per_query=721.958
+340	0.972	780.567 us	hnsw_search_us_per_query=780.567	redundant_rerank_us_per_query=0	lower_bound_checked=4279215	lower_bound_pruned=1202581	survivor_long_computed=3424893	long_computations_per_query=3424.89	prune_rate=0.281028	total_us_per_query=780.567
+380	0.972	882.799 us	hnsw_search_us_per_query=882.799	redundant_rerank_us_per_query=0	lower_bound_checked=4692242	lower_bound_pruned=1323815	survivor_long_computed=3756997	long_computations_per_query=3757	prune_rate=0.282128	total_us_per_query=882.799
+420	0.973	965.171 us	hnsw_search_us_per_query=965.171	redundant_rerank_us_per_query=0	lower_bound_checked=5095990	lower_bound_pruned=1441224	survivor_long_computed=4082564	long_computations_per_query=4082.56	prune_rate=0.282815	total_us_per_query=965.171
+460	0.974	1046.15 us	hnsw_search_us_per_query=1046.15	redundant_rerank_us_per_query=0	lower_bound_checked=5493647	lower_bound_pruned=1557914	survivor_long_computed=4403768	long_computations_per_query=4403.77	prune_rate=0.283585	total_us_per_query=1046.15
+Actual memory usage: 3861 Mb 

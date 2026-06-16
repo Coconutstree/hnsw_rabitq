@@ -407,6 +407,7 @@ struct SearchReport {
     long lower_bound_pruned{0};
     long survivor_long_computed{0};
     float prune_rate{0.0f};
+    float long_computations_per_query{0.0f};
 };
 
 static SearchReport test_approx(
@@ -457,6 +458,9 @@ static SearchReport test_approx(
     report.lower_bound_checked = appr_alg.index().metric_lower_bound_checked.load();
     report.lower_bound_pruned = appr_alg.index().metric_lower_bound_pruned.load();
     report.survivor_long_computed = appr_alg.index().metric_survivor_long_computed.load();
+    report.long_computations_per_query =
+        static_cast<float>(static_cast<double>(report.survivor_long_computed) /
+                           static_cast<double>(qsize));
     report.prune_rate = report.lower_bound_checked == 0
                             ? 0.0f
                             : static_cast<float>(
@@ -505,6 +509,7 @@ static void test_vs_recall(
              << "\t" << "lower_bound_checked=" << report.lower_bound_checked
              << "\t" << "lower_bound_pruned=" << report.lower_bound_pruned
              << "\t" << "survivor_long_computed=" << report.survivor_long_computed
+             << "\t" << "long_computations_per_query=" << report.long_computations_per_query
              << "\t" << "prune_rate=" << report.prune_rate
              << "\t" << "total_us_per_query=" << report.total_us_per_query << "\n";
         if (report.recall > 1.0f) {

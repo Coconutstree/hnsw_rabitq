@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <fstream>
-#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -90,9 +89,7 @@ class RaBitQHierarchicalNSW {
         std::vector<char> encoded = space_.encodeVector(raw_vector);
         index_.addPoint(encoded.data(), label, replace_deleted);
     }
-//查询向量不会编码成 database long code；查询只进行中心化和随机旋转。
-//HNSW 使用 1-bit short code 计算距离下界，只有无法剪枝的节点才计算 8-bit long-code 距离。
-//HNSW 导航、候选排序和最终结果始终使用 long distance。
+//搜索k近邻，首先将查询向量编码成RaBitQ编码，然后调用index_的searchKnn方法搜索编码后的向量，返回距离和标签的二元组优先队列
     std::priority_queue<std::pair<float, labeltype>>
     searchKnn(const float *raw_query, size_t k, BaseFilterFunctor *isIdAllowed = nullptr) const {
         return index_.searchKnn(raw_query, k, isIdAllowed);
@@ -113,48 +110,6 @@ class RaBitQHierarchicalNSW {
             ids.push_back(candidate.second);
         }
         return ids;
-    }
-
-    std::vector<std::pair<float, labeltype>>
-    longCodeRerankCandidates(
-        const float *raw_query,
-        const std::vector<labeltype> &candidate_ids,
-        size_t k) const {
-        RaBitQSpace &mutable_space = const_cast<RaBitQSpace &>(space_);
-        const void *query_context = mutable_space.prepare_query(raw_query);
-
-        std::vector<std::pair<float, labeltype>> results;
-        results.reserve(candidate_ids.size());
-        try {
-            for (labeltype label : candidate_ids) {
-                tableint internal_id = 0;
-                if (label < index_.cur_element_count.load(std::memory_order_relaxed) &&
-                    index_.getExternalLabel(static_cast<tableint>(label)) == label) {
-                    internal_id = static_cast<tableint>(label);
-                } else {
-                    std::lock_guard<std::mutex> lock(index_.label_lookup_lock);
-                    auto it = index_.label_lookup_.find(label);
-                    if (it == index_.label_lookup_.end()) {
-                        continue;
-                    }
-                    internal_id = it->second;
-                }
-                const char *encoded = index_.getDataByInternalId(internal_id);
-                results.emplace_back(mutable_space.query_distance(query_context, encoded), label);
-            }
-        } catch (...) {
-            mutable_space.release_query(query_context);
-            throw;
-        }
-        mutable_space.release_query(query_context);
-
-        if (results.size() > k) {
-            std::partial_sort(results.begin(), results.begin() + k, results.end());
-            results.resize(k);
-        } else {
-            std::sort(results.begin(), results.end());
-        }
-        return results;
     }
 };
 
