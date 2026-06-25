@@ -387,13 +387,14 @@ static size_t getCurrentRSS() {
 static void get_gt(
     unsigned int *massQA,
     size_t qsize,
+    size_t gt_width,
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k) {
     (vector<std::priority_queue<std::pair<float, labeltype>>>(qsize)).swap(answers);
     cout << qsize << "\n";
     for (size_t i = 0; i < qsize; i++) {
         for (size_t j = 0; j < k; j++) {
-            answers[i].emplace(0.0f, massQA[1000 * i + j]);
+            answers[i].emplace(0.0f, massQA[gt_width * i + j]);
         }
     }
 }
@@ -520,7 +521,7 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const char *dataset_name = "SymphonyQG/sift10m";
+    const char *dataset_name = "dbpedia_openai1536";
     const int efConstruction = 40;
     const int M = 16;
     const int centroid_count = 64;
@@ -528,18 +529,19 @@ void sift_test1B() {
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
-    const size_t vecdim = 128;
+    const size_t vecdim = 1536;
+    const size_t gt_width = 100;
 
     char path_index[1024];
-    const char *path_q = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_query.fvecs";
-    const char *path_data = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_base.fvecs";
-    const char *path_gt = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_groundtruth.ivecs";
+    const char *path_q = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs";
+    const char *path_data = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs";
+    const char *path_gt = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs";
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "sift10m_symphonyqg_rabitq_ef_%d_M_%d_C_%d.bin",
+        "dbpedia_openai1536_rabitq_current_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
@@ -564,15 +566,18 @@ void sift_test1B() {
     if (!inputGT.is_open()) {
         throw runtime_error("cannot open gt file");
     }
-    unsigned int *massQA = new unsigned int[qsize * 1000];
+    unsigned int *massQA = new unsigned int[qsize * gt_width];
     for (size_t i = 0; i < qsize; i++) {
         int t = 0;
         inputGT.read((char *)&t, 4);
         if (!inputGT.good()) {
             throw runtime_error("gt file error");
         }
-        inputGT.read((char *)(massQA + 1000 * i), t * 4);
-        if (!inputGT.good() || t != 1000) {
+        if (t != static_cast<int>(gt_width)) {
+            throw runtime_error("gt file error");
+        }
+        inputGT.read((char *)(massQA + gt_width * i), t * 4);
+        if (!inputGT.good()) {
             throw runtime_error("gt file error");
         }
     }
@@ -645,11 +650,11 @@ void sift_test1B() {
 
 #pragma omp parallel for
         for (int i = 1; i < static_cast<int>(vecsize); i++) {
-            float local_mass[128];
+            vector<float> local_mass(vecdim);
             int label = 0;
 #pragma omp critical
             {
-                read_fvec_as_float(input, local_mass, vecdim);
+                read_fvec_as_float(input, local_mass.data(), vecdim);
                 j1++;
                 label = j1;
                 if (j1 % report_every == 0) {
@@ -659,7 +664,7 @@ void sift_test1B() {
                     stopw.reset();
                 }
             }
-            appr_alg->addPoint(local_mass, (size_t)label);
+            appr_alg->addPoint(local_mass.data(), (size_t)label);
         }
         input.close();
         cout << "Build time:" << 1e-6 * stopw_full.getElapsedTimeMicro() << "  seconds\n";
@@ -669,7 +674,7 @@ void sift_test1B() {
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
     const size_t k = 1;
     cout << "Parsing gt:\n";
-    get_gt(massQA, qsize, answers, k);
+    get_gt(massQA, qsize, gt_width, answers, k);
     cout << "Loaded gt\n";
     test_vs_recall(
         massQ,

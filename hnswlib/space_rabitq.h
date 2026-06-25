@@ -62,7 +62,12 @@ class RaBitQSpace : public SpaceInterface<float> {
     std::vector<float> global_center_;
 
     static size_t roundUp64(size_t value) {
-        return ((value + 63U) / 64U) * 64U;
+        const size_t rounded = ((value + 63U) / 64U) * 64U;
+        size_t power = 1;
+        while (power < rounded) {
+            power <<= 1U;
+        }
+        return power;
     }
 
     static float exrabitqDistance(const void *lhs, const void *rhs, const void *space_ptr) {
