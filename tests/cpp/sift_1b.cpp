@@ -42,7 +42,7 @@ void print_run_config(
     cout << "  query_count=" << qsize << "\n";
     cout << "  dimension=" << vecdim << "\n";
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
-    cout << "  quantizer=8-bit ExRaBitQ centroid_count=" << centroid_count
+    cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
          << " random_seed=" << random_seed << "\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
@@ -602,7 +602,7 @@ void sift_test1B() {
     RaBitQHierarchicalNSW *appr_alg = new RaBitQHierarchicalNSW(
         vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-         << " (8-bit code)\n";
+         << " (4-bit code)\n";
 
     bool need_build = true;
     if (exists_test(path_index)) {
@@ -621,7 +621,7 @@ void sift_test1B() {
                 appr_alg = new RaBitQHierarchicalNSW(
                     vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-                     << " (8-bit code)\n";
+                     << " (4-bit code)\n";
                 input.clear();
                 input.seekg(0, ios::beg);
             }

@@ -103,6 +103,9 @@ if(HNSWLIB_EXAMPLES)
     add_executable(rabitq_hnsw_smoke_test tests/cpp/rabitq_hnsw_smoke.cpp)
     target_link_libraries(rabitq_hnsw_smoke_test hnswlib)
 
+    add_executable(rabitq_distance_accuracy tests/cpp/rabitq_distance_accuracy.cpp)
+    target_link_libraries(rabitq_distance_accuracy hnswlib)
+
     add_executable(main tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
     target_link_libraries(main hnswlib)
 endif()

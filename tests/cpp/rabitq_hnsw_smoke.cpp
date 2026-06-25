@@ -26,17 +26,23 @@ int main() {
     assert(index.space().get_data_size() == expected_data_size);
 
     const std::vector<char> encoded = index.space().encodeVector(data.data());
-    assert(index.space().get_compact_code_bytes() == index.space().get_code_dim());
+    assert(index.space().get_compact_code_bytes() ==
+           (index.space().get_code_dim() * hnswlib::RaBitQSpace::kTotalBits + 7U) / 8U);
     const auto *code = reinterpret_cast<const unsigned char *>(
         encoded.data() + sizeof(hnswlib::RaBitQSpace::EncodedHeader) +
             sizeof(hnswlib::RaBitQSpace::ShortCodeFactors));
+    const auto code_value = [code](size_t index) -> uint8_t {
+        const uint8_t byte = code[index >> 1U];
+        return static_cast<uint8_t>((index & 1U) ? (byte >> 4U) : (byte & 0x0FU));
+    };
     for (size_t i = 0; i < index.space().get_code_dim(); ++i) {
-        assert(static_cast<uint32_t>(code[i]) <= hnswlib::RaBitQSpace::kUnsignedMax);
-        const uint8_t short_bit = static_cast<uint8_t>(code[i] >> 7U);
-        const uint8_t remaining = static_cast<uint8_t>(code[i] & 0x7FU);
+        const uint8_t value = code_value(i);
+        assert(static_cast<uint32_t>(value) <= hnswlib::RaBitQSpace::kUnsignedMax);
+        const uint8_t short_bit = static_cast<uint8_t>(value >> hnswlib::RaBitQSpace::kRemainingBits);
+        const uint8_t remaining = static_cast<uint8_t>(value & hnswlib::RaBitQSpace::kRemainingMax);
         assert(short_bit == 0U || short_bit == 1U);
         assert(remaining <= hnswlib::RaBitQSpace::kRemainingMax);
-        const float centered = static_cast<float>(code[i]) - hnswlib::RaBitQSpace::kUnsignedOffset;
+        const float centered = static_cast<float>(value) - hnswlib::RaBitQSpace::kUnsignedOffset;
         const float expected_centered = short_bit
                                             ? static_cast<float>(remaining) + 0.5f
                                             : -(static_cast<float>(
@@ -51,12 +57,13 @@ int main() {
         float half_sum = 0.0f;
         for (size_t i = 0; i < index.space().get_code_dim(); ++i) {
             const float q = i < dim ? data[i] : 0.0f;
-            const uint8_t short_bit = static_cast<uint8_t>(code[i] >> 7U);
-            const uint8_t remaining = static_cast<uint8_t>(code[i] & 0x7FU);
+            const uint8_t value = code_value(i);
+            const uint8_t short_bit = static_cast<uint8_t>(value >> hnswlib::RaBitQSpace::kRemainingBits);
+            const uint8_t remaining = static_cast<uint8_t>(value & hnswlib::RaBitQSpace::kRemainingMax);
             short_ip += (static_cast<float>(short_bit) - 0.5f) * q;
             remaining_ip += static_cast<float>(remaining) * q;
             centered_ip +=
-                (static_cast<float>(code[i]) - hnswlib::RaBitQSpace::kUnsignedOffset) * q;
+                (static_cast<float>(value) - hnswlib::RaBitQSpace::kUnsignedOffset) * q;
             half_sum += q;
         }
         half_sum *= 0.5f;

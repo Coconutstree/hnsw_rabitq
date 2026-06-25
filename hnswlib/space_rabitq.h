@@ -22,13 +22,13 @@ namespace hnswlib {
 
 class RaBitQSpace : public SpaceInterface<float> {
  public:
-    static constexpr size_t kTotalBits = 8;
-    static constexpr size_t kRemainingBits = 7;
-    static constexpr uint32_t kUnsignedMax = 255;
-    static constexpr uint32_t kRemainingMax = 127;
-    static constexpr uint32_t kMsbWeight = 128;
-    static constexpr float kUnsignedOffset = 127.5f;
-    static constexpr float kRemainingOffset = 63.5f;
+    static constexpr size_t kTotalBits = 4;
+    static constexpr size_t kRemainingBits = 3;
+    static constexpr uint32_t kUnsignedMax = 15;
+    static constexpr uint32_t kRemainingMax = 7;
+    static constexpr uint32_t kMsbWeight = 8;
+    static constexpr float kUnsignedOffset = 7.5f;
+    static constexpr float kRemainingOffset = 3.5f;
 
     struct EncodedHeader {
         float norm_sqr;
@@ -42,9 +42,16 @@ class RaBitQSpace : public SpaceInterface<float> {
 
     struct QueryContext {
         std::vector<float> rotated_residual;
+        std::vector<float> rotated_residual_even;
+        std::vector<float> rotated_residual_odd;
         float query_norm = 0.0f;
         float query_norm_sqr = 0.0f;
         float half_sum_residual = 0.0f;
+    };
+
+    struct LongCodeIps {
+        float short_ip;
+        float remaining_ip;
     };
 
  private:
@@ -93,6 +100,21 @@ class RaBitQSpace : public SpaceInterface<float> {
             static_cast<char *>(encoded) + sizeof(EncodedHeader) + sizeof(ShortCodeFactors));
     }
 
+    static uint8_t codeValue(const uint8_t *packed_code, size_t index) {
+        const uint8_t byte = packed_code[index >> 1U];
+        return static_cast<uint8_t>((index & 1U) ? (byte >> 4U) : (byte & 0x0FU));
+    }
+
+    static void setCodeValue(uint8_t *packed_code, size_t index, uint8_t value) {
+        value = static_cast<uint8_t>(value & 0x0FU);
+        uint8_t &byte = packed_code[index >> 1U];
+        if (index & 1U) {
+            byte = static_cast<uint8_t>((byte & 0x0FU) | (value << 4U));
+        } else {
+            byte = static_cast<uint8_t>((byte & 0xF0U) | value);
+        }
+    }
+
     const ShortCodeFactors *shortFactors(const void *encoded) const {
         return reinterpret_cast<const ShortCodeFactors *>(
             static_cast<const char *>(encoded) + sizeof(EncodedHeader));
@@ -111,7 +133,7 @@ class RaBitQSpace : public SpaceInterface<float> {
             max_o = std::max(max_o, static_cast<double>(abs_unit_data[i]));
         }
         if (max_o <= eps) {
-            std::memset(abs_code, 0, compact_code_bytes_);
+            std::memset(abs_code, 0, code_dim_);
             ip_norm = 1.0f;
             return;
         }
@@ -205,35 +227,38 @@ class RaBitQSpace : public SpaceInterface<float> {
         hadamard(rotated);
     }
 
-    float dotRemainingUint8FloatAvxDispatch(const uint8_t *remaining_code, const float *query_rotated) const {
+    float dotRemainingUint8FloatAvxDispatch(const uint8_t *remaining_code, const QueryContext &query) const {
 #if defined(__AVX512F__) && defined(__AVX512BW__)
-        return dotRemainingUint8FloatAvx512(remaining_code, query_rotated);
+        return dotRemainingUint8FloatAvx512(remaining_code, query);
 #elif defined(__AVX2__)
-        return dotRemainingUint8FloatAvx2(remaining_code, query_rotated);
+        return dotRemainingUint8FloatAvx2(remaining_code, query);
 #else
-        return dotRemainingUint8FloatScalar(remaining_code, query_rotated);
+        return dotRemainingUint8FloatScalar(remaining_code, query);
 #endif
     }
 
-    float dotRemainingUint8FloatScalar(const uint8_t *remaining_code, const float *query_rotated) const {
+    float dotRemainingUint8FloatScalar(const uint8_t *remaining_code, const QueryContext &query) const {
         float result = 0.0f;
         for (size_t i = 0; i < code_dim_; ++i) {
-            result += static_cast<float>(remaining_code[i] & 0x7FU) * query_rotated[i];
+            result += static_cast<float>(codeValue(remaining_code, i) & kRemainingMax) * query.rotated_residual[i];
         }
         return result;
     }
 
 #if defined(__AVX2__)
-    float dotRemainingUint8FloatAvx2(const uint8_t *remaining_code, const float *query_rotated) const {
+    float dotRemainingUint8FloatAvx2(const uint8_t *remaining_code, const QueryContext &query) const {
         __m256 sum = _mm256_setzero_ps();
-        const __m128i low7_mask = _mm_set1_epi8(0x7F);
-        size_t i = 0;
-        for (; i + 8 <= code_dim_; i += 8) {
-            const __m128i code8 =
-                _mm_and_si128(_mm_loadl_epi64(reinterpret_cast<const __m128i *>(remaining_code + i)), low7_mask);
-            const __m256 code_f = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(code8));
-            const __m256 query_f = _mm256_loadu_ps(query_rotated + i);
-            sum = _mm256_add_ps(sum, _mm256_mul_ps(code_f, query_f));
+        const __m128i low_mask = _mm_set1_epi8(static_cast<char>(kRemainingMax));
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 8 <= pair_count; pair += 8) {
+            const __m128i packed = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(remaining_code + pair));
+            const __m128i lo = _mm_and_si128(packed, low_mask);
+            const __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), low_mask);
+            const __m256 lo_f = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(lo));
+            const __m256 hi_f = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(hi));
+            sum = _mm256_add_ps(sum, _mm256_mul_ps(lo_f, _mm256_loadu_ps(query.rotated_residual_even.data() + pair)));
+            sum = _mm256_add_ps(sum, _mm256_mul_ps(hi_f, _mm256_loadu_ps(query.rotated_residual_odd.data() + pair)));
         }
 
         alignas(32) float lanes[8];
@@ -242,29 +267,36 @@ class RaBitQSpace : public SpaceInterface<float> {
         for (float lane : lanes) {
             result += lane;
         }
-        for (; i < code_dim_; ++i) {
-            result += static_cast<float>(remaining_code[i] & 0x7FU) * query_rotated[i];
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = remaining_code[pair];
+            result += static_cast<float>(packed & kRemainingMax) * query.rotated_residual_even[pair];
+            result += static_cast<float>((packed >> 4U) & kRemainingMax) * query.rotated_residual_odd[pair];
         }
         return result;
     }
 #endif
 
 #if defined(__AVX512F__) && defined(__AVX512BW__)
-    float dotRemainingUint8FloatAvx512(const uint8_t *remaining_code, const float *query_rotated) const {
+    float dotRemainingUint8FloatAvx512(const uint8_t *remaining_code, const QueryContext &query) const {
         __m512 sum = _mm512_setzero_ps();
-        const __m128i low7_mask = _mm_set1_epi8(0x7F);
-        size_t i = 0;
-        for (; i + 16 <= code_dim_; i += 16) {
-            const __m128i code8 =
-                _mm_and_si128(_mm_loadu_si128(reinterpret_cast<const __m128i *>(remaining_code + i)), low7_mask);
-            const __m512 code_f = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(code8));
-            const __m512 query_f = _mm512_loadu_ps(query_rotated + i);
-            sum = _mm512_fmadd_ps(code_f, query_f, sum);
+        const __m128i low_mask = _mm_set1_epi8(static_cast<char>(kRemainingMax));
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 16 <= pair_count; pair += 16) {
+            const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i *>(remaining_code + pair));
+            const __m128i lo = _mm_and_si128(packed, low_mask);
+            const __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), low_mask);
+            const __m512 lo_f = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(lo));
+            const __m512 hi_f = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(hi));
+            sum = _mm512_add_ps(sum, _mm512_mul_ps(lo_f, _mm512_loadu_ps(query.rotated_residual_even.data() + pair)));
+            sum = _mm512_add_ps(sum, _mm512_mul_ps(hi_f, _mm512_loadu_ps(query.rotated_residual_odd.data() + pair)));
         }
 
         float result = _mm512_reduce_add_ps(sum);
-        for (; i < code_dim_; ++i) {
-            result += static_cast<float>(remaining_code[i] & 0x7FU) * query_rotated[i];
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = remaining_code[pair];
+            result += static_cast<float>(packed & kRemainingMax) * query.rotated_residual_even[pair];
+            result += static_cast<float>((packed >> 4U) & kRemainingMax) * query.rotated_residual_odd[pair];
         }
         return result;
     }
@@ -283,7 +315,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     float shortCodeIpFromFullCodeScalar(const QueryContext &query, const uint8_t *code) const {
         float selected_sum = 0.0f;
         for (size_t i = 0; i < code_dim_; ++i) {
-            selected_sum += (code[i] >> 7U) ? query.rotated_residual[i] : 0.0f;
+            selected_sum += (codeValue(code, i) >> kRemainingBits) ? query.rotated_residual[i] : 0.0f;
         }
         return selected_sum - query.half_sum_residual;
     }
@@ -291,13 +323,17 @@ class RaBitQSpace : public SpaceInterface<float> {
 #if defined(__AVX2__)
     float shortCodeIpFromFullCodeAvx2(const QueryContext &query, const uint8_t *code) const {
         __m256 sum = _mm256_setzero_ps();
-        size_t i = 0;
-        for (; i + 8 <= code_dim_; i += 8) {
-            const __m128i code8 = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(code + i));
-            const __m256 msb_f =
-                _mm256_cvtepi32_ps(_mm256_srli_epi32(_mm256_cvtepu8_epi32(code8), 7));
-            const __m256 query_f = _mm256_loadu_ps(query.rotated_residual.data() + i);
-            sum = _mm256_add_ps(sum, _mm256_mul_ps(msb_f, query_f));
+        const __m128i one_mask = _mm_set1_epi8(1);
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 8 <= pair_count; pair += 8) {
+            const __m128i packed = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(code + pair));
+            const __m128i lo_bit = _mm_and_si128(_mm_srli_epi16(packed, kRemainingBits), one_mask);
+            const __m128i hi_bit = _mm_and_si128(_mm_srli_epi16(packed, kTotalBits + kRemainingBits), one_mask);
+            const __m256 lo_f = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(lo_bit));
+            const __m256 hi_f = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(hi_bit));
+            sum = _mm256_add_ps(sum, _mm256_mul_ps(lo_f, _mm256_loadu_ps(query.rotated_residual_even.data() + pair)));
+            sum = _mm256_add_ps(sum, _mm256_mul_ps(hi_f, _mm256_loadu_ps(query.rotated_residual_odd.data() + pair)));
         }
 
         alignas(32) float lanes[8];
@@ -306,8 +342,10 @@ class RaBitQSpace : public SpaceInterface<float> {
         for (float lane : lanes) {
             selected_sum += lane;
         }
-        for (; i < code_dim_; ++i) {
-            selected_sum += (code[i] >> 7U) ? query.rotated_residual[i] : 0.0f;
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            selected_sum += ((packed >> kRemainingBits) & 1U) ? query.rotated_residual_even[pair] : 0.0f;
+            selected_sum += ((packed >> (kTotalBits + kRemainingBits)) & 1U) ? query.rotated_residual_odd[pair] : 0.0f;
         }
         return selected_sum - query.half_sum_residual;
     }
@@ -316,27 +354,160 @@ class RaBitQSpace : public SpaceInterface<float> {
 #if defined(__AVX512F__) && defined(__AVX512BW__)
     float shortCodeIpFromFullCodeAvx512(const QueryContext &query, const uint8_t *code) const {
         __m512 sum = _mm512_setzero_ps();
-        size_t i = 0;
-        for (; i + 16 <= code_dim_; i += 16) {
-            const __m128i code8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(code + i));
-            const __m512 msb_f =
-                _mm512_cvtepi32_ps(_mm512_srli_epi32(_mm512_cvtepu8_epi32(code8), 7));
-            const __m512 query_f = _mm512_loadu_ps(query.rotated_residual.data() + i);
-            sum = _mm512_fmadd_ps(msb_f, query_f, sum);
+        const __m128i one_mask = _mm_set1_epi8(1);
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 16 <= pair_count; pair += 16) {
+            const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i *>(code + pair));
+            const __m128i lo_bit = _mm_and_si128(_mm_srli_epi16(packed, kRemainingBits), one_mask);
+            const __m128i hi_bit = _mm_and_si128(_mm_srli_epi16(packed, kTotalBits + kRemainingBits), one_mask);
+            const __m512 lo_f = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(lo_bit));
+            const __m512 hi_f = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(hi_bit));
+            sum = _mm512_add_ps(sum, _mm512_mul_ps(lo_f, _mm512_loadu_ps(query.rotated_residual_even.data() + pair)));
+            sum = _mm512_add_ps(sum, _mm512_mul_ps(hi_f, _mm512_loadu_ps(query.rotated_residual_odd.data() + pair)));
         }
 
         float selected_sum = _mm512_reduce_add_ps(sum);
-        for (; i < code_dim_; ++i) {
-            selected_sum += (code[i] >> 7U) ? query.rotated_residual[i] : 0.0f;
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            selected_sum += ((packed >> kRemainingBits) & 1U) ? query.rotated_residual_even[pair] : 0.0f;
+            selected_sum += ((packed >> (kTotalBits + kRemainingBits)) & 1U) ? query.rotated_residual_odd[pair] : 0.0f;
         }
         return selected_sum - query.half_sum_residual;
     }
 #endif
 
+    LongCodeIps longCodeIpsDispatch(const QueryContext &query, const uint8_t *code) const {
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+        return longCodeIpsAvx512(query, code);
+#elif defined(__AVX2__)
+        return longCodeIpsAvx2(query, code);
+#else
+        return longCodeIpsScalar(query, code);
+#endif
+    }
+
+    LongCodeIps longCodeIpsScalar(const QueryContext &query, const uint8_t *code) const {
+        float selected_sum = 0.0f;
+        float remaining_ip = 0.0f;
+        const size_t pair_count = code_dim_ >> 1U;
+        for (size_t pair = 0; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            const uint8_t lo = static_cast<uint8_t>(packed & 0x0FU);
+            const uint8_t hi = static_cast<uint8_t>(packed >> 4U);
+            selected_sum += (lo >> kRemainingBits) ? query.rotated_residual_even[pair] : 0.0f;
+            selected_sum += (hi >> kRemainingBits) ? query.rotated_residual_odd[pair] : 0.0f;
+            remaining_ip += static_cast<float>(lo & kRemainingMax) * query.rotated_residual_even[pair];
+            remaining_ip += static_cast<float>(hi & kRemainingMax) * query.rotated_residual_odd[pair];
+        }
+        return LongCodeIps{selected_sum - query.half_sum_residual, remaining_ip};
+    }
+
+#if defined(__AVX2__)
+    LongCodeIps longCodeIpsAvx2(const QueryContext &query, const uint8_t *code) const {
+        __m256 short_sum = _mm256_setzero_ps();
+        __m256 remaining_sum = _mm256_setzero_ps();
+        const __m128i remaining_mask = _mm_set1_epi8(static_cast<char>(kRemainingMax));
+        const __m128i one_mask = _mm_set1_epi8(1);
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 8 <= pair_count; pair += 8) {
+            const __m128i packed = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(code + pair));
+            const __m128i lo = _mm_and_si128(packed, remaining_mask);
+            const __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), remaining_mask);
+            const __m128i lo_bit = _mm_and_si128(_mm_srli_epi16(packed, kRemainingBits), one_mask);
+            const __m128i hi_bit = _mm_and_si128(_mm_srli_epi16(packed, kTotalBits + kRemainingBits), one_mask);
+            const __m256 even_q = _mm256_loadu_ps(query.rotated_residual_even.data() + pair);
+            const __m256 odd_q = _mm256_loadu_ps(query.rotated_residual_odd.data() + pair);
+            remaining_sum = _mm256_add_ps(
+                remaining_sum,
+                _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(lo)), even_q));
+            remaining_sum = _mm256_add_ps(
+                remaining_sum,
+                _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(hi)), odd_q));
+            short_sum = _mm256_add_ps(
+                short_sum,
+                _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(lo_bit)), even_q));
+            short_sum = _mm256_add_ps(
+                short_sum,
+                _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(hi_bit)), odd_q));
+        }
+
+        alignas(32) float short_lanes[8];
+        alignas(32) float remaining_lanes[8];
+        _mm256_store_ps(short_lanes, short_sum);
+        _mm256_store_ps(remaining_lanes, remaining_sum);
+        float selected_sum = 0.0f;
+        float remaining_ip = 0.0f;
+        for (size_t lane = 0; lane < 8; ++lane) {
+            selected_sum += short_lanes[lane];
+            remaining_ip += remaining_lanes[lane];
+        }
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            const uint8_t lo = static_cast<uint8_t>(packed & 0x0FU);
+            const uint8_t hi = static_cast<uint8_t>(packed >> 4U);
+            selected_sum += (lo >> kRemainingBits) ? query.rotated_residual_even[pair] : 0.0f;
+            selected_sum += (hi >> kRemainingBits) ? query.rotated_residual_odd[pair] : 0.0f;
+            remaining_ip += static_cast<float>(lo & kRemainingMax) * query.rotated_residual_even[pair];
+            remaining_ip += static_cast<float>(hi & kRemainingMax) * query.rotated_residual_odd[pair];
+        }
+        return LongCodeIps{selected_sum - query.half_sum_residual, remaining_ip};
+    }
+#endif
+
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+    LongCodeIps longCodeIpsAvx512(const QueryContext &query, const uint8_t *code) const {
+        __m512 short_sum = _mm512_setzero_ps();
+        __m512 remaining_sum = _mm512_setzero_ps();
+        const __m128i remaining_mask = _mm_set1_epi8(static_cast<char>(kRemainingMax));
+        const __m128i one_mask = _mm_set1_epi8(1);
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 16 <= pair_count; pair += 16) {
+            const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i *>(code + pair));
+            const __m128i lo = _mm_and_si128(packed, remaining_mask);
+            const __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), remaining_mask);
+            const __m128i lo_bit = _mm_and_si128(_mm_srli_epi16(packed, kRemainingBits), one_mask);
+            const __m128i hi_bit = _mm_and_si128(_mm_srli_epi16(packed, kTotalBits + kRemainingBits), one_mask);
+            const __m512 even_q = _mm512_loadu_ps(query.rotated_residual_even.data() + pair);
+            const __m512 odd_q = _mm512_loadu_ps(query.rotated_residual_odd.data() + pair);
+            remaining_sum = _mm512_add_ps(
+                remaining_sum,
+                _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(lo)), even_q));
+            remaining_sum = _mm512_add_ps(
+                remaining_sum,
+                _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(hi)), odd_q));
+            short_sum = _mm512_add_ps(
+                short_sum,
+                _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(lo_bit)), even_q));
+            short_sum = _mm512_add_ps(
+                short_sum,
+                _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(hi_bit)), odd_q));
+        }
+
+        float selected_sum = _mm512_reduce_add_ps(short_sum);
+        float remaining_ip = _mm512_reduce_add_ps(remaining_sum);
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            const uint8_t lo = static_cast<uint8_t>(packed & 0x0FU);
+            const uint8_t hi = static_cast<uint8_t>(packed >> 4U);
+            selected_sum += (lo >> kRemainingBits) ? query.rotated_residual_even[pair] : 0.0f;
+            selected_sum += (hi >> kRemainingBits) ? query.rotated_residual_odd[pair] : 0.0f;
+            remaining_ip += static_cast<float>(lo & kRemainingMax) * query.rotated_residual_even[pair];
+            remaining_ip += static_cast<float>(hi & kRemainingMax) * query.rotated_residual_odd[pair];
+        }
+        return LongCodeIps{selected_sum - query.half_sum_residual, remaining_ip};
+    }
+#endif
+
     float queryDistanceLong(const QueryContext &query, const void *encoded) const {
         const EncodedHeader header = loadHeader(encoded);
-        const float short_ip = shortCodeIp(query, codeBytes(encoded));
-        return queryDistanceLongWithShortIp(query, encoded, header, short_ip);
+        if (header.long_scale <= 0.0f || !std::isfinite(header.long_scale)) {
+            return header.norm_sqr + query.query_norm_sqr;
+        }
+        const LongCodeIps ips = longCodeIpsDispatch(query, codeBytes(encoded));
+        return queryDistanceLongWithIps(query, header, ips.short_ip, ips.remaining_ip);
     }
 
     float queryDistanceLongWithShortIp(
@@ -347,8 +518,15 @@ class RaBitQSpace : public SpaceInterface<float> {
         if (header.long_scale <= 0.0f || !std::isfinite(header.long_scale)) {
             return header.norm_sqr + query.query_norm_sqr;
         }
-        const float remaining_ip =
-            dotRemainingUint8FloatAvxDispatch(codeBytes(encoded), query.rotated_residual.data());
+        const float remaining_ip = dotRemainingUint8FloatAvxDispatch(codeBytes(encoded), query);
+        return queryDistanceLongWithIps(query, header, short_ip, remaining_ip);
+    }
+
+    float queryDistanceLongWithIps(
+        const QueryContext &query,
+        const EncodedHeader &header,
+        float short_ip,
+        float remaining_ip) const {
         const float signed_long_ip =
             static_cast<float>(kMsbWeight) * short_ip + remaining_ip -
             static_cast<float>(kRemainingMax) * query.half_sum_residual;
@@ -396,8 +574,8 @@ class RaBitQSpace : public SpaceInterface<float> {
 
         double code_ip = 0.0;
         for (size_t i = 0; i < code_dim_; ++i) {
-            const double lhs_y = static_cast<double>(lhs_code[i]) - static_cast<double>(kUnsignedOffset);
-            const double rhs_y = static_cast<double>(rhs_code[i]) - static_cast<double>(kUnsignedOffset);
+            const double lhs_y = static_cast<double>(codeValue(lhs_code, i)) - static_cast<double>(kUnsignedOffset);
+            const double rhs_y = static_cast<double>(codeValue(rhs_code, i)) - static_cast<double>(kUnsignedOffset);
             code_ip += lhs_y * rhs_y;
         }
 
@@ -413,7 +591,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     explicit RaBitQSpace(size_t dim, size_t centroid_count = 1, uint32_t random_seed = 100)
         : dim_(dim),
           code_dim_(roundUp64(dim)),
-          compact_code_bytes_(code_dim_),
+          compact_code_bytes_((code_dim_ * kTotalBits + 7U) / 8U),
           short_factor_bytes_(sizeof(ShortCodeFactors)),
           data_size_(sizeof(EncodedHeader) + short_factor_bytes_ + compact_code_bytes_),
           inv_sqrt_code_dim_(1.0f / std::sqrt(static_cast<float>(code_dim_))),
@@ -582,9 +760,16 @@ class RaBitQSpace : public SpaceInterface<float> {
 
         query->rotated_residual.assign(code_dim_, 0.0f);
         rotate(residual.data(), query->rotated_residual);
+        const size_t pair_count = code_dim_ >> 1U;
+        query->rotated_residual_even.assign(pair_count, 0.0f);
+        query->rotated_residual_odd.assign(pair_count, 0.0f);
         query->half_sum_residual = 0.0f;
-        for (float value : query->rotated_residual) {
-            query->half_sum_residual += value;
+        for (size_t pair = 0; pair < pair_count; ++pair) {
+            const float even_value = query->rotated_residual[pair << 1U];
+            const float odd_value = query->rotated_residual[(pair << 1U) + 1U];
+            query->rotated_residual_even[pair] = even_value;
+            query->rotated_residual_odd[pair] = odd_value;
+            query->half_sum_residual += even_value + odd_value;
         }
         query->half_sum_residual *= 0.5f;
 
@@ -640,12 +825,8 @@ class RaBitQSpace : public SpaceInterface<float> {
         size_t count,
         float *distances) override {
         const QueryContext &query = *static_cast<const QueryContext *>(prepared_query);
-        thread_local std::vector<float> short_ips;
-        short_ips.assign(count, 0.0f);
-        batchShortCodeIp(query, data_points, count, short_ips.data());
         for (size_t i = 0; i < count; ++i) {
-            const EncodedHeader header = loadHeader(data_points[i]);
-            distances[i] = queryDistanceLongWithShortIp(query, data_points[i], header, short_ips[i]);
+            distances[i] = queryDistanceLong(query, data_points[i]);
         }
     }
 
@@ -740,9 +921,10 @@ class RaBitQSpace : public SpaceInterface<float> {
         for (size_t i = 0; i < code_dim_; ++i) {
             const bool positive = rotated_unit[i] > 0.0f;
             const uint8_t magnitude = abs_code[i];
-            code[i] = positive
-                          ? static_cast<uint8_t>(kMsbWeight + magnitude)
-                          : static_cast<uint8_t>(kRemainingMax - magnitude);
+            const uint8_t packed_value = positive
+                                             ? static_cast<uint8_t>(kMsbWeight + magnitude)
+                                             : static_cast<uint8_t>(kRemainingMax - magnitude);
+            setCodeValue(code, i, packed_value);
 
             const double sign = positive ? 1.0 : -1.0;
             o_obar += static_cast<double>(rotated_unit[i]) * sign * inv_sqrt_d;

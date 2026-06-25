@@ -1,0 +1,39 @@
+RaBitQ full-database brute-force quantized recall check
+  dataset=dbpedia_openai1536
+  quantizer=4-bit ExRaBitQ
+  distance_under_test=encoded_query_to_encoded_data_full_scan
+  reference=original_groundtruth_from_raw_l2
+  indexed_base_count=990000
+  query_count=10000
+  query_samples=20
+  topk=100
+  encoded_bytes_per_vector=1040
+  index_path=build/dbpedia_openai1536_rabitq_current_ef_40_M_16_C_64.bin
+  finished_query=1 recall@100=0.960000
+  finished_query=2 recall@100=0.970000
+  finished_query=3 recall@100=0.970000
+  finished_query=4 recall@100=0.990000
+  finished_query=5 recall@100=0.980000
+  finished_query=6 recall@100=0.980000
+  finished_query=7 recall@100=0.960000
+  finished_query=8 recall@100=0.970000
+  finished_query=9 recall@100=0.980000
+  finished_query=10 recall@100=0.970000
+  finished_query=11 recall@100=0.960000
+  finished_query=12 recall@100=0.980000
+  finished_query=13 recall@100=0.970000
+  finished_query=14 recall@100=0.960000
+  finished_query=15 recall@100=0.940000
+  finished_query=16 recall@100=0.990000
+  finished_query=17 recall@100=0.980000
+  finished_query=18 recall@100=0.950000
+  finished_query=19 recall@100=0.950000
+  finished_query=20 recall@100=0.970000
+recall_vs_original_groundtruth_full_database:
+  query_count=20
+  recall@1=0.950000
+  recall@10=0.965000
+  recall@100=0.969000
+timing:
+  elapsed_seconds=111.097688
+  seconds_per_query=5.554884
