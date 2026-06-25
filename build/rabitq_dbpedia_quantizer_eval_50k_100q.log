@@ -1,0 +1,29 @@
+Config:
+  metric=encoded-vs-encoded RaBitQ construction distance vs exact L2
+  base_path=/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs
+  query_path=/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs
+  base_limit=50000
+  query_limit=100
+  topk=100
+  vecdim=1536
+  centroid_count=64
+  random_seed=100
+Loaded 50000 base vectors and 100 queries in 0.326786 s
+  encoded_bytes_per_vector=1296
+Encoded base in 42.356 s
+Processed 10 / 100 queries
+Processed 20 / 100 queries
+Processed 30 / 100 queries
+Processed 40 / 100 queries
+Processed 50 / 100 queries
+Processed 60 / 100 queries
+Processed 70 / 100 queries
+Processed 80 / 100 queries
+Processed 90 / 100 queries
+Processed 100 / 100 queries
+Results:
+  exact_l2_time_per_query_ms=99.0577
+  rabitq_encoded_time_per_query_ms=25.5174
+  quantizer_recall@1=0.94
+  quantizer_recall@10=0.94
+  quantizer_recall@100=0.9454

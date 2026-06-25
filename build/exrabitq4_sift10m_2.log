@@ -1,0 +1,67 @@
+nohup: ignoring input
+Run config:
+  dataset=SymphonyQG/sift10m
+  base_count=10000000
+  query_count=1000
+  dimension=128
+  M=16 efConstruction=40
+  quantizer=4-bit ExRaBitQ centroid_count=64 random_seed=100
+  base_path=/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_base.fvecs
+  query_path=/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_query.fvecs
+  gt_path=/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_groundtruth.ivecs
+  index_path=sift10m_symphonyqg_rabitq_ef_40_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=96 (4-bit code)
+Loading index from sift10m_symphonyqg_rabitq_ef_40_M_16_C_64.bin:
+Actual memory usage: 3361 Mb 
+Parsing gt:
+1000
+Loaded gt
+1	0.163	44.598 us	hnsw_search_us_per_query=44.598	total_us_per_query=44.598
+2	0.255	38.354 us	hnsw_search_us_per_query=38.354	total_us_per_query=38.354
+3	0.328	42.987 us	hnsw_search_us_per_query=42.987	total_us_per_query=42.987
+4	0.378	47.383 us	hnsw_search_us_per_query=47.383	total_us_per_query=47.383
+5	0.429	51.441 us	hnsw_search_us_per_query=51.441	total_us_per_query=51.441
+6	0.465	55.284 us	hnsw_search_us_per_query=55.284	total_us_per_query=55.284
+7	0.494	59.087 us	hnsw_search_us_per_query=59.087	total_us_per_query=59.087
+8	0.526	70.466 us	hnsw_search_us_per_query=70.466	total_us_per_query=70.466
+9	0.547	65.933 us	hnsw_search_us_per_query=65.933	total_us_per_query=65.933
+10	0.575	69.789 us	hnsw_search_us_per_query=69.789	total_us_per_query=69.789
+11	0.594	72.469 us	hnsw_search_us_per_query=72.469	total_us_per_query=72.469
+12	0.606	75.424 us	hnsw_search_us_per_query=75.424	total_us_per_query=75.424
+13	0.62	78.711 us	hnsw_search_us_per_query=78.711	total_us_per_query=78.711
+14	0.638	81.546 us	hnsw_search_us_per_query=81.546	total_us_per_query=81.546
+15	0.651	83.401 us	hnsw_search_us_per_query=83.401	total_us_per_query=83.401
+16	0.659	102.98 us	hnsw_search_us_per_query=102.98	total_us_per_query=102.98
+17	0.67	89.145 us	hnsw_search_us_per_query=89.145	total_us_per_query=89.145
+18	0.674	92.03 us	hnsw_search_us_per_query=92.03	total_us_per_query=92.03
+19	0.682	94.194 us	hnsw_search_us_per_query=94.194	total_us_per_query=94.194
+20	0.691	97.341 us	hnsw_search_us_per_query=97.341	total_us_per_query=97.341
+21	0.695	99.688 us	hnsw_search_us_per_query=99.688	total_us_per_query=99.688
+22	0.71	103.141 us	hnsw_search_us_per_query=103.141	total_us_per_query=103.141
+23	0.714	105.083 us	hnsw_search_us_per_query=105.083	total_us_per_query=105.083
+24	0.726	108.171 us	hnsw_search_us_per_query=108.171	total_us_per_query=108.171
+25	0.73	110.394 us	hnsw_search_us_per_query=110.394	total_us_per_query=110.394
+26	0.732	121.514 us	hnsw_search_us_per_query=121.514	total_us_per_query=121.514
+27	0.738	115.652 us	hnsw_search_us_per_query=115.652	total_us_per_query=115.652
+28	0.744	118.683 us	hnsw_search_us_per_query=118.683	total_us_per_query=118.683
+29	0.748	120.695 us	hnsw_search_us_per_query=120.695	total_us_per_query=120.695
+30	0.756	124.154 us	hnsw_search_us_per_query=124.154	total_us_per_query=124.154
+40	0.788	166.234 us	hnsw_search_us_per_query=166.234	total_us_per_query=166.234
+50	0.806	175.028 us	hnsw_search_us_per_query=175.028	total_us_per_query=175.028
+60	0.817	198.326 us	hnsw_search_us_per_query=198.326	total_us_per_query=198.326
+70	0.825	222.195 us	hnsw_search_us_per_query=222.195	total_us_per_query=222.195
+80	0.834	247.364 us	hnsw_search_us_per_query=247.364	total_us_per_query=247.364
+90	0.841	278.09 us	hnsw_search_us_per_query=278.09	total_us_per_query=278.09
+100	0.843	293.112 us	hnsw_search_us_per_query=293.112	total_us_per_query=293.112
+140	0.861	403.913 us	hnsw_search_us_per_query=403.913	total_us_per_query=403.913
+180	0.868	475.987 us	hnsw_search_us_per_query=475.987	total_us_per_query=475.987
+220	0.873	573.827 us	hnsw_search_us_per_query=573.827	total_us_per_query=573.827
+260	0.882	671.384 us	hnsw_search_us_per_query=671.384	total_us_per_query=671.384
+300	0.885	750.078 us	hnsw_search_us_per_query=750.078	total_us_per_query=750.078
+340	0.887	867.899 us	hnsw_search_us_per_query=867.899	total_us_per_query=867.899
+380	0.889	950.786 us	hnsw_search_us_per_query=950.786	total_us_per_query=950.786
+420	0.889	1043.6 us	hnsw_search_us_per_query=1043.6	total_us_per_query=1043.6
+460	0.889	1129.42 us	hnsw_search_us_per_query=1129.42	total_us_per_query=1129.42
+Actual memory usage: 3381 Mb 

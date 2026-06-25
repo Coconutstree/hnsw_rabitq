@@ -1,0 +1,29 @@
+Config:
+  metric=encoded-vs-encoded RaBitQ construction distance vs exact L2
+  base_path=/home/kai3/coco/hnsw/bigann/bigann_base.bvecs
+  query_path=/home/kai3/coco/hnsw/bigann/bigann_query.bvecs
+  base_limit=50000
+  query_limit=100
+  topk=100
+  vecdim=128
+  centroid_count=64
+  random_seed=100
+Loaded 50000 base vectors and 100 queries in 0.118753 s
+  encoded_bytes_per_vector=96
+Encoded base in 2.11309 s
+Processed 10 / 100 queries
+Processed 20 / 100 queries
+Processed 30 / 100 queries
+Processed 40 / 100 queries
+Processed 50 / 100 queries
+Processed 60 / 100 queries
+Processed 70 / 100 queries
+Processed 80 / 100 queries
+Processed 90 / 100 queries
+Processed 100 / 100 queries
+Results:
+  exact_l2_time_per_query_ms=6.58663
+  rabitq_encoded_time_per_query_ms=2.34967
+  quantizer_recall@1=0.81
+  quantizer_recall@10=0.843
+  quantizer_recall@100=0.8887
