@@ -108,4 +108,8 @@ if(HNSWLIB_EXAMPLES)
 
     add_executable(main tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
     target_link_libraries(main hnswlib)
+
+    add_executable(main_ef200 tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
+    target_compile_definitions(main_ef200 PRIVATE RABITQ_EF_CONSTRUCTION=200)
+    target_link_libraries(main_ef200 hnswlib)
 endif()

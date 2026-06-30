@@ -1,0 +1,77 @@
+Run config:
+  dataset=dbpedia_openai1536
+  base_count=990000
+  query_count=10000
+  dimension=1536
+  M=16 efConstruction=200
+  quantizer=4-bit ExRaBitQ centroid_count=64 random_seed=100
+  base_path=/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs
+  query_path=/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs
+  gt_path=/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs
+  index_path=dbpedia_openai1536_rabitq_current_ef_200_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=1040 (4-bit code)
+Building index:
+Training one global ExRaBitQ center from 200000 base vectors
+10.101 %, 5.40351 kips  Mem: 545 Mb 
+20.202 %, 5.31598 kips  Mem: 669 Mb 
+30.303 %, 5.2159 kips  Mem: 791 Mb 
+40.404 %, 3.96398 kips  Mem: 931 Mb 
+50.5051 %, 3.42185 kips  Mem: 1053 Mb 
+60.6061 %, 5.04186 kips  Mem: 1175 Mb 
+70.7071 %, 5.03635 kips  Mem: 1296 Mb 
+80.8081 %, 5.01622 kips  Mem: 1425 Mb 
+90.9091 %, 4.93752 kips  Mem: 1558 Mb 
+Build time:212.371  seconds
+Index storage size: 1176.7 MB (index=1176.68 MB, auxiliary=0.014396 MB, total_bytes=1176695608)
+Parsing gt:
+10000
+Loaded gt
+1	0.3223	169.93 us	hnsw_search_us_per_query=169.93	total_us_per_query=169.93
+2	0.479	179.124 us	hnsw_search_us_per_query=179.124	total_us_per_query=179.124
+3	0.5652	228.652 us	hnsw_search_us_per_query=228.652	total_us_per_query=228.652
+4	0.6257	261.544 us	hnsw_search_us_per_query=261.544	total_us_per_query=261.544
+5	0.6683	226.993 us	hnsw_search_us_per_query=226.993	total_us_per_query=226.993
+6	0.7008	243.296 us	hnsw_search_us_per_query=243.296	total_us_per_query=243.296
+7	0.7279	260.552 us	hnsw_search_us_per_query=260.552	total_us_per_query=260.552
+8	0.7524	279.823 us	hnsw_search_us_per_query=279.823	total_us_per_query=279.823
+9	0.7679	293.207 us	hnsw_search_us_per_query=293.207	total_us_per_query=293.207
+10	0.781	307.636 us	hnsw_search_us_per_query=307.636	total_us_per_query=307.636
+11	0.7941	322.937 us	hnsw_search_us_per_query=322.937	total_us_per_query=322.937
+12	0.8049	337.438 us	hnsw_search_us_per_query=337.438	total_us_per_query=337.438
+13	0.8157	352.254 us	hnsw_search_us_per_query=352.254	total_us_per_query=352.254
+14	0.8236	389.887 us	hnsw_search_us_per_query=389.887	total_us_per_query=389.887
+15	0.8312	412.123 us	hnsw_search_us_per_query=412.123	total_us_per_query=412.123
+16	0.8383	424.934 us	hnsw_search_us_per_query=424.934	total_us_per_query=424.934
+17	0.844	439.81 us	hnsw_search_us_per_query=439.81	total_us_per_query=439.81
+18	0.8479	453.801 us	hnsw_search_us_per_query=453.801	total_us_per_query=453.801
+19	0.8534	468.192 us	hnsw_search_us_per_query=468.192	total_us_per_query=468.192
+20	0.8582	487.296 us	hnsw_search_us_per_query=487.296	total_us_per_query=487.296
+21	0.8631	499.072 us	hnsw_search_us_per_query=499.072	total_us_per_query=499.072
+22	0.8658	530.148 us	hnsw_search_us_per_query=530.148	total_us_per_query=530.148
+23	0.8701	543.225 us	hnsw_search_us_per_query=543.225	total_us_per_query=543.225
+24	0.8746	574.638 us	hnsw_search_us_per_query=574.638	total_us_per_query=574.638
+25	0.8785	559.016 us	hnsw_search_us_per_query=559.016	total_us_per_query=559.016
+26	0.8814	565.409 us	hnsw_search_us_per_query=565.409	total_us_per_query=565.409
+27	0.8838	583.144 us	hnsw_search_us_per_query=583.144	total_us_per_query=583.144
+28	0.8864	588.95 us	hnsw_search_us_per_query=588.95	total_us_per_query=588.95
+29	0.8893	612.795 us	hnsw_search_us_per_query=612.795	total_us_per_query=612.795
+30	0.8918	619.979 us	hnsw_search_us_per_query=619.979	total_us_per_query=619.979
+40	0.9086	751.497 us	hnsw_search_us_per_query=751.497	total_us_per_query=751.497
+50	0.9196	880.542 us	hnsw_search_us_per_query=880.542	total_us_per_query=880.542
+60	0.9265	989.85 us	hnsw_search_us_per_query=989.85	total_us_per_query=989.85
+70	0.9319	1116.45 us	hnsw_search_us_per_query=1116.45	total_us_per_query=1116.45
+80	0.9359	1137.47 us	hnsw_search_us_per_query=1137.47	total_us_per_query=1137.47
+90	0.9402	1049.68 us	hnsw_search_us_per_query=1049.68	total_us_per_query=1049.68
+100	0.9428	1152.31 us	hnsw_search_us_per_query=1152.31	total_us_per_query=1152.31
+140	0.9516	1481.75 us	hnsw_search_us_per_query=1481.75	total_us_per_query=1481.75
+180	0.9552	1798.71 us	hnsw_search_us_per_query=1798.71	total_us_per_query=1798.71
+220	0.9591	2104.07 us	hnsw_search_us_per_query=2104.07	total_us_per_query=2104.07
+260	0.9608	2487.8 us	hnsw_search_us_per_query=2487.8	total_us_per_query=2487.8
+300	0.9626	2846.63 us	hnsw_search_us_per_query=2846.63	total_us_per_query=2846.63
+340	0.964	3103.07 us	hnsw_search_us_per_query=3103.07	total_us_per_query=3103.07
+380	0.9656	3382.74 us	hnsw_search_us_per_query=3382.74	total_us_per_query=3382.74
+420	0.9667	3536 us	hnsw_search_us_per_query=3536	total_us_per_query=3536
+460	0.9675	3900.94 us	hnsw_search_us_per_query=3900.94	total_us_per_query=3900.94
+Index storage size: 1176.7 MB (index=1176.68 MB, auxiliary=0.014396 MB, total_bytes=1176695608)

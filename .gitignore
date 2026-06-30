@@ -12,3 +12,5 @@ var/
 .vs/
 **.DS_Store
 *.pyc
+*.bin
+*.rabitq

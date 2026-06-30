@@ -19,6 +19,10 @@
 using namespace std;
 using namespace hnswlib;
 
+#ifndef RABITQ_EF_CONSTRUCTION
+#define RABITQ_EF_CONSTRUCTION 40
+#endif
+
 namespace {
 
 void print_run_config(
@@ -57,6 +61,26 @@ inline bool exists_test(const std::string &name) {
 
 string quantizer_state_path(const string &index_path) {
     return index_path + ".rabitq";
+}
+
+size_t file_size_bytes(const string &path) {
+    ifstream input(path, ios::binary | ios::ate);
+    if (!input.is_open()) {
+        return 0;
+    }
+    return static_cast<size_t>(input.tellg());
+}
+
+void print_index_file_size(const string &index_path) {
+    const string state_path = quantizer_state_path(index_path);
+    const size_t index_bytes = file_size_bytes(index_path);
+    const size_t auxiliary_bytes = file_size_bytes(state_path);
+    const size_t total_bytes = index_bytes + auxiliary_bytes;
+    const double mb = 1000000.0;
+    cout << "Index storage size: " << total_bytes / mb << " MB"
+         << " (index=" << index_bytes / mb << " MB"
+         << ", auxiliary=" << auxiliary_bytes / mb << " MB"
+         << ", total_bytes=" << total_bytes << ")\n";
 }
 
 void read_bvec_as_float(ifstream &input, float *dst, size_t vecdim, vector<unsigned char> &scratch) {
@@ -522,7 +546,7 @@ static void test_vs_recall(
 
 void sift_test1B() {
     const char *dataset_name = "dbpedia_openai1536";
-    const int efConstruction = 40;
+    const int efConstruction = RABITQ_EF_CONSTRUCTION;
     const int M = 16;
     const int centroid_count = 64;
     const int rerank_candidates = 100;
@@ -612,7 +636,7 @@ void sift_test1B() {
         } else {
             try {
                 appr_alg->loadIndex(path_index, vecsize);
-                cout << "Actual memory usage: " << getCurrentRSS() / 1000000 << " Mb \n";
+                print_index_file_size(path_index);
                 need_build = false;
             } catch (const std::exception &error) {
                 cout << "Existing index is incompatible: " << error.what() << "\n";
@@ -669,6 +693,7 @@ void sift_test1B() {
         input.close();
         cout << "Build time:" << 1e-6 * stopw_full.getElapsedTimeMicro() << "  seconds\n";
         appr_alg->saveIndex(path_index);
+        print_index_file_size(path_index);
     }
 
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
@@ -685,5 +710,5 @@ void sift_test1B() {
         answers,
         k,
         rerank_candidates);
-    cout << "Actual memory usage: " << getCurrentRSS() / 1000000 << " Mb \n";
+    print_index_file_size(path_index);
 }
