@@ -48,6 +48,8 @@ void print_run_config(
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
     cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
          << " random_seed=" << random_seed << "\n";
+    cout << "  build_distance=float32_l2"
+         << " stored_data=4bit_rabitq query_distance=float32_query_to_4bit_code\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
     cout << "  gt_path=" << path_gt << "\n";
@@ -565,7 +567,7 @@ void sift_test1B() {
     snprintf(
         path_index,
         sizeof(path_index),
-        "dbpedia_openai1536_rabitq_current_ef_%d_M_%d_C_%d.bin",
+        "dbpedia_openai1536_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
@@ -663,14 +665,23 @@ void sift_test1B() {
             centroid_train_samples);
         appr_alg->space().setGlobalCenter(global_center.data());
 
-        vector<float> first(vecdim);
-        read_fvec_as_float(input, first.data(), vecdim);
-        appr_alg->addPoint(first.data(), (size_t)0);
-
         int j1 = 0;
         StopW stopw;
         StopW stopw_full;
         const size_t report_every = 100000;
+
+        cout << "Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ\n";
+        L2Space float_space(vecdim);
+        HierarchicalNSW<float> float_index(
+            &float_space,
+            vecsize,
+            M,
+            efConstruction,
+            random_seed);
+
+        vector<float> first(vecdim);
+        read_fvec_as_float(input, first.data(), vecdim);
+        float_index.addPoint(first.data(), (size_t)0);
 
 #pragma omp parallel for
         for (int i = 1; i < static_cast<int>(vecsize); i++) {
@@ -688,9 +699,16 @@ void sift_test1B() {
                     stopw.reset();
                 }
             }
-            appr_alg->addPoint(local_mass.data(), (size_t)label);
+            float_index.addPoint(local_mass.data(), (size_t)label);
         }
+
         input.close();
+        cout << "Float graph build time:" << 1e-6 * stopw_full.getElapsedTimeMicro()
+             << " seconds; importing graph and writing 4-bit payloads\n";
+        StopW convertw;
+        appr_alg->importGraphFromFloatIndex(float_index, true);
+        cout << "Float graph import/encode time:" << 1e-6 * convertw.getElapsedTimeMicro()
+             << " seconds\n";
         cout << "Build time:" << 1e-6 * stopw_full.getElapsedTimeMicro() << "  seconds\n";
         appr_alg->saveIndex(path_index);
         print_index_file_size(path_index);

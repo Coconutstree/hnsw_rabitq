@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <list>
 #include <memory>
+#include <functional>
 
 //hnsw索引算法本体 
 namespace hnswlib {
@@ -195,6 +196,73 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     void setEf(size_t ef) {
         ef_ = ef;
+    }
+
+    void importGraphAndEncodeDataFrom(
+        const HierarchicalNSW<dist_t> &source,
+        const std::function<void(const void *source_data, void *target_data)> &encode_data) {
+        if (source.cur_element_count > max_elements_) {
+            throw std::runtime_error("Target HNSW capacity is smaller than source graph");
+        }
+        if (source.maxM_ != maxM_ ||
+            source.maxM0_ != maxM0_ ||
+            source.M_ != M_ ||
+            source.size_links_level0_ != size_links_level0_ ||
+            source.size_links_per_element_ != size_links_per_element_) {
+            throw std::runtime_error("Cannot import HNSW graph with different M/link layout");
+        }
+
+        for (tableint i = 0; i < cur_element_count; ++i) {
+            if (element_levels_[i] > 0 && linkLists_[i] != nullptr) {
+                free(linkLists_[i]);
+                linkLists_[i] = nullptr;
+            }
+        }
+
+        const size_t source_count = source.cur_element_count;
+        cur_element_count = source_count;
+        maxlevel_ = source.maxlevel_;
+        enterpoint_node_ = source.enterpoint_node_;
+        ef_construction_ = source.ef_construction_;
+        ef_ = source.ef_;
+        mult_ = source.mult_;
+        revSize_ = source.revSize_;
+        num_deleted_ = 0;
+        label_lookup_.clear();
+        deleted_elements.clear();
+        element_levels_.assign(max_elements_, 0);
+
+        for (tableint i = 0; i < source_count; ++i) {
+            element_levels_[i] = source.element_levels_[i];
+            memset(data_level0_memory_ + i * size_data_per_element_, 0, size_data_per_element_);
+            memcpy(get_linklist0(i), source.get_linklist0(i), size_links_level0_);
+
+            encode_data(source.getDataByInternalId(i), getDataByInternalId(i));
+            space_->commit_data_for_add(i, getDataByInternalId(i));
+
+            const labeltype label = source.getExternalLabel(i);
+            setExternalLabel(i, label);
+            label_lookup_[label] = i;
+
+            if (element_levels_[i] > 0) {
+                const size_t link_bytes = size_links_per_element_ * element_levels_[i];
+                linkLists_[i] = (char *) malloc(link_bytes + 1);
+                if (linkLists_[i] == nullptr) {
+                    throw std::runtime_error("Not enough memory: importGraphAndEncodeDataFrom failed to allocate linklist");
+                }
+                memset(linkLists_[i], 0, link_bytes + 1);
+                memcpy(linkLists_[i], source.linkLists_[i], link_bytes);
+            } else {
+                linkLists_[i] = nullptr;
+            }
+
+            if (isMarkedDeleted(i)) {
+                num_deleted_ += 1;
+                if (allow_replace_deleted_) {
+                    deleted_elements.insert(i);
+                }
+            }
+        }
     }
 
 

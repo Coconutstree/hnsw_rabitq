@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
+#include <iostream>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -10,6 +12,7 @@
 
 //hnsw底层算法和数据结构的定义，包含了空间接口、算法接口、访问列表池等核心组件的实现
 #include "hnswlib.h"
+#include "space_l2.h"
 #include "space_rabitq.h"
 
 namespace hnswlib {
@@ -89,6 +92,28 @@ class RaBitQHierarchicalNSW {
         std::vector<char> encoded = space_.encodeVector(raw_vector);
         index_.addPoint(encoded.data(), label, replace_deleted);
     }
+
+    // Import a graph that was constructed over raw float32 vectors, while storing
+    // only RaBitQ-encoded payloads in this index.
+    void importGraphFromFloatIndex(const HierarchicalNSW<float> &float_index, bool verbose = false) {
+        size_t encoded_count = 0;
+        const size_t total_count = float_index.cur_element_count;
+        const auto start_time = std::chrono::steady_clock::now();
+        index_.importGraphAndEncodeDataFrom(
+            float_index,
+            [this, verbose, total_count, start_time, &encoded_count](const void *source_data, void *target_data) {
+                space_.encodeVector(static_cast<const float *>(source_data), target_data);
+                ++encoded_count;
+                if (verbose && (encoded_count % 100000 == 0 || encoded_count == total_count)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const double seconds =
+                        std::chrono::duration_cast<std::chrono::duration<double>>(now - start_time).count();
+                    const double kips = seconds > 0.0 ? encoded_count / (1000.0 * seconds) : 0.0;
+                    std::cout << "Import/encode " << encoded_count / (0.01 * total_count)
+                              << " %, " << kips << " kips\n";
+                }
+            });
+    }
 //搜索k近邻，首先将查询向量编码成RaBitQ编码，然后调用index_的searchKnn方法搜索编码后的向量，返回距离和标签的二元组优先队列
     std::priority_queue<std::pair<float, labeltype>>
     searchKnn(const float *raw_query, size_t k, BaseFilterFunctor *isIdAllowed = nullptr) const {
@@ -110,6 +135,31 @@ class RaBitQHierarchicalNSW {
             ids.push_back(candidate.second);
         }
         return ids;
+    }
+};
+
+class RaBitQFloatBuildHierarchicalNSW : public RaBitQHierarchicalNSW {
+ public:
+    RaBitQFloatBuildHierarchicalNSW(
+        size_t dim,
+        size_t max_elements,
+        size_t centroid_count = 1,
+        size_t M = 16,
+        size_t ef_construction = 200,
+        size_t random_seed = 100,
+        bool allow_replace_deleted = false)
+        : RaBitQHierarchicalNSW(
+              dim,
+              max_elements,
+              centroid_count,
+              M,
+              ef_construction,
+              random_seed,
+              allow_replace_deleted) {
+    }
+
+    void importBuiltFloatGraph(const HierarchicalNSW<float> &float_index) {
+        importGraphFromFloatIndex(float_index);
     }
 };
 
