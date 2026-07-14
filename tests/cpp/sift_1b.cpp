@@ -20,7 +20,7 @@ using namespace std;
 using namespace hnswlib;
 
 #ifndef RABITQ_EF_CONSTRUCTION
-#define RABITQ_EF_CONSTRUCTION 40
+#define RABITQ_EF_CONSTRUCTION 200
 #endif
 
 namespace {
@@ -71,6 +71,14 @@ size_t file_size_bytes(const string &path) {
         return 0;
     }
     return static_cast<size_t>(input.tellg());
+}
+
+double kips_from_count_us(size_t count, double us) {
+    return us > 0.0 ? static_cast<double>(count) / (1000.0 * us * 1e-6) : 0.0;
+}
+
+double mbps_from_bytes_us(size_t bytes, double us) {
+    return us > 0.0 ? static_cast<double>(bytes) / 1000000.0 / (us * 1e-6) : 0.0;
 }
 
 void print_index_file_size(const string &index_path) {
@@ -655,19 +663,24 @@ void sift_test1B() {
     }
 
     if (need_build) {
+        StopW total_build_timer;
         cout << "Building index:\n";
         cout << "Training one global ExRaBitQ center from "
              << min(centroid_train_samples, vecsize) << " base vectors\n";
+        StopW train_center_timer;
         vector<float> global_center = train_global_center(
             input,
             vecdim,
             vecsize,
             centroid_train_samples);
         appr_alg->space().setGlobalCenter(global_center.data());
+        const double train_center_us = train_center_timer.getElapsedTimeMicro();
+        cout << "build_stage=train_center"
+             << " us=" << train_center_us << "\n";
 
         int j1 = 0;
         StopW stopw;
-        StopW stopw_full;
+        StopW float_graph_timer;
         const size_t report_every = 100000;
 
         cout << "Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ\n";
@@ -703,14 +716,38 @@ void sift_test1B() {
         }
 
         input.close();
-        cout << "Float graph build time:" << 1e-6 * stopw_full.getElapsedTimeMicro()
+        const double float_graph_build_us = float_graph_timer.getElapsedTimeMicro();
+        cout << "Float graph build time:" << 1e-6 * float_graph_build_us
              << " seconds; importing graph and writing 4-bit payloads\n";
+        cout << "build_stage=float_graph_build"
+             << " us=" << float_graph_build_us
+             << " kips=" << kips_from_count_us(vecsize, float_graph_build_us)
+             << "\n";
+
         StopW convertw;
         appr_alg->importGraphFromFloatIndex(float_index, true);
-        cout << "Float graph import/encode time:" << 1e-6 * convertw.getElapsedTimeMicro()
+        const double import_encode_us = convertw.getElapsedTimeMicro();
+        const size_t import_encode_count = float_index.cur_element_count;
+        const size_t import_encode_record_bytes = appr_alg->space().get_data_size();
+        const size_t import_encode_total_bytes = import_encode_count * import_encode_record_bytes;
+        cout << "Float graph import/encode time:" << 1e-6 * import_encode_us
              << " seconds\n";
-        cout << "Build time:" << 1e-6 * stopw_full.getElapsedTimeMicro() << "  seconds\n";
+        cout << "build_stage=import_encode"
+             << " us=" << import_encode_us
+             << " count=" << import_encode_count
+             << " record_bytes=" << import_encode_record_bytes
+             << " total_bytes=" << import_encode_total_bytes
+             << " kips=" << kips_from_count_us(import_encode_count, import_encode_us)
+             << " MBps=" << mbps_from_bytes_us(import_encode_total_bytes, import_encode_us)
+             << "\n";
+
+        cout << "Build time:" << 1e-6 * total_build_timer.getElapsedTimeMicro() << "  seconds\n";
+        StopW save_index_timer;
         appr_alg->saveIndex(path_index);
+        const double save_index_us = save_index_timer.getElapsedTimeMicro();
+        cout << "build_stage=save_index"
+             << " us=" << save_index_us << "\n";
+        cout << "build_total_us=" << total_build_timer.getElapsedTimeMicro() << "\n";
         print_index_file_size(path_index);
     }
 
