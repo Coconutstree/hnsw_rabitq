@@ -16,7 +16,7 @@ using namespace std;
 using namespace hnswlib;
 
 #ifndef HNSW_EF_CONSTRUCTION
-#define HNSW_EF_CONSTRUCTION 40
+#define HNSW_EF_CONSTRUCTION 200
 #endif
 
 namespace {
