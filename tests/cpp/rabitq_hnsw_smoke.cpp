@@ -135,6 +135,26 @@ int main() {
     assert(!float_build_result.empty());
     assert(std::isfinite(float_build_result.top().first));
 
+    hnswlib::RaBitQHierarchicalNSW payload_build_index(dim, 4, 1, 8, 32, 0);
+    payload_build_index.space().setIdentityRotation();
+    const size_t payload_record_size = payload_build_index.space().get_data_size();
+    std::vector<char> payloads(4 * payload_record_size, 0);
+    for (size_t i = 0; i < 4; ++i) {
+        payload_build_index.space().encodeVector(
+            data.data() + i * dim,
+            payloads.data() + i * payload_record_size);
+    }
+    payload_build_index.importGraphFromFloatIndexWithPayloads(
+        float_graph,
+        payloads,
+        payload_record_size);
+    assert(payload_build_index.index().getCurrentElementCount() == float_graph.getCurrentElementCount());
+    assert(payload_build_index.index().data_size_ == payload_build_index.space().get_data_size());
+    auto payload_build_result = payload_build_index.searchKnn(data.data(), 1);
+    assert(!payload_build_result.empty());
+    assert(payload_build_result.top().second == float_build_result.top().second);
+    assert(std::fabs(payload_build_result.top().first - float_build_result.top().first) < 1e-5f);
+
     const char *tmp_floatbuild_index = "/tmp/rabitq_hnsw_smoke_floatbuild.index";
     const char *tmp_floatbuild_state = "/tmp/rabitq_hnsw_smoke_floatbuild.index.rabitq";
     std::remove(tmp_floatbuild_index);

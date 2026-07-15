@@ -198,9 +198,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         ef_ = ef;
     }
 
-    void importGraphAndEncodeDataFrom(
+    void importGraphAndCopyDataFrom(
         const HierarchicalNSW<dist_t> &source,
-        const std::function<void(const void *source_data, void *target_data)> &encode_data) {
+        const std::function<void(tableint source_internal_id, void *target_data)> &copy_data) {
         if (source.cur_element_count > max_elements_) {
             throw std::runtime_error("Target HNSW capacity is smaller than source graph");
         }
@@ -237,7 +237,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             memset(data_level0_memory_ + i * size_data_per_element_, 0, size_data_per_element_);
             memcpy(get_linklist0(i), source.get_linklist0(i), size_links_level0_);
 
-            encode_data(source.getDataByInternalId(i), getDataByInternalId(i));
+            copy_data(i, getDataByInternalId(i));
             space_->commit_data_for_add(i, getDataByInternalId(i));
 
             const labeltype label = source.getExternalLabel(i);
@@ -263,6 +263,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 }
             }
         }
+    }
+
+    void importGraphAndEncodeDataFrom(
+        const HierarchicalNSW<dist_t> &source,
+        const std::function<void(const void *source_data, void *target_data)> &encode_data) {
+        importGraphAndCopyDataFrom(
+            source,
+            [&source, &encode_data](tableint source_internal_id, void *target_data) {
+                encode_data(source.getDataByInternalId(source_internal_id), target_data);
+            });
     }
 
 

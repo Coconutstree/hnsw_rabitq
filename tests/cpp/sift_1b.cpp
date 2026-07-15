@@ -682,6 +682,13 @@ void sift_test1B() {
         StopW stopw;
         StopW float_graph_timer;
         const size_t report_every = 100000;
+        const size_t payload_record_size = appr_alg->space().get_data_size();
+        const size_t payload_total_bytes = vecsize * payload_record_size;
+        vector<char> payloads(payload_total_bytes, 0);
+        double payload_encode_cpu_us = 0.0;
+        cout << "payload_mode=memory_array"
+             << " payload_record_bytes=" << payload_record_size
+             << " payload_bytes=" << payload_total_bytes << "\n";
 
         cout << "Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ\n";
         L2Space float_space(vecdim);
@@ -694,8 +701,14 @@ void sift_test1B() {
 
         vector<float> first(vecdim);
         read_fvec_as_float(input, first.data(), vecdim);
+        {
+            StopW payload_timer;
+            appr_alg->space().encodeVector(first.data(), payloads.data());
+            payload_encode_cpu_us += payload_timer.getElapsedTimeMicro();
+        }
         float_index.addPoint(first.data(), (size_t)0);
 
+        StopW payload_encode_wall_timer;
 #pragma omp parallel for
         for (int i = 1; i < static_cast<int>(vecsize); i++) {
             vector<float> local_mass(vecdim);
@@ -712,8 +725,16 @@ void sift_test1B() {
                     stopw.reset();
                 }
             }
+            StopW payload_timer;
+            appr_alg->space().encodeVector(
+                local_mass.data(),
+                payloads.data() + static_cast<size_t>(label) * payload_record_size);
+            const double local_payload_encode_us = payload_timer.getElapsedTimeMicro();
+#pragma omp atomic
+            payload_encode_cpu_us += local_payload_encode_us;
             float_index.addPoint(local_mass.data(), (size_t)label);
         }
+        const double payload_encode_wall_us = payload_encode_wall_timer.getElapsedTimeMicro();
 
         input.close();
         const double float_graph_build_us = float_graph_timer.getElapsedTimeMicro();
@@ -723,22 +744,35 @@ void sift_test1B() {
              << " us=" << float_graph_build_us
              << " kips=" << kips_from_count_us(vecsize, float_graph_build_us)
              << "\n";
+        cout << "build_stage=payload_encode"
+             << " cpu_us=" << payload_encode_cpu_us
+             << " wall_us=" << payload_encode_wall_us
+             << " count=" << vecsize
+             << " record_bytes=" << payload_record_size
+             << " total_bytes=" << payload_total_bytes
+             << " cpu_kips=" << kips_from_count_us(vecsize, payload_encode_cpu_us)
+             << " wall_kips=" << kips_from_count_us(vecsize, payload_encode_wall_us)
+             << " cpu_MBps=" << mbps_from_bytes_us(payload_total_bytes, payload_encode_cpu_us)
+             << " wall_MBps=" << mbps_from_bytes_us(payload_total_bytes, payload_encode_wall_us)
+             << "\n";
 
         StopW convertw;
-        appr_alg->importGraphFromFloatIndex(float_index, true);
-        const double import_encode_us = convertw.getElapsedTimeMicro();
-        const size_t import_encode_count = float_index.cur_element_count;
-        const size_t import_encode_record_bytes = appr_alg->space().get_data_size();
-        const size_t import_encode_total_bytes = import_encode_count * import_encode_record_bytes;
-        cout << "Float graph import/encode time:" << 1e-6 * import_encode_us
+        appr_alg->importGraphFromFloatIndexWithPayloads(
+            float_index,
+            payloads,
+            payload_record_size,
+            true);
+        const double graph_payload_import_us = convertw.getElapsedTimeMicro();
+        const size_t graph_payload_import_count = float_index.cur_element_count;
+        cout << "Float graph payload import time:" << 1e-6 * graph_payload_import_us
              << " seconds\n";
-        cout << "build_stage=import_encode"
-             << " us=" << import_encode_us
-             << " count=" << import_encode_count
-             << " record_bytes=" << import_encode_record_bytes
-             << " total_bytes=" << import_encode_total_bytes
-             << " kips=" << kips_from_count_us(import_encode_count, import_encode_us)
-             << " MBps=" << mbps_from_bytes_us(import_encode_total_bytes, import_encode_us)
+        cout << "build_stage=graph_payload_import"
+             << " us=" << graph_payload_import_us
+             << " count=" << graph_payload_import_count
+             << " record_bytes=" << payload_record_size
+             << " total_bytes=" << payload_total_bytes
+             << " kips=" << kips_from_count_us(graph_payload_import_count, graph_payload_import_us)
+             << " MBps=" << mbps_from_bytes_us(payload_total_bytes, graph_payload_import_us)
              << "\n";
 
         cout << "Build time:" << 1e-6 * total_build_timer.getElapsedTimeMicro() << "  seconds\n";

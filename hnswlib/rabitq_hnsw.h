@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <queue>
@@ -110,6 +111,43 @@ class RaBitQHierarchicalNSW {
                         std::chrono::duration_cast<std::chrono::duration<double>>(now - start_time).count();
                     const double kips = seconds > 0.0 ? encoded_count / (1000.0 * seconds) : 0.0;
                     std::cout << "Import/encode " << encoded_count / (0.01 * total_count)
+                              << " %, " << kips << " kips\n";
+                }
+            });
+    }
+
+    void importGraphFromFloatIndexWithPayloads(
+        const HierarchicalNSW<float> &float_index,
+        const std::vector<char> &payloads,
+        size_t record_size,
+        bool verbose = false) {
+        const size_t total_count = float_index.cur_element_count;
+        if (record_size != space_.get_data_size()) {
+            throw std::runtime_error("RaBitQ payload record size does not match space data size");
+        }
+        if (payloads.size() != total_count * record_size) {
+            throw std::runtime_error("RaBitQ payload array size does not match graph element count");
+        }
+
+        size_t copied_count = 0;
+        const auto start_time = std::chrono::steady_clock::now();
+        index_.importGraphAndCopyDataFrom(
+            float_index,
+            [this, &float_index, &payloads, record_size, total_count, verbose, start_time, &copied_count](
+                tableint source_internal_id,
+                void *target_data) {
+                const labeltype label = float_index.getExternalLabel(source_internal_id);
+                if (label >= total_count) {
+                    throw std::runtime_error("RaBitQ payload label is outside payload array range");
+                }
+                std::memcpy(target_data, payloads.data() + label * record_size, record_size);
+                ++copied_count;
+                if (verbose && (copied_count % 100000 == 0 || copied_count == total_count)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const double seconds =
+                        std::chrono::duration_cast<std::chrono::duration<double>>(now - start_time).count();
+                    const double kips = seconds > 0.0 ? copied_count / (1000.0 * seconds) : 0.0;
+                    std::cout << "Graph/payload import " << copied_count / (0.01 * total_count)
                               << " %, " << kips << " kips\n";
                 }
             });
