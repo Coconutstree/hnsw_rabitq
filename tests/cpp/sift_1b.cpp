@@ -81,16 +81,37 @@ double mbps_from_bytes_us(size_t bytes, double us) {
     return us > 0.0 ? static_cast<double>(bytes) / 1000000.0 / (us * 1e-6) : 0.0;
 }
 
-void print_index_file_size(const string &index_path) {
+void print_index_file_size(
+    const string &index_path,
+    size_t vecsize,
+    size_t encoded_bytes_per_vector,
+    const string &raw_rerank_path = "",
+    bool raw_rerank_enabled = false) {
     const string state_path = quantizer_state_path(index_path);
     const size_t index_bytes = file_size_bytes(index_path);
     const size_t auxiliary_bytes = file_size_bytes(state_path);
     const size_t total_bytes = index_bytes + auxiliary_bytes;
+    const size_t raw_rerank_bytes =
+        raw_rerank_enabled ? file_size_bytes(raw_rerank_path) : 0;
+    const size_t effective_query_storage_bytes = total_bytes + raw_rerank_bytes;
+    const size_t encoded_payload_estimate_bytes = vecsize * encoded_bytes_per_vector;
+    const size_t graph_and_metadata_bytes =
+        total_bytes > encoded_payload_estimate_bytes ? total_bytes - encoded_payload_estimate_bytes : 0;
     const double mb = 1000000.0;
     cout << "Index storage size: " << total_bytes / mb << " MB"
          << " (index=" << index_bytes / mb << " MB"
          << ", auxiliary=" << auxiliary_bytes / mb << " MB"
          << ", total_bytes=" << total_bytes << ")\n";
+    cout << "storage_breakdown"
+         << " index_file_MB=" << index_bytes / mb
+         << " auxiliary_MB=" << auxiliary_bytes / mb
+         << " encoded_payload_estimate_MB=" << encoded_payload_estimate_bytes / mb
+         << " graph_and_metadata_estimate_MB=" << graph_and_metadata_bytes / mb
+         << " extra_rerank_data_MB=" << raw_rerank_bytes / mb
+         << " raw_rerank_enabled=" << (raw_rerank_enabled ? 1 : 0)
+         << " effective_query_storage_MB=" << effective_query_storage_bytes / mb
+         << " effective_query_storage_bytes=" << effective_query_storage_bytes
+         << "\n";
 }
 
 void read_bvec_as_float(ifstream &input, float *dst, size_t vecdim, vector<unsigned char> &scratch) {
@@ -221,6 +242,30 @@ class BVecRandomReader {
             throw runtime_error("failed to seek base vector");
         }
         read_bvec_as_float(input_, dst, vecdim_, scratch_);
+    }
+};
+
+class FVecRandomReader {
+ private:
+    ifstream input_;
+    size_t vecdim_{0};
+    size_t record_bytes_{0};
+
+ public:
+    FVecRandomReader(const string &path, size_t vecdim)
+        : input_(path, ios::binary), vecdim_(vecdim), record_bytes_(4 + vecdim * sizeof(float)) {
+        if (!input_.is_open()) {
+            throw runtime_error("cannot open base file for rerank: " + path);
+        }
+    }
+
+    void readVector(size_t label, float *dst) {
+        input_.clear();
+        input_.seekg(static_cast<std::streamoff>(label * record_bytes_), ios::beg);
+        if (!input_.good()) {
+            throw runtime_error("failed to seek base vector");
+        }
+        read_fvec_as_float(input_, dst, vecdim_);
     }
 };
 
@@ -453,12 +498,15 @@ static SearchReport test_approx(
     size_t vecdim,
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
+    size_t search_ef,
     size_t rerank_candidates) {
-    (void) base_path;
-    (void) rerank_candidates;
     size_t correct = 0;
     size_t total = 0;
     double hnsw_us = 0.0;
+    double rerank_us = 0.0;
+    const size_t candidate_count = std::max(k, std::min(rerank_candidates, std::max(k, search_ef)));
+    FVecRandomReader raw_reader(base_path, vecdim);
+    vector<float> raw_candidate(vecdim, 0.0f);
     appr_alg.index().metric_lower_bound_checked = 0;
     appr_alg.index().metric_lower_bound_pruned = 0;
     appr_alg.index().metric_survivor_long_computed = 0;
@@ -466,8 +514,27 @@ static SearchReport test_approx(
     for (size_t i = 0; i < qsize; i++) {
         StopW hnsw_timer;
         vector<pair<float, labeltype>> results =
-            appr_alg.searchKnnCloserFirst(massQ + vecdim * i, k);
+            appr_alg.searchKnnCloserFirst(massQ + vecdim * i, candidate_count);
         hnsw_us += hnsw_timer.getElapsedTimeMicro();
+
+        if (candidate_count > k) {
+            StopW rerank_timer;
+            vector<pair<float, labeltype>> reranked;
+            reranked.reserve(results.size());
+            const float *query = massQ + vecdim * i;
+            for (const auto &entry : results) {
+                raw_reader.readVector(static_cast<size_t>(entry.second), raw_candidate.data());
+                reranked.emplace_back(raw_l2_float(query, raw_candidate.data(), vecdim), entry.second);
+            }
+            std::sort(reranked.begin(), reranked.end());
+            if (reranked.size() > k) {
+                reranked.resize(k);
+            }
+            results.swap(reranked);
+            rerank_us += rerank_timer.getElapsedTimeMicro();
+        } else if (results.size() > k) {
+            results.resize(k);
+        }
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
@@ -488,8 +555,8 @@ static SearchReport test_approx(
     SearchReport report;
     report.recall = total == 0 ? 0.0f : 1.0f * correct / total;
     report.hnsw_search_us_per_query = static_cast<float>(hnsw_us / static_cast<double>(qsize));
-    report.redundant_rerank_us_per_query = 0.0f;
-    report.total_us_per_query = report.hnsw_search_us_per_query;
+    report.redundant_rerank_us_per_query = static_cast<float>(rerank_us / static_cast<double>(qsize));
+    report.total_us_per_query = report.hnsw_search_us_per_query + report.redundant_rerank_us_per_query;
     report.lower_bound_checked = appr_alg.index().metric_lower_bound_checked.load();
     report.lower_bound_pruned = appr_alg.index().metric_lower_bound_pruned.load();
     report.survivor_long_computed = appr_alg.index().metric_survivor_long_computed.load();
@@ -514,7 +581,6 @@ static void test_vs_recall(
     size_t k,
     size_t rerank_candidates) {
     vector<size_t> efs;
-    (void) rerank_candidates;
     for (size_t i = 1; i <= 30; i++) {
         if (i >= k) {
             efs.push_back(i);
@@ -541,11 +607,14 @@ static void test_vs_recall(
             vecdim,
             answers,
             k,
-            ef);
+            ef,
+            rerank_candidates);
 
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
+             << "\t" << "raw_rerank_us_per_query=" << report.redundant_rerank_us_per_query
+             << "\t" << "rerank_candidates=" << std::max(k, std::min(rerank_candidates, std::max(k, ef)))
              << "\t" << "total_us_per_query=" << report.total_us_per_query << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
@@ -555,7 +624,7 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const char *dataset_name = "dbpedia_openai1536";
+    const char *dataset_name = "sift10m";
     const int efConstruction = RABITQ_EF_CONSTRUCTION;
     const int M = 16;
     const int centroid_count = 64;
@@ -563,19 +632,19 @@ void sift_test1B() {
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
-    const size_t vecdim = 1536;
-    const size_t gt_width = 100;
+    const size_t vecdim = 128;
+    const size_t gt_width = 1000;
 
     char path_index[1024];
-    const char *path_q = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs";
-    const char *path_data = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs";
-    const char *path_gt = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs";
+    const char *path_q = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_query.fvecs";
+    const char *path_data = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_base.fvecs";
+    const char *path_gt = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_groundtruth.ivecs";
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "dbpedia_openai1536_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+        "sift10m_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
@@ -646,7 +715,12 @@ void sift_test1B() {
         } else {
             try {
                 appr_alg->loadIndex(path_index, vecsize);
-                print_index_file_size(path_index);
+                print_index_file_size(
+                    path_index,
+                    vecsize,
+                    appr_alg->space().get_data_size(),
+                    path_data,
+                    rerank_candidates > 1);
                 need_build = false;
             } catch (const std::exception &error) {
                 cout << "Existing index is incompatible: " << error.what() << "\n";
@@ -782,7 +856,12 @@ void sift_test1B() {
         cout << "build_stage=save_index"
              << " us=" << save_index_us << "\n";
         cout << "build_total_us=" << total_build_timer.getElapsedTimeMicro() << "\n";
-        print_index_file_size(path_index);
+        print_index_file_size(
+            path_index,
+            vecsize,
+            appr_alg->space().get_data_size(),
+            path_data,
+            rerank_candidates > 1);
     }
 
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
@@ -799,5 +878,10 @@ void sift_test1B() {
         answers,
         k,
         rerank_candidates);
-    print_index_file_size(path_index);
+    print_index_file_size(
+        path_index,
+        vecsize,
+        appr_alg->space().get_data_size(),
+        path_data,
+        rerank_candidates > k);
 }
