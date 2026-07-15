@@ -20,7 +20,7 @@ using namespace std;
 using namespace hnswlib;
 
 #ifndef RABITQ_EF_CONSTRUCTION
-#define RABITQ_EF_CONSTRUCTION 40
+#define RABITQ_EF_CONSTRUCTION 200
 #endif
 
 namespace {
@@ -182,6 +182,20 @@ float raw_l2_float(const float *query, const float *base, size_t dim) {
     return total;
 }
 
+void normalize_l2(float *data, size_t dim) {
+    double norm = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+        norm += static_cast<double>(data[i]) * static_cast<double>(data[i]);
+    }
+    norm = std::sqrt(norm);
+    if (norm == 0.0) {
+        return;
+    }
+    for (size_t i = 0; i < dim; ++i) {
+        data[i] = static_cast<float>(static_cast<double>(data[i]) / norm);
+    }
+}
+
 size_t fvec_count_from_file_size(const string &path, size_t vecdim) {
     ifstream input(path, ios::binary | ios::ate);
     if (!input.is_open()) {
@@ -205,6 +219,7 @@ void read_fvec_as_float(ifstream &input, float *dst, size_t vecdim) {
     if (!input.good()) {
         throw runtime_error("file error");
     }
+    normalize_l2(dst, vecdim);
 }
 
 vector<float> load_fvecs_raw(const string &path, size_t vec_count, size_t vecdim) {
@@ -624,7 +639,7 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const char *dataset_name = "sift10m";
+    const char *dataset_name = "deep1B";
     const int efConstruction = RABITQ_EF_CONSTRUCTION;
     const int M = 16;
     const int centroid_count = 64;
@@ -632,19 +647,19 @@ void sift_test1B() {
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
-    const size_t vecdim = 128;
-    const size_t gt_width = 1000;
+    const size_t vecdim = 96;
+    const size_t gt_width = 100;
 
     char path_index[1024];
-    const char *path_q = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_query.fvecs";
-    const char *path_data = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_base.fvecs";
-    const char *path_gt = "/home/kai3/coco/SymphonyQG/data/sift10m/sift10m_groundtruth.ivecs";
+    const char *path_q = "/home/kai3/coco/data/deep1B/deep1B_query.fvecs";
+    const char *path_data = "/home/kai3/coco/data/deep1B/deep1B_base.fvecs";
+    const char *path_gt = "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs";
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "sift10m_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+        "deep1B_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
