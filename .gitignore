@@ -1,7 +1,8 @@
 hnswlib.egg-info/
-build/
+!build/*.log
 dist/
 tmp/
+build/*
 python_bindings/tests/__pycache__/
 *.pyd
 hnswlib.cpython*.so
@@ -11,3 +12,10 @@ var/
 .vs/
 **.DS_Store
 *.pyc
+*.bin
+!build/*.log
+*.ivecs
+*.fvecs
+*.bvecs
+
+

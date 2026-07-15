@@ -1,0 +1,169 @@
+nohup: ignoring input
+Run config:
+  dataset=deep1B
+  base_count=9990000
+  query_count=10000
+  dimension=96
+  M=16 efConstruction=40
+  quantizer=none raw_float_l2
+  base_path=/home/kai3/coco/data/deep1B/deep1B_base.fvecs
+  query_path=/home/kai3/coco/data/deep1B/deep1B_query.fvecs
+  gt_path=/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs
+  index_path=deep1B_hnsw_ef_40_M_16.bin
+  raw_bytes_per_vector=384 (float32 raw L2)
+Building index:
+1.001 %, 86.9878 kips  Mem: 2690 Mb 
+2.002 %, 99.9834 kips  Mem: 2749 Mb 
+3.003 %, 138.176 kips  Mem: 3051 Mb 
+4.004 %, 117.012 kips  Mem: 3873 Mb 
+5.00501 %, 119.779 kips  Mem: 3931 Mb 
+6.00601 %, 116.074 kips  Mem: 3986 Mb 
+7.00701 %, 109.282 kips  Mem: 4047 Mb 
+8.00801 %, 92.8351 kips  Mem: 4105 Mb 
+9.00901 %, 99.5239 kips  Mem: 4162 Mb 
+10.01 %, 92.779 kips  Mem: 4218 Mb 
+11.011 %, 89.0366 kips  Mem: 4274 Mb 
+12.012 %, 88.6895 kips  Mem: 4332 Mb 
+13.013 %, 87.1548 kips  Mem: 4389 Mb 
+14.014 %, 86.3417 kips  Mem: 4446 Mb 
+15.015 %, 73.1528 kips  Mem: 4515 Mb 
+16.016 %, 85.447 kips  Mem: 4572 Mb 
+17.017 %, 86.191 kips  Mem: 4628 Mb 
+18.018 %, 89.2272 kips  Mem: 4693 Mb 
+19.019 %, 109.986 kips  Mem: 4744 Mb 
+20.02 %, 115.333 kips  Mem: 4801 Mb 
+21.021 %, 116.825 kips  Mem: 4859 Mb 
+22.022 %, 114.269 kips  Mem: 4916 Mb 
+23.023 %, 114.741 kips  Mem: 4974 Mb 
+24.024 %, 114.506 kips  Mem: 5029 Mb 
+25.025 %, 113.379 kips  Mem: 5086 Mb 
+26.026 %, 113.556 kips  Mem: 5145 Mb 
+27.027 %, 114.093 kips  Mem: 5200 Mb 
+28.028 %, 113.072 kips  Mem: 5257 Mb 
+29.029 %, 113.398 kips  Mem: 5314 Mb 
+30.03 %, 80.6067 kips  Mem: 5395 Mb 
+31.031 %, 112.962 kips  Mem: 5453 Mb 
+32.032 %, 113.746 kips  Mem: 5510 Mb 
+33.033 %, 112.619 kips  Mem: 5567 Mb 
+34.034 %, 113.201 kips  Mem: 5623 Mb 
+35.035 %, 112.866 kips  Mem: 5680 Mb 
+36.036 %, 113.083 kips  Mem: 5737 Mb 
+37.037 %, 113.42 kips  Mem: 5794 Mb 
+38.038 %, 113.102 kips  Mem: 5851 Mb 
+39.039 %, 113.002 kips  Mem: 5908 Mb 
+40.04 %, 112.312 kips  Mem: 5965 Mb 
+41.041 %, 112.408 kips  Mem: 6022 Mb 
+42.042 %, 112.907 kips  Mem: 6078 Mb 
+43.043 %, 112.24 kips  Mem: 6136 Mb 
+44.044 %, 112.517 kips  Mem: 6194 Mb 
+45.045 %, 112.398 kips  Mem: 6250 Mb 
+46.046 %, 111.942 kips  Mem: 6307 Mb 
+47.047 %, 111.621 kips  Mem: 6365 Mb 
+48.048 %, 112.548 kips  Mem: 6421 Mb 
+49.049 %, 112.276 kips  Mem: 6477 Mb 
+50.0501 %, 112.688 kips  Mem: 6535 Mb 
+51.0511 %, 113.424 kips  Mem: 6591 Mb 
+52.0521 %, 113.601 kips  Mem: 6648 Mb 
+53.0531 %, 112.644 kips  Mem: 6706 Mb 
+54.0541 %, 112.82 kips  Mem: 6761 Mb 
+55.0551 %, 113.472 kips  Mem: 6820 Mb 
+56.0561 %, 112.746 kips  Mem: 6877 Mb 
+57.0571 %, 113.006 kips  Mem: 6933 Mb 
+58.0581 %, 113.174 kips  Mem: 6990 Mb 
+59.0591 %, 113.126 kips  Mem: 7046 Mb 
+60.0601 %, 63.5717 kips  Mem: 7152 Mb 
+61.0611 %, 112.724 kips  Mem: 7210 Mb 
+62.0621 %, 112.914 kips  Mem: 7268 Mb 
+63.0631 %, 112.46 kips  Mem: 7325 Mb 
+64.0641 %, 113.041 kips  Mem: 7381 Mb 
+65.0651 %, 113.434 kips  Mem: 7437 Mb 
+66.0661 %, 113.157 kips  Mem: 7495 Mb 
+67.0671 %, 112.494 kips  Mem: 7552 Mb 
+68.0681 %, 113.334 kips  Mem: 7609 Mb 
+69.0691 %, 113.018 kips  Mem: 7666 Mb 
+70.0701 %, 111.422 kips  Mem: 7723 Mb 
+71.0711 %, 110.164 kips  Mem: 7780 Mb 
+72.0721 %, 111.531 kips  Mem: 7837 Mb 
+73.0731 %, 110.79 kips  Mem: 7893 Mb 
+74.0741 %, 111.227 kips  Mem: 7950 Mb 
+75.0751 %, 111.725 kips  Mem: 8007 Mb 
+76.0761 %, 112.108 kips  Mem: 8064 Mb 
+77.0771 %, 111.583 kips  Mem: 8121 Mb 
+78.0781 %, 112.083 kips  Mem: 8178 Mb 
+79.0791 %, 111.419 kips  Mem: 8236 Mb 
+80.0801 %, 111.486 kips  Mem: 8292 Mb 
+81.0811 %, 111.97 kips  Mem: 8349 Mb 
+82.0821 %, 112.269 kips  Mem: 8406 Mb 
+83.0831 %, 111.96 kips  Mem: 8462 Mb 
+84.0841 %, 112.383 kips  Mem: 8519 Mb 
+85.0851 %, 111.845 kips  Mem: 8577 Mb 
+86.0861 %, 109.606 kips  Mem: 8633 Mb 
+87.0871 %, 111.896 kips  Mem: 8690 Mb 
+88.0881 %, 112.182 kips  Mem: 8746 Mb 
+89.0891 %, 111.314 kips  Mem: 8805 Mb 
+90.0901 %, 111.694 kips  Mem: 8861 Mb 
+91.0911 %, 111.801 kips  Mem: 8918 Mb 
+92.0921 %, 111.335 kips  Mem: 8975 Mb 
+93.0931 %, 112.202 kips  Mem: 9032 Mb 
+94.0941 %, 111.888 kips  Mem: 9089 Mb 
+95.0951 %, 112.889 kips  Mem: 9146 Mb 
+96.0961 %, 111.524 kips  Mem: 9203 Mb 
+97.0971 %, 111.538 kips  Mem: 9260 Mb 
+98.0981 %, 113.046 kips  Mem: 9316 Mb 
+99.0991 %, 125.525 kips  Mem: 9371 Mb 
+Build time:92.9946  seconds
+Index storage size: 5320 MB (index=5320 MB, auxiliary=0 MB, total_bytes=5319997828)
+storage_breakdown index_file_MB=5320 auxiliary_MB=0 raw_vector_inside_index_MB=3836.16 graph_and_metadata_estimate_MB=1483.84 extra_rerank_data_MB=0 effective_query_storage_MB=5320 effective_query_storage_bytes=5319997828
+Loading GT:
+Loading queries:
+Parsing gt:
+10000
+Loaded gt
+1	0.1659	21.1771 us	hnsw_search_us_per_query=21.1771	total_us_per_query=21.1771
+2	0.2755	28.4509 us	hnsw_search_us_per_query=28.4509	total_us_per_query=28.4509
+3	0.3582	34.8016 us	hnsw_search_us_per_query=34.8016	total_us_per_query=34.8016
+4	0.4191	40.8864 us	hnsw_search_us_per_query=40.8864	total_us_per_query=40.8864
+5	0.4675	45.4605 us	hnsw_search_us_per_query=45.4605	total_us_per_query=45.4605
+6	0.5106	50.2901 us	hnsw_search_us_per_query=50.2901	total_us_per_query=50.2901
+7	0.543	54.7933 us	hnsw_search_us_per_query=54.7933	total_us_per_query=54.7933
+8	0.5737	59.5173 us	hnsw_search_us_per_query=59.5173	total_us_per_query=59.5173
+9	0.6008	63.7726 us	hnsw_search_us_per_query=63.7726	total_us_per_query=63.7726
+10	0.6199	67.8194 us	hnsw_search_us_per_query=67.8194	total_us_per_query=67.8194
+11	0.6408	72.0909 us	hnsw_search_us_per_query=72.0909	total_us_per_query=72.0909
+12	0.6576	75.4537 us	hnsw_search_us_per_query=75.4537	total_us_per_query=75.4537
+13	0.6732	79.2915 us	hnsw_search_us_per_query=79.2915	total_us_per_query=79.2915
+14	0.6859	83.0542 us	hnsw_search_us_per_query=83.0542	total_us_per_query=83.0542
+15	0.6992	87.4842 us	hnsw_search_us_per_query=87.4842	total_us_per_query=87.4842
+16	0.7098	90.5986 us	hnsw_search_us_per_query=90.5986	total_us_per_query=90.5986
+17	0.7203	94.4906 us	hnsw_search_us_per_query=94.4906	total_us_per_query=94.4906
+18	0.7285	97.7477 us	hnsw_search_us_per_query=97.7477	total_us_per_query=97.7477
+19	0.738	101.338 us	hnsw_search_us_per_query=101.338	total_us_per_query=101.338
+20	0.7473	105.071 us	hnsw_search_us_per_query=105.071	total_us_per_query=105.071
+21	0.7556	108.89 us	hnsw_search_us_per_query=108.89	total_us_per_query=108.89
+22	0.7617	111.894 us	hnsw_search_us_per_query=111.894	total_us_per_query=111.894
+23	0.7684	115.235 us	hnsw_search_us_per_query=115.235	total_us_per_query=115.235
+24	0.7742	119.193 us	hnsw_search_us_per_query=119.193	total_us_per_query=119.193
+25	0.7793	122.629 us	hnsw_search_us_per_query=122.629	total_us_per_query=122.629
+26	0.7839	125.737 us	hnsw_search_us_per_query=125.737	total_us_per_query=125.737
+27	0.7884	134.15 us	hnsw_search_us_per_query=134.15	total_us_per_query=134.15
+28	0.7934	139.759 us	hnsw_search_us_per_query=139.759	total_us_per_query=139.759
+29	0.7984	137.274 us	hnsw_search_us_per_query=137.274	total_us_per_query=137.274
+30	0.8034	140.317 us	hnsw_search_us_per_query=140.317	total_us_per_query=140.317
+40	0.8427	188.216 us	hnsw_search_us_per_query=188.216	total_us_per_query=188.216
+50	0.8665	206.867 us	hnsw_search_us_per_query=206.867	total_us_per_query=206.867
+60	0.8815	262.39 us	hnsw_search_us_per_query=262.39	total_us_per_query=262.39
+70	0.8956	273.1 us	hnsw_search_us_per_query=273.1	total_us_per_query=273.1
+80	0.905	327.428 us	hnsw_search_us_per_query=327.428	total_us_per_query=327.428
+90	0.9134	327.595 us	hnsw_search_us_per_query=327.595	total_us_per_query=327.595
+100	0.9216	386.709 us	hnsw_search_us_per_query=386.709	total_us_per_query=386.709
+140	0.9395	501.221 us	hnsw_search_us_per_query=501.221	total_us_per_query=501.221
+180	0.9502	611.844 us	hnsw_search_us_per_query=611.844	total_us_per_query=611.844
+220	0.958	748.193 us	hnsw_search_us_per_query=748.193	total_us_per_query=748.193
+260	0.9628	821.162 us	hnsw_search_us_per_query=821.162	total_us_per_query=821.162
+300	0.9669	947.263 us	hnsw_search_us_per_query=947.263	total_us_per_query=947.263
+340	0.9695	1038.02 us	hnsw_search_us_per_query=1038.02	total_us_per_query=1038.02
+380	0.9721	1121.12 us	hnsw_search_us_per_query=1121.12	total_us_per_query=1121.12
+420	0.9752	1227.15 us	hnsw_search_us_per_query=1227.15	total_us_per_query=1227.15
+460	0.977	1236.19 us	hnsw_search_us_per_query=1236.19	total_us_per_query=1236.19
+Index storage size: 5320 MB (index=5320 MB, auxiliary=0 MB, total_bytes=5319997828)
+storage_breakdown index_file_MB=5320 auxiliary_MB=0 raw_vector_inside_index_MB=3836.16 graph_and_metadata_estimate_MB=1483.84 extra_rerank_data_MB=0 effective_query_storage_MB=5320 effective_query_storage_bytes=5319997828
