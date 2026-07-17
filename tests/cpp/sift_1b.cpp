@@ -20,7 +20,7 @@ using namespace std;
 using namespace hnswlib;
 
 #ifndef RABITQ_EF_CONSTRUCTION
-#define RABITQ_EF_CONSTRUCTION 200
+#define RABITQ_EF_CONSTRUCTION 40
 #endif
 
 namespace {

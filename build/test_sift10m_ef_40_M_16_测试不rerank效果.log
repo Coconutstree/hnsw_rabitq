@@ -1,0 +1,279 @@
+nohup: ignoring input
+Run config:
+  dataset=sift10m
+  base_count=10000000
+  query_count=1000
+  dimension=128
+  M=16 efConstruction=40
+  quantizer=4-bit ExRaBitQ centroid_count=64 random_seed=100
+  build_distance=float32_l2 stored_data=4bit_rabitq query_distance=float32_query_to_4bit_code
+  base_path=/home/kai3/coco/data/sift10m/sift10m_base.fvecs
+  query_path=/home/kai3/coco/data/sift10m/sift10m_query.fvecs
+  gt_path=/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs
+  index_path=sift10m_rabitq_floatbuild_ef_40_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=80 (4-bit code)
+Building index:
+Training one global ExRaBitQ center from 200000 base vectors
+build_stage=train_center us=39665
+payload_mode=memory_array payload_record_bytes=80 payload_bytes=800000000
+Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ
+1 %, 50.8508 kips  Mem: 3358 Mb 
+2 %, 83.7411 kips  Mem: 4753 Mb 
+3 %, 121.579 kips  Mem: 4823 Mb 
+4 %, 111.649 kips  Mem: 4895 Mb 
+5 %, 128.847 kips  Mem: 4966 Mb 
+6 %, 129.048 kips  Mem: 5036 Mb 
+7 %, 125.516 kips  Mem: 5105 Mb 
+8 %, 98.9704 kips  Mem: 5181 Mb 
+9 %, 116.489 kips  Mem: 5250 Mb 
+10 %, 85.7159 kips  Mem: 5319 Mb 
+11 %, 77.4252 kips  Mem: 5388 Mb 
+12 %, 75.4456 kips  Mem: 5458 Mb 
+13 %, 71.5829 kips  Mem: 5768 Mb 
+14 %, 66.8371 kips  Mem: 5838 Mb 
+15 %, 63.3715 kips  Mem: 5921 Mb 
+16 %, 72.1061 kips  Mem: 5988 Mb 
+17 %, 72.568 kips  Mem: 6058 Mb 
+18 %, 84.8802 kips  Mem: 6131 Mb 
+19 %, 122.998 kips  Mem: 6200 Mb 
+20 %, 120.898 kips  Mem: 6270 Mb 
+21 %, 120.934 kips  Mem: 6340 Mb 
+22 %, 121.16 kips  Mem: 6409 Mb 
+23 %, 122.324 kips  Mem: 6480 Mb 
+24 %, 122.956 kips  Mem: 6549 Mb 
+25 %, 122.633 kips  Mem: 6619 Mb 
+26 %, 122.4 kips  Mem: 6688 Mb 
+27 %, 125.965 kips  Mem: 6759 Mb 
+28 %, 124.413 kips  Mem: 6828 Mb 
+29 %, 124.836 kips  Mem: 6899 Mb 
+30 %, 84.2787 kips  Mem: 6992 Mb 
+31 %, 121.956 kips  Mem: 7062 Mb 
+32 %, 126.238 kips  Mem: 7131 Mb 
+33 %, 125.452 kips  Mem: 7201 Mb 
+34 %, 125.613 kips  Mem: 7272 Mb 
+35 %, 124.111 kips  Mem: 7341 Mb 
+36 %, 125.901 kips  Mem: 7411 Mb 
+37 %, 125.087 kips  Mem: 7480 Mb 
+38 %, 124.425 kips  Mem: 7550 Mb 
+39 %, 124.712 kips  Mem: 7620 Mb 
+40 %, 124.713 kips  Mem: 7690 Mb 
+41 %, 123.423 kips  Mem: 7759 Mb 
+42 %, 122.63 kips  Mem: 7830 Mb 
+43 %, 123.813 kips  Mem: 7899 Mb 
+44 %, 123.337 kips  Mem: 7969 Mb 
+45 %, 122.315 kips  Mem: 8039 Mb 
+46 %, 123.801 kips  Mem: 8108 Mb 
+47 %, 123.274 kips  Mem: 8179 Mb 
+48 %, 123.761 kips  Mem: 8248 Mb 
+49 %, 121.752 kips  Mem: 8318 Mb 
+50 %, 121.766 kips  Mem: 8387 Mb 
+51 %, 123.425 kips  Mem: 8457 Mb 
+52 %, 122.531 kips  Mem: 8527 Mb 
+53 %, 123.023 kips  Mem: 8596 Mb 
+54 %, 121.819 kips  Mem: 8666 Mb 
+55 %, 123.466 kips  Mem: 8735 Mb 
+56 %, 122.269 kips  Mem: 8806 Mb 
+57 %, 122.515 kips  Mem: 8875 Mb 
+58 %, 122.604 kips  Mem: 8945 Mb 
+59 %, 122.948 kips  Mem: 9015 Mb 
+60 %, 63.6098 kips  Mem: 9133 Mb 
+61 %, 122.43 kips  Mem: 9203 Mb 
+62 %, 123.507 kips  Mem: 9273 Mb 
+63 %, 122.277 kips  Mem: 9343 Mb 
+64 %, 122.909 kips  Mem: 9412 Mb 
+65 %, 121.357 kips  Mem: 9482 Mb 
+66 %, 121.294 kips  Mem: 9552 Mb 
+67 %, 121.934 kips  Mem: 9622 Mb 
+68 %, 121.14 kips  Mem: 9691 Mb 
+69 %, 119.687 kips  Mem: 9761 Mb 
+70 %, 120.962 kips  Mem: 9832 Mb 
+71 %, 121.707 kips  Mem: 9901 Mb 
+72 %, 119.933 kips  Mem: 9971 Mb 
+73 %, 120.873 kips  Mem: 10041 Mb 
+74 %, 118.847 kips  Mem: 10110 Mb 
+75 %, 120.847 kips  Mem: 10180 Mb 
+76 %, 121.306 kips  Mem: 10249 Mb 
+77 %, 118.621 kips  Mem: 10319 Mb 
+78 %, 120.565 kips  Mem: 10389 Mb 
+79 %, 121.319 kips  Mem: 10459 Mb 
+80 %, 117.514 kips  Mem: 10528 Mb 
+81 %, 121.369 kips  Mem: 10598 Mb 
+82 %, 121.074 kips  Mem: 10667 Mb 
+83 %, 117.415 kips  Mem: 10737 Mb 
+84 %, 121.668 kips  Mem: 10807 Mb 
+85 %, 119.628 kips  Mem: 10877 Mb 
+86 %, 116.128 kips  Mem: 10947 Mb 
+87 %, 121.274 kips  Mem: 11016 Mb 
+88 %, 121.651 kips  Mem: 11086 Mb 
+89 %, 121.194 kips  Mem: 11156 Mb 
+90 %, 116.405 kips  Mem: 11226 Mb 
+91 %, 120.471 kips  Mem: 11295 Mb 
+92 %, 121.698 kips  Mem: 11365 Mb 
+93 %, 115.164 kips  Mem: 11434 Mb 
+94 %, 120.554 kips  Mem: 11505 Mb 
+95 %, 120.477 kips  Mem: 11575 Mb 
+96 %, 119.667 kips  Mem: 11644 Mb 
+97 %, 114.291 kips  Mem: 11714 Mb 
+98 %, 120.008 kips  Mem: 11784 Mb 
+99 %, 121.059 kips  Mem: 11853 Mb 
+Float graph build time:90.6455 seconds; importing graph and writing 4-bit payloads
+build_stage=float_graph_build us=9.06455e+07 kips=110.32
+build_stage=payload_encode cpu_us=8.171e+08 wall_us=9.00085e+07 count=10000000 record_bytes=80 total_bytes=800000000 cpu_kips=12.2384 wall_kips=111.101 cpu_MBps=0.979072 wall_MBps=8.88805
+Graph/payload import 1 %, 1890.89 kips
+Graph/payload import 2 %, 2232.98 kips
+Graph/payload import 3 %, 2401.45 kips
+Graph/payload import 4 %, 2409.86 kips
+Graph/payload import 5 %, 2486.96 kips
+Graph/payload import 6 %, 2535.54 kips
+Graph/payload import 7 %, 2573.6 kips
+Graph/payload import 8 %, 2511.91 kips
+Graph/payload import 9 %, 2549.94 kips
+Graph/payload import 10 %, 2574.9 kips
+Graph/payload import 11 %, 2597.39 kips
+Graph/payload import 12 %, 2615.87 kips
+Graph/payload import 13 %, 2630.55 kips
+Graph/payload import 14 %, 2645.08 kips
+Graph/payload import 15 %, 2544 kips
+Graph/payload import 16 %, 2572.52 kips
+Graph/payload import 17 %, 2595.51 kips
+Graph/payload import 18 %, 2613.97 kips
+Graph/payload import 19 %, 2633.26 kips
+Graph/payload import 20 %, 2654.34 kips
+Graph/payload import 21 %, 2673.99 kips
+Graph/payload import 22 %, 2692.23 kips
+Graph/payload import 23 %, 2709.31 kips
+Graph/payload import 24 %, 2724.24 kips
+Graph/payload import 25 %, 2738.29 kips
+Graph/payload import 26 %, 2751.46 kips
+Graph/payload import 27 %, 2763.23 kips
+Graph/payload import 28 %, 2773 kips
+Graph/payload import 29 %, 2782.35 kips
+Graph/payload import 30 %, 2663.17 kips
+Graph/payload import 31 %, 2679.74 kips
+Graph/payload import 32 %, 2679.92 kips
+Graph/payload import 33 %, 2694.06 kips
+Graph/payload import 34 %, 2707.41 kips
+Graph/payload import 35 %, 2720.63 kips
+Graph/payload import 36 %, 2709.52 kips
+Graph/payload import 37 %, 2623.04 kips
+Graph/payload import 38 %, 2542.27 kips
+Graph/payload import 39 %, 2473.82 kips
+Graph/payload import 40 %, 2416.76 kips
+Graph/payload import 41 %, 2431.58 kips
+Graph/payload import 42 %, 2445.46 kips
+Graph/payload import 43 %, 2458.73 kips
+Graph/payload import 44 %, 2471.74 kips
+Graph/payload import 45 %, 2484.18 kips
+Graph/payload import 46 %, 2496.4 kips
+Graph/payload import 47 %, 2508.14 kips
+Graph/payload import 48 %, 2519.57 kips
+Graph/payload import 49 %, 2530.67 kips
+Graph/payload import 50 %, 2541.41 kips
+Graph/payload import 51 %, 2551.85 kips
+Graph/payload import 52 %, 2561.8 kips
+Graph/payload import 53 %, 2571.82 kips
+Graph/payload import 54 %, 2581.19 kips
+Graph/payload import 55 %, 2590.17 kips
+Graph/payload import 56 %, 2599.07 kips
+Graph/payload import 57 %, 2607.77 kips
+Graph/payload import 58 %, 2615.94 kips
+Graph/payload import 59 %, 2624.04 kips
+Graph/payload import 60 %, 2510.3 kips
+Graph/payload import 61 %, 2519.2 kips
+Graph/payload import 62 %, 2527.98 kips
+Graph/payload import 63 %, 2536.51 kips
+Graph/payload import 64 %, 2544.74 kips
+Graph/payload import 65 %, 2552.92 kips
+Graph/payload import 66 %, 2560.63 kips
+Graph/payload import 67 %, 2568.48 kips
+Graph/payload import 68 %, 2576.1 kips
+Graph/payload import 69 %, 2583.5 kips
+Graph/payload import 70 %, 2590.88 kips
+Graph/payload import 71 %, 2598.11 kips
+Graph/payload import 72 %, 2605.13 kips
+Graph/payload import 73 %, 2612 kips
+Graph/payload import 74 %, 2618.84 kips
+Graph/payload import 75 %, 2625.35 kips
+Graph/payload import 76 %, 2631.74 kips
+Graph/payload import 77 %, 2637.86 kips
+Graph/payload import 78 %, 2643.65 kips
+Graph/payload import 79 %, 2649.53 kips
+Graph/payload import 80 %, 2655.13 kips
+Graph/payload import 81 %, 2660.77 kips
+Graph/payload import 82 %, 2666.25 kips
+Graph/payload import 83 %, 2671.76 kips
+Graph/payload import 84 %, 2676.79 kips
+Graph/payload import 85 %, 2681.9 kips
+Graph/payload import 86 %, 2686.85 kips
+Graph/payload import 87 %, 2691.83 kips
+Graph/payload import 88 %, 2696.63 kips
+Graph/payload import 89 %, 2701.25 kips
+Graph/payload import 90 %, 2705.83 kips
+Graph/payload import 91 %, 2710.19 kips
+Graph/payload import 92 %, 2714.4 kips
+Graph/payload import 93 %, 2718.6 kips
+Graph/payload import 94 %, 2722.7 kips
+Graph/payload import 95 %, 2726.75 kips
+Graph/payload import 96 %, 2730.55 kips
+Graph/payload import 97 %, 2734.07 kips
+Graph/payload import 98 %, 2737.81 kips
+Graph/payload import 99 %, 2741.49 kips
+Graph/payload import 100 %, 2745.98 kips
+Float graph payload import time:3.6417 seconds
+build_stage=graph_payload_import us=3.6417e+06 count=10000000 record_bytes=80 total_bytes=800000000 kips=2745.97 MBps=219.678
+Build time:94.3269  seconds
+build_stage=save_index us=1.54081e+06
+build_total_us=9.58678e+07
+Index storage size: 2285.33 MB (index=2285.33 MB, auxiliary=0.001084 MB, total_bytes=2285326172)
+Parsing gt:
+1000
+Loaded gt
+1	0.146	58.461 us	hnsw_search_us_per_query=58.461	total_us_per_query=58.461
+2	0.237	42.674 us	hnsw_search_us_per_query=42.674	total_us_per_query=42.674
+3	0.3	43.825 us	hnsw_search_us_per_query=43.825	total_us_per_query=43.825
+4	0.352	49.454 us	hnsw_search_us_per_query=49.454	total_us_per_query=49.454
+5	0.397	55.771 us	hnsw_search_us_per_query=55.771	total_us_per_query=55.771
+6	0.433	62.04 us	hnsw_search_us_per_query=62.04	total_us_per_query=62.04
+7	0.456	67.233 us	hnsw_search_us_per_query=67.233	total_us_per_query=67.233
+8	0.473	72.562 us	hnsw_search_us_per_query=72.562	total_us_per_query=72.562
+9	0.496	77.744 us	hnsw_search_us_per_query=77.744	total_us_per_query=77.744
+10	0.512	215.869 us	hnsw_search_us_per_query=215.869	total_us_per_query=215.869
+11	0.529	139.374 us	hnsw_search_us_per_query=139.374	total_us_per_query=139.374
+12	0.546	103.244 us	hnsw_search_us_per_query=103.244	total_us_per_query=103.244
+13	0.557	104.236 us	hnsw_search_us_per_query=104.236	total_us_per_query=104.236
+14	0.564	106.17 us	hnsw_search_us_per_query=106.17	total_us_per_query=106.17
+15	0.57	109.659 us	hnsw_search_us_per_query=109.659	total_us_per_query=109.659
+16	0.579	113.277 us	hnsw_search_us_per_query=113.277	total_us_per_query=113.277
+17	0.578	117.702 us	hnsw_search_us_per_query=117.702	total_us_per_query=117.702
+18	0.587	120.327 us	hnsw_search_us_per_query=120.327	total_us_per_query=120.327
+19	0.595	124.323 us	hnsw_search_us_per_query=124.323	total_us_per_query=124.323
+20	0.602	127.753 us	hnsw_search_us_per_query=127.753	total_us_per_query=127.753
+21	0.609	130.696 us	hnsw_search_us_per_query=130.696	total_us_per_query=130.696
+22	0.615	135.534 us	hnsw_search_us_per_query=135.534	total_us_per_query=135.534
+23	0.619	137.791 us	hnsw_search_us_per_query=137.791	total_us_per_query=137.791
+24	0.627	141.596 us	hnsw_search_us_per_query=141.596	total_us_per_query=141.596
+25	0.629	144.63 us	hnsw_search_us_per_query=144.63	total_us_per_query=144.63
+26	0.633	149.192 us	hnsw_search_us_per_query=149.192	total_us_per_query=149.192
+27	0.639	153.493 us	hnsw_search_us_per_query=153.493	total_us_per_query=153.493
+28	0.642	156.929 us	hnsw_search_us_per_query=156.929	total_us_per_query=156.929
+29	0.648	394.992 us	hnsw_search_us_per_query=394.992	total_us_per_query=394.992
+30	0.653	237.207 us	hnsw_search_us_per_query=237.207	total_us_per_query=237.207
+40	0.675	239.959 us	hnsw_search_us_per_query=239.959	total_us_per_query=239.959
+50	0.689	257.42 us	hnsw_search_us_per_query=257.42	total_us_per_query=257.42
+60	0.703	281.696 us	hnsw_search_us_per_query=281.696	total_us_per_query=281.696
+70	0.716	306.973 us	hnsw_search_us_per_query=306.973	total_us_per_query=306.973
+80	0.727	336.159 us	hnsw_search_us_per_query=336.159	total_us_per_query=336.159
+90	0.733	365.179 us	hnsw_search_us_per_query=365.179	total_us_per_query=365.179
+100	0.737	707.987 us	hnsw_search_us_per_query=707.987	total_us_per_query=707.987
+140	0.749	604.371 us	hnsw_search_us_per_query=604.371	total_us_per_query=604.371
+180	0.755	621.687 us	hnsw_search_us_per_query=621.687	total_us_per_query=621.687
+220	0.76	732.021 us	hnsw_search_us_per_query=732.021	total_us_per_query=732.021
+260	0.766	1228.29 us	hnsw_search_us_per_query=1228.29	total_us_per_query=1228.29
+300	0.771	915.463 us	hnsw_search_us_per_query=915.463	total_us_per_query=915.463
+340	0.771	1396.24 us	hnsw_search_us_per_query=1396.24	total_us_per_query=1396.24
+380	0.773	1091.1 us	hnsw_search_us_per_query=1091.1	total_us_per_query=1091.1
+420	0.774	1549.88 us	hnsw_search_us_per_query=1549.88	total_us_per_query=1549.88
+460	0.774	1223.16 us	hnsw_search_us_per_query=1223.16	total_us_per_query=1223.16
+Index storage size: 2285.33 MB (index=2285.33 MB, auxiliary=0.001084 MB, total_bytes=2285326172)
