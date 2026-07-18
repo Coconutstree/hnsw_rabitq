@@ -555,7 +555,7 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const char *dataset_name = "dbpedia_openai1536";
+    const char *dataset_name = "deep1B";
     const int efConstruction = RABITQ_EF_CONSTRUCTION;
     const int M = 16;
     const int centroid_count = 64;
@@ -563,19 +563,19 @@ void sift_test1B() {
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
-    const size_t vecdim = 1536;
+    const size_t vecdim = 96;
     const size_t gt_width = 100;
 
     char path_index[1024];
-    const char *path_q = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs";
-    const char *path_data = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs";
-    const char *path_gt = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs";
+    const char *path_q = "/home/kai3/coco/data/deep1B/deep1B_query.fvecs";
+    const char *path_data = "/home/kai3/coco/data/deep1B/deep1B_base.fvecs";
+    const char *path_gt = "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs";
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "dbpedia_openai1536_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+        "deep1B_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
