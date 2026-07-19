@@ -647,6 +647,10 @@ class RaBitQSpace : public SpaceInterface<float> {
         return dim_;
     }
 
+    size_t dim() const {
+        return dim_;
+    }
+
     size_t get_code_dim() const {
         return code_dim_;
     }

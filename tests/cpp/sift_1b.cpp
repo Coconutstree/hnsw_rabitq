@@ -209,7 +209,7 @@ size_t fvec_count_from_file_size(const string &path, size_t vecdim) {
     return bytes / record_bytes;
 }
 
-void read_fvec_as_float(ifstream &input, float *dst, size_t vecdim) {
+void read_fvec_as_float(ifstream &input, float *dst, size_t vecdim, bool normalize_vector = false) {
     int in = 0;
     input.read(reinterpret_cast<char *>(&in), 4);
     if (!input.good() || in != static_cast<int>(vecdim)) {
@@ -219,10 +219,12 @@ void read_fvec_as_float(ifstream &input, float *dst, size_t vecdim) {
     if (!input.good()) {
         throw runtime_error("file error");
     }
-    normalize_l2(dst, vecdim);
+    if (normalize_vector) {
+        normalize_l2(dst, vecdim);
+    }
 }
 
-vector<float> load_fvecs_raw(const string &path, size_t vec_count, size_t vecdim) {
+vector<float> load_fvecs_raw(const string &path, size_t vec_count, size_t vecdim, bool normalize_vectors = false) {
     ifstream input(path, ios::binary);
     if (!input.is_open()) {
         throw runtime_error("cannot open raw fvec file: " + path);
@@ -230,7 +232,7 @@ vector<float> load_fvecs_raw(const string &path, size_t vec_count, size_t vecdim
 
     vector<float> raw(vec_count * vecdim, 0.0f);
     for (size_t i = 0; i < vec_count; ++i) {
-        read_fvec_as_float(input, raw.data() + i * vecdim, vecdim);
+        read_fvec_as_float(input, raw.data() + i * vecdim, vecdim, normalize_vectors);
     }
     return raw;
 }
@@ -265,10 +267,14 @@ class FVecRandomReader {
     ifstream input_;
     size_t vecdim_{0};
     size_t record_bytes_{0};
+    bool normalize_vectors_{false};
 
  public:
-    FVecRandomReader(const string &path, size_t vecdim)
-        : input_(path, ios::binary), vecdim_(vecdim), record_bytes_(4 + vecdim * sizeof(float)) {
+    FVecRandomReader(const string &path, size_t vecdim, bool normalize_vectors = false)
+        : input_(path, ios::binary),
+          vecdim_(vecdim),
+          record_bytes_(4 + vecdim * sizeof(float)),
+          normalize_vectors_(normalize_vectors) {
         if (!input_.is_open()) {
             throw runtime_error("cannot open base file for rerank: " + path);
         }
@@ -280,7 +286,7 @@ class FVecRandomReader {
         if (!input_.good()) {
             throw runtime_error("failed to seek base vector");
         }
-        read_fvec_as_float(input_, dst, vecdim_);
+        read_fvec_as_float(input_, dst, vecdim_, normalize_vectors_);
     }
 };
 
@@ -379,7 +385,8 @@ vector<float> train_global_center(
     ifstream &input,
     size_t vecdim,
     size_t vecsize,
-    size_t sample_count) {
+    size_t sample_count,
+    bool normalize_vectors = false) {
     input.clear();
     input.seekg(0, ios::beg);
 
@@ -391,7 +398,7 @@ vector<float> train_global_center(
     vector<float> center(vecdim, 0.0f);
     vector<float> sample(vecdim, 0.0f);
     for (size_t i = 0; i < actual_sample_count; ++i) {
-        read_fvec_as_float(input, sample.data(), vecdim);
+        read_fvec_as_float(input, sample.data(), vecdim, normalize_vectors);
         for (size_t d = 0; d < vecdim; ++d) {
             center[d] += sample[d];
         }
@@ -503,6 +510,7 @@ struct SearchReport {
     long survivor_long_computed{0};
     float prune_rate{0.0f};
     float long_computations_per_query{0.0f};
+    size_t actual_rerank_candidates{0};
 };
 
 static SearchReport test_approx(
@@ -514,42 +522,30 @@ static SearchReport test_approx(
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
     size_t search_ef,
-    size_t rerank_candidates) {
+    size_t rerank_candidates,
+    bool normalize_vectors) {
+    (void) search_ef;
     size_t correct = 0;
     size_t total = 0;
     double hnsw_us = 0.0;
     double rerank_us = 0.0;
-    const size_t candidate_count = std::max(k, std::min(rerank_candidates, std::max(k, search_ef)));
-    FVecRandomReader raw_reader(base_path, vecdim);
-    vector<float> raw_candidate(vecdim, 0.0f);
+    size_t actual_rerank_candidates = k;
+    FVecRandomReader raw_reader(base_path, vecdim, normalize_vectors);
     appr_alg.index().metric_lower_bound_checked = 0;
     appr_alg.index().metric_lower_bound_pruned = 0;
     appr_alg.index().metric_survivor_long_computed = 0;
 
     for (size_t i = 0; i < qsize; i++) {
-        StopW hnsw_timer;
         vector<pair<float, labeltype>> results =
-            appr_alg.searchKnnCloserFirst(massQ + vecdim * i, candidate_count);
-        hnsw_us += hnsw_timer.getElapsedTimeMicro();
-
-        if (candidate_count > k) {
-            StopW rerank_timer;
-            vector<pair<float, labeltype>> reranked;
-            reranked.reserve(results.size());
-            const float *query = massQ + vecdim * i;
-            for (const auto &entry : results) {
-                raw_reader.readVector(static_cast<size_t>(entry.second), raw_candidate.data());
-                reranked.emplace_back(raw_l2_float(query, raw_candidate.data(), vecdim), entry.second);
-            }
-            std::sort(reranked.begin(), reranked.end());
-            if (reranked.size() > k) {
-                reranked.resize(k);
-            }
-            results.swap(reranked);
-            rerank_us += rerank_timer.getElapsedTimeMicro();
-        } else if (results.size() > k) {
-            results.resize(k);
-        }
+            appr_alg.searchKnnWithRawRerankCloserFirst(
+                massQ + vecdim * i,
+                k,
+                rerank_candidates,
+                raw_reader,
+                nullptr,
+                &actual_rerank_candidates,
+                &hnsw_us,
+                &rerank_us);
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
@@ -575,6 +571,7 @@ static SearchReport test_approx(
     report.lower_bound_checked = appr_alg.index().metric_lower_bound_checked.load();
     report.lower_bound_pruned = appr_alg.index().metric_lower_bound_pruned.load();
     report.survivor_long_computed = appr_alg.index().metric_survivor_long_computed.load();
+    report.actual_rerank_candidates = actual_rerank_candidates;
     report.long_computations_per_query =
         static_cast<float>(static_cast<double>(report.survivor_long_computed) /
                            static_cast<double>(qsize));
@@ -594,7 +591,8 @@ static void test_vs_recall(
     size_t vecdim,
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
-    size_t rerank_candidates) {
+    size_t rerank_candidates,
+    bool normalize_vectors) {
     vector<size_t> efs;
     for (size_t i = 1; i <= 30; i++) {
         if (i >= k) {
@@ -623,13 +621,14 @@ static void test_vs_recall(
             answers,
             k,
             ef,
-            rerank_candidates);
+            rerank_candidates,
+            normalize_vectors);
 
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
              << "\t" << "raw_rerank_us_per_query=" << report.redundant_rerank_us_per_query
-             << "\t" << "rerank_candidates=" << std::max(k, std::min(rerank_candidates, std::max(k, ef)))
+             << "\t" << "rerank_candidates=" << report.actual_rerank_candidates
              << "\t" << "total_us_per_query=" << report.total_us_per_query << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
@@ -639,27 +638,28 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const char *dataset_name = "deep1B";
+    const char *dataset_name = "sift10m";
     const int efConstruction = RABITQ_EF_CONSTRUCTION;
     const int M = 16;
     const int centroid_count = 64;
     const int rerank_candidates = 100;
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
+    const bool normalize_vectors = false;
 
-    const size_t vecdim = 96;
-    const size_t gt_width = 100;
+    const size_t vecdim = 128;
+    const size_t gt_width = 1000;
 
     char path_index[1024];
-    const char *path_q = "/home/kai3/coco/data/deep1B/deep1B_query.fvecs";
-    const char *path_data = "/home/kai3/coco/data/deep1B/deep1B_base.fvecs";
-    const char *path_gt = "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs";
+    const char *path_q = "/home/kai3/coco/data/sift10m/sift10m_query.fvecs";
+    const char *path_data = "/home/kai3/coco/data/sift10m/sift10m_base.fvecs";
+    const char *path_gt = "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs";
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "deep1B_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+        "sift10m_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
@@ -708,7 +708,7 @@ void sift_test1B() {
         throw runtime_error("cannot open query file");
     }
     for (size_t i = 0; i < qsize; i++) {
-        read_fvec_as_float(inputQ, massQ + i * vecdim, vecdim);
+        read_fvec_as_float(inputQ, massQ + i * vecdim, vecdim, normalize_vectors);
     }
     inputQ.close();
 
@@ -761,7 +761,8 @@ void sift_test1B() {
             input,
             vecdim,
             vecsize,
-            centroid_train_samples);
+            centroid_train_samples,
+            normalize_vectors);
         appr_alg->space().setGlobalCenter(global_center.data());
         const double train_center_us = train_center_timer.getElapsedTimeMicro();
         cout << "build_stage=train_center"
@@ -789,7 +790,7 @@ void sift_test1B() {
             random_seed);
 
         vector<float> first(vecdim);
-        read_fvec_as_float(input, first.data(), vecdim);
+        read_fvec_as_float(input, first.data(), vecdim, normalize_vectors);
         {
             StopW payload_timer;
             appr_alg->space().encodeVector(first.data(), payloads.data());
@@ -804,7 +805,7 @@ void sift_test1B() {
             int label = 0;
 #pragma omp critical
             {
-                read_fvec_as_float(input, local_mass.data(), vecdim);
+                read_fvec_as_float(input, local_mass.data(), vecdim, normalize_vectors);
                 j1++;
                 label = j1;
                 if (j1 % report_every == 0) {
@@ -892,7 +893,8 @@ void sift_test1B() {
         vecdim,
         answers,
         k,
-        rerank_candidates);
+        rerank_candidates,
+        normalize_vectors);
     print_index_file_size(
         path_index,
         vecsize,

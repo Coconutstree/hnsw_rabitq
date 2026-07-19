@@ -1,0 +1,70 @@
+nohup: ignoring input
+Run config:
+  dataset=deep1B
+  base_count=9990000
+  query_count=10000
+  dimension=96
+  M=16 efConstruction=40
+  quantizer=4-bit ExRaBitQ centroid_count=64 random_seed=100
+  build_distance=float32_l2 stored_data=4bit_rabitq query_distance=float32_query_to_4bit_code
+  base_path=/home/kai3/coco/data/deep1B/deep1B_base.fvecs
+  query_path=/home/kai3/coco/data/deep1B/deep1B_query.fvecs
+  gt_path=/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs
+  index_path=deep1B_rabitq_floatbuild_ef_40_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=80 (4-bit code)
+Loading index from deep1B_rabitq_floatbuild_ef_40_M_16_C_64.bin:
+Index storage size: 2283.05 MB (index=2283.05 MB, auxiliary=0.000956 MB, total_bytes=2283053132)
+storage_breakdown index_file_MB=2283.05 auxiliary_MB=0.000956 encoded_payload_estimate_MB=799.2 graph_and_metadata_estimate_MB=1483.85 extra_rerank_data_MB=3876.12 raw_rerank_enabled=1 effective_query_storage_MB=6159.17 effective_query_storage_bytes=6159173132
+Parsing gt:
+10000
+Loaded gt
+1	0.1483	23.0246 us	hnsw_search_us_per_query=23.0246	raw_rerank_us_per_query=0	rerank_candidates=1	total_us_per_query=23.0246
+2	0.2645	36.0003 us	hnsw_search_us_per_query=27.1845	raw_rerank_us_per_query=8.81576	rerank_candidates=2	total_us_per_query=36.0003
+3	0.3503	47.1633 us	hnsw_search_us_per_query=33.89	raw_rerank_us_per_query=13.2732	rerank_candidates=3	total_us_per_query=47.1633
+4	0.4153	53.9562 us	hnsw_search_us_per_query=36.5543	raw_rerank_us_per_query=17.4018	rerank_candidates=4	total_us_per_query=53.9562
+5	0.4665	64.76 us	hnsw_search_us_per_query=43.0872	raw_rerank_us_per_query=21.6728	rerank_candidates=5	total_us_per_query=64.76
+6	0.5094	71.1516 us	hnsw_search_us_per_query=45.4679	raw_rerank_us_per_query=25.6837	rerank_candidates=6	total_us_per_query=71.1516
+7	0.5459	80.5687 us	hnsw_search_us_per_query=50.6933	raw_rerank_us_per_query=29.8754	rerank_candidates=7	total_us_per_query=80.5687
+8	0.5747	85.4707 us	hnsw_search_us_per_query=51.7001	raw_rerank_us_per_query=33.7707	rerank_candidates=8	total_us_per_query=85.4707
+9	0.601	96.0605 us	hnsw_search_us_per_query=58.1366	raw_rerank_us_per_query=37.924	rerank_candidates=9	total_us_per_query=96.0605
+10	0.6237	102.165 us	hnsw_search_us_per_query=59.8612	raw_rerank_us_per_query=42.3038	rerank_candidates=10	total_us_per_query=102.165
+11	0.642	109.64 us	hnsw_search_us_per_query=61.3549	raw_rerank_us_per_query=48.2855	rerank_candidates=11	total_us_per_query=109.64
+12	0.6608	115.253 us	hnsw_search_us_per_query=65.0716	raw_rerank_us_per_query=50.1815	rerank_candidates=12	total_us_per_query=115.253
+13	0.6758	123.666 us	hnsw_search_us_per_query=69.2353	raw_rerank_us_per_query=54.4309	rerank_candidates=13	total_us_per_query=123.666
+14	0.6864	133.094 us	hnsw_search_us_per_query=73.5006	raw_rerank_us_per_query=59.5932	rerank_candidates=14	total_us_per_query=133.094
+15	0.6976	136.766 us	hnsw_search_us_per_query=74.2928	raw_rerank_us_per_query=62.473	rerank_candidates=15	total_us_per_query=136.766
+16	0.7098	145.572 us	hnsw_search_us_per_query=76.0331	raw_rerank_us_per_query=69.539	rerank_candidates=16	total_us_per_query=145.572
+17	0.7201	151.56 us	hnsw_search_us_per_query=80.8856	raw_rerank_us_per_query=70.6742	rerank_candidates=17	total_us_per_query=151.56
+18	0.7293	160.216 us	hnsw_search_us_per_query=85.11	raw_rerank_us_per_query=75.1058	rerank_candidates=18	total_us_per_query=160.216
+19	0.7384	165.854 us	hnsw_search_us_per_query=87.0052	raw_rerank_us_per_query=78.8493	rerank_candidates=19	total_us_per_query=165.854
+20	0.7484	173.432 us	hnsw_search_us_per_query=89.5055	raw_rerank_us_per_query=83.9261	rerank_candidates=20	total_us_per_query=173.432
+21	0.756	178.25 us	hnsw_search_us_per_query=91.265	raw_rerank_us_per_query=86.9854	rerank_candidates=21	total_us_per_query=178.25
+22	0.7637	186.28 us	hnsw_search_us_per_query=95.0668	raw_rerank_us_per_query=91.2135	rerank_candidates=22	total_us_per_query=186.28
+23	0.7691	193.516 us	hnsw_search_us_per_query=98.0151	raw_rerank_us_per_query=95.5014	rerank_candidates=23	total_us_per_query=193.516
+24	0.7754	202.919 us	hnsw_search_us_per_query=98.0246	raw_rerank_us_per_query=104.894	rerank_candidates=24	total_us_per_query=202.919
+25	0.7803	206.291 us	hnsw_search_us_per_query=99.9113	raw_rerank_us_per_query=106.379	rerank_candidates=25	total_us_per_query=206.291
+26	0.7855	214.133 us	hnsw_search_us_per_query=104.323	raw_rerank_us_per_query=109.81	rerank_candidates=26	total_us_per_query=214.133
+27	0.7911	219.548 us	hnsw_search_us_per_query=105.22	raw_rerank_us_per_query=114.328	rerank_candidates=27	total_us_per_query=219.548
+28	0.7963	226.256 us	hnsw_search_us_per_query=107.674	raw_rerank_us_per_query=118.582	rerank_candidates=28	total_us_per_query=226.256
+29	0.8003	234.473 us	hnsw_search_us_per_query=113.65	raw_rerank_us_per_query=120.823	rerank_candidates=29	total_us_per_query=234.473
+30	0.8054	242.331 us	hnsw_search_us_per_query=114.055	raw_rerank_us_per_query=128.276	rerank_candidates=30	total_us_per_query=242.331
+40	0.8417	307.679 us	hnsw_search_us_per_query=142.142	raw_rerank_us_per_query=165.538	rerank_candidates=40	total_us_per_query=307.679
+50	0.8631	375.643 us	hnsw_search_us_per_query=165.981	raw_rerank_us_per_query=209.663	rerank_candidates=50	total_us_per_query=375.643
+60	0.8789	441.654 us	hnsw_search_us_per_query=191.985	raw_rerank_us_per_query=249.669	rerank_candidates=60	total_us_per_query=441.654
+70	0.8937	509.578 us	hnsw_search_us_per_query=215.92	raw_rerank_us_per_query=293.658	rerank_candidates=70	total_us_per_query=509.578
+80	0.9038	579.134 us	hnsw_search_us_per_query=243.654	raw_rerank_us_per_query=335.479	rerank_candidates=80	total_us_per_query=579.134
+90	0.9114	646.184 us	hnsw_search_us_per_query=268.373	raw_rerank_us_per_query=377.811	rerank_candidates=90	total_us_per_query=646.184
+100	0.9196	711.052 us	hnsw_search_us_per_query=296.786	raw_rerank_us_per_query=414.266	rerank_candidates=100	total_us_per_query=711.052
+140	0.9386	800.151 us	hnsw_search_us_per_query=378.805	raw_rerank_us_per_query=421.346	rerank_candidates=100	total_us_per_query=800.151
+180	0.95	889.496 us	hnsw_search_us_per_query=468.974	raw_rerank_us_per_query=420.522	rerank_candidates=100	total_us_per_query=889.496
+220	0.9576	976.435 us	hnsw_search_us_per_query=548.627	raw_rerank_us_per_query=427.807	rerank_candidates=100	total_us_per_query=976.435
+260	0.9634	1061.84 us	hnsw_search_us_per_query=630.966	raw_rerank_us_per_query=430.874	rerank_candidates=100	total_us_per_query=1061.84
+300	0.9687	1146.01 us	hnsw_search_us_per_query=717.256	raw_rerank_us_per_query=428.752	rerank_candidates=100	total_us_per_query=1146.01
+340	0.9715	1226.62 us	hnsw_search_us_per_query=796.271	raw_rerank_us_per_query=430.349	rerank_candidates=100	total_us_per_query=1226.62
+380	0.974	1308.28 us	hnsw_search_us_per_query=870.429	raw_rerank_us_per_query=437.848	rerank_candidates=100	total_us_per_query=1308.28
+420	0.977	1383.84 us	hnsw_search_us_per_query=951.724	raw_rerank_us_per_query=432.117	rerank_candidates=100	total_us_per_query=1383.84
+460	0.9785	1464.7 us	hnsw_search_us_per_query=1026.41	raw_rerank_us_per_query=438.281	rerank_candidates=100	total_us_per_query=1464.7
+Index storage size: 2283.05 MB (index=2283.05 MB, auxiliary=0.000956 MB, total_bytes=2283053132)
+storage_breakdown index_file_MB=2283.05 auxiliary_MB=0.000956 encoded_payload_estimate_MB=799.2 graph_and_metadata_estimate_MB=1483.85 extra_rerank_data_MB=3876.12 raw_rerank_enabled=1 effective_query_storage_MB=6159.17 effective_query_storage_bytes=6159173132

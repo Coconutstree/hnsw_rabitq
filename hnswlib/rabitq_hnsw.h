@@ -25,6 +25,15 @@ class RaBitQHierarchicalNSW {
         return location + ".rabitq";
     }
 
+    static float rawL2Distance(const float *query, const float *base, size_t dim) {
+        float total = 0.0f;
+        for (size_t i = 0; i < dim; ++i) {
+            const float diff = query[i] - base[i];
+            total += diff * diff;
+        }
+        return total;
+    }
+
  //RabitQ空间对象，负责将原始向量编码成RaBitQ编码，以及计算两个编码向量之间的距离
     RaBitQSpace space_;
     //负责对“编码后的向量”进行索引和搜索
@@ -64,6 +73,10 @@ class RaBitQHierarchicalNSW {
 //设置查询时考虑的候选节点数量，直接调用index_的setEf方法
     void setEf(size_t ef) {
         index_.setEf(ef);
+    }
+
+    size_t getEf() const {
+        return index_.getEf();
     }
 //保存索引到文件，直接调用index_的saveIndex方法
     void saveIndex(const std::string &location) {
@@ -161,6 +174,61 @@ class RaBitQHierarchicalNSW {
     std::vector<std::pair<float, labeltype>>
     searchKnnCloserFirst(const float *raw_query, size_t k, BaseFilterFunctor *isIdAllowed = nullptr) const {
         return index_.searchKnnCloserFirst(raw_query, k, isIdAllowed);
+    }
+
+    template <typename RawVectorReader>
+    std::vector<std::pair<float, labeltype>>
+    searchKnnWithRawRerankCloserFirst(
+        const float *raw_query,
+        size_t k,
+        size_t max_rerank_candidates,
+        RawVectorReader &raw_reader,
+        BaseFilterFunctor *isIdAllowed = nullptr,
+        size_t *actual_rerank_candidates = nullptr,
+        double *hnsw_search_us = nullptr,
+        double *raw_rerank_us = nullptr) const {
+        const size_t actual_candidates =
+            std::max(k, std::min(max_rerank_candidates, std::max(k, index_.getEf())));
+        if (actual_rerank_candidates) {
+            *actual_rerank_candidates = actual_candidates;
+        }
+
+        const auto hnsw_start = std::chrono::steady_clock::now();
+        std::vector<std::pair<float, labeltype>> results =
+            searchKnnCloserFirst(raw_query, actual_candidates, isIdAllowed);
+        const auto hnsw_end = std::chrono::steady_clock::now();
+        if (hnsw_search_us) {
+            *hnsw_search_us +=
+                std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
+                    hnsw_end - hnsw_start).count();
+        }
+
+        if (actual_candidates <= k) {
+            if (results.size() > k) {
+                results.resize(k);
+            }
+            return results;
+        }
+
+        const auto rerank_start = std::chrono::steady_clock::now();
+        std::vector<float> raw_candidate(space_.dim(), 0.0f);
+        std::vector<std::pair<float, labeltype>> reranked;
+        reranked.reserve(results.size());
+        for (const auto &entry : results) {
+            raw_reader.readVector(static_cast<size_t>(entry.second), raw_candidate.data());
+            reranked.emplace_back(rawL2Distance(raw_query, raw_candidate.data(), space_.dim()), entry.second);
+        }
+        std::sort(reranked.begin(), reranked.end());
+        if (reranked.size() > k) {
+            reranked.resize(k);
+        }
+        const auto rerank_end = std::chrono::steady_clock::now();
+        if (raw_rerank_us) {
+            *raw_rerank_us +=
+                std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
+                    rerank_end - rerank_start).count();
+        }
+        return reranked;
     }
 
     std::vector<labeltype>

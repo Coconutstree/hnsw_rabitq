@@ -198,6 +198,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         ef_ = ef;
     }
 
+    size_t getEf() const {
+        return ef_;
+    }
+
     void importGraphAndCopyDataFrom(
         const HierarchicalNSW<dist_t> &source,
         const std::function<void(tableint source_internal_id, void *target_data)> &copy_data) {
