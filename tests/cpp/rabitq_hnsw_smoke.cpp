@@ -126,15 +126,6 @@ int main() {
     for (size_t i = 0; i < 4; ++i) {
         float_graph.addPoint(data.data() + i * dim, i);
     }
-    hnswlib::RaBitQHierarchicalNSW float_build_index(dim, 4, 1, 8, 32, 0);
-    float_build_index.space().setIdentityRotation();
-    float_build_index.importGraphFromFloatIndex(float_graph);
-    assert(float_build_index.index().getCurrentElementCount() == float_graph.getCurrentElementCount());
-    assert(float_build_index.index().data_size_ == float_build_index.space().get_data_size());
-    auto float_build_result = float_build_index.searchKnn(data.data(), 1);
-    assert(!float_build_result.empty());
-    assert(std::isfinite(float_build_result.top().first));
-
     hnswlib::RaBitQHierarchicalNSW payload_build_index(dim, 4, 1, 8, 32, 0);
     payload_build_index.space().setIdentityRotation();
     const size_t payload_record_size = payload_build_index.space().get_data_size();
@@ -152,20 +143,19 @@ int main() {
     assert(payload_build_index.index().data_size_ == payload_build_index.space().get_data_size());
     auto payload_build_result = payload_build_index.searchKnn(data.data(), 1);
     assert(!payload_build_result.empty());
-    assert(payload_build_result.top().second == float_build_result.top().second);
-    assert(std::fabs(payload_build_result.top().first - float_build_result.top().first) < 1e-5f);
+    assert(std::isfinite(payload_build_result.top().first));
 
     const char *tmp_floatbuild_index = "/tmp/rabitq_hnsw_smoke_floatbuild.index";
     const char *tmp_floatbuild_state = "/tmp/rabitq_hnsw_smoke_floatbuild.index.rabitq";
     std::remove(tmp_floatbuild_index);
     std::remove(tmp_floatbuild_state);
-    float_build_index.saveIndex(tmp_floatbuild_index);
+    payload_build_index.saveIndex(tmp_floatbuild_index);
     hnswlib::RaBitQHierarchicalNSW loaded_floatbuild(dim, 4, 1, 8, 32, 0);
     loaded_floatbuild.loadIndex(tmp_floatbuild_index, 4);
     assert(loaded_floatbuild.index().data_size_ == loaded_floatbuild.space().get_data_size());
     auto loaded_floatbuild_result = loaded_floatbuild.searchKnn(data.data(), 1);
     assert(!loaded_floatbuild_result.empty());
-    assert(loaded_floatbuild_result.top().second == float_build_result.top().second);
+    assert(loaded_floatbuild_result.top().second == payload_build_result.top().second);
     std::remove(tmp_floatbuild_index);
     std::remove(tmp_floatbuild_state);
 

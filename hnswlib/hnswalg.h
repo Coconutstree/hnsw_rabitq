@@ -248,7 +248,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 const size_t link_bytes = size_links_per_element_ * element_levels_[i];
                 linkLists_[i] = (char *) malloc(link_bytes + 1);
                 if (linkLists_[i] == nullptr) {
-                    throw std::runtime_error("Not enough memory: importGraphAndEncodeDataFrom failed to allocate linklist");
+                    throw std::runtime_error("Not enough memory: importGraphAndCopyDataFrom failed to allocate linklist");
                 }
                 memset(linkLists_[i], 0, link_bytes + 1);
                 memcpy(linkLists_[i], source.linkLists_[i], link_bytes);
@@ -263,16 +263,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 }
             }
         }
-    }
-
-    void importGraphAndEncodeDataFrom(
-        const HierarchicalNSW<dist_t> &source,
-        const std::function<void(const void *source_data, void *target_data)> &encode_data) {
-        importGraphAndCopyDataFrom(
-            source,
-            [&source, &encode_data](tableint source_internal_id, void *target_data) {
-                encode_data(source.getDataByInternalId(source_internal_id), target_data);
-            });
     }
 
 
