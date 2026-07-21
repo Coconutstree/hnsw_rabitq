@@ -779,7 +779,6 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const char *dataset_name = "sift10m";
     const int efConstruction = RABITQ_EF_CONSTRUCTION;
     const int M = 16;
     const int centroid_count = 64;
@@ -787,19 +786,62 @@ void sift_test1B() {
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
-    const size_t vecdim = 128;
-    const size_t gt_width = 1000;
+    struct DatasetConfig {
+        string name;
+        size_t dim;
+        string base_path;
+        string query_path;
+        string gt_path;
+        string index_prefix;
+    };
+
+    const string dataset_choice = getenv_string("RABITQ_DATASET", "deep1B");
+    DatasetConfig dataset;
+    if (dataset_choice == "sift10m") {
+        dataset = DatasetConfig{
+            "sift10m",
+            128,
+            "/home/kai3/coco/data/sift10m/sift10m_base.fvecs",
+            "/home/kai3/coco/data/sift10m/sift10m_query.fvecs",
+            "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs",
+            "sift10m"};
+    } else if (dataset_choice == "dbpedia" || dataset_choice == "dbpedia-openai1536") {
+        dataset = DatasetConfig{
+            "dbpedia-openai1536",
+            1536,
+            "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs",
+            "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs",
+            "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs",
+            "dbpedia-openai1536"};
+    } else if (dataset_choice == "deep1B") {
+        dataset = DatasetConfig{
+            "deep1B",
+            96,
+            "/home/kai3/coco/data/deep1B/deep1B_base.fvecs",
+            "/home/kai3/coco/data/deep1B/deep1B_query.fvecs",
+            "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs",
+            "deep1B"};
+    } else {
+        throw runtime_error(
+            "unknown RABITQ_DATASET=" + dataset_choice +
+            " (expected sift10m, deep1B, or dbpedia)");
+    }
+
+    const char *dataset_name = dataset.name.c_str();
+    const size_t vecdim = dataset.dim;
+    const size_t gt_width = 100;
 
     char path_index[1024];
-    const char *path_q = "/home/kai3/coco/data/sift10m/sift10m_query.fvecs";
-    const char *path_data = "/home/kai3/coco/data/sift10m/sift10m_base.fvecs";
-    const char *path_gt = "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs";
+    const char *path_q = dataset.query_path.c_str();
+    const char *path_data = dataset.base_path.c_str();
+    const char *path_gt = dataset.gt_path.c_str();
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "sift10m_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+        "%s_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+        dataset.index_prefix.c_str(),
         efConstruction,
         M,
         centroid_count);
