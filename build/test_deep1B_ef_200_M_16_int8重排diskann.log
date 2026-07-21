@@ -1,0 +1,279 @@
+nohup: ignoring input
+Run config:
+  dataset=deep1B
+  base_count=9990000
+  query_count=10000
+  dimension=96
+  M=16 efConstruction=200
+  quantizer=4-bit ExRaBitQ centroid_count=64 random_seed=100
+  build_distance=float32_l2 stored_data=4bit_rabitq_plus_residual query_distance=progressive_short_long_residual
+  base_path=/home/kai3/coco/data/deep1B/deep1B_base.fvecs
+  query_path=/home/kai3/coco/data/deep1B/deep1B_query.fvecs
+  gt_path=/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs
+  index_path=deep1B_rabitq_floatbuild_ef_200_M_16_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=220 (4-bit code + residual code)
+Building index:
+Training one global ExRaBitQ center from 200000 base vectors
+build_stage=train_center us=31932
+payload_mode=disk_file payload_record_bytes=220 payload_bytes=2197800000 payload_path=deep1B_rabitq_floatbuild_ef_200_M_16_C_64.bin.payload.tmp
+Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ
+1.001 %, 68.1183 kips  Mem: 3848 Mb 
+2.002 %, 77.4503 kips  Mem: 4005 Mb 
+3.003 %, 68.4326 kips  Mem: 4146 Mb 
+4.004 %, 64.708 kips  Mem: 4206 Mb 
+5.00501 %, 62.261 kips  Mem: 4345 Mb 
+6.00601 %, 61.3486 kips  Mem: 4403 Mb 
+7.00701 %, 60.7686 kips  Mem: 4458 Mb 
+8.00801 %, 56.8369 kips  Mem: 4520 Mb 
+9.00901 %, 58.5827 kips  Mem: 4579 Mb 
+10.01 %, 58.6726 kips  Mem: 4633 Mb 
+11.011 %, 58.9332 kips  Mem: 4690 Mb 
+12.012 %, 58.1076 kips  Mem: 4748 Mb 
+13.013 %, 57.5509 kips  Mem: 4805 Mb 
+14.014 %, 56.8221 kips  Mem: 4862 Mb 
+15.015 %, 51.1624 kips  Mem: 4931 Mb 
+16.016 %, 56.9589 kips  Mem: 4986 Mb 
+17.017 %, 56.4735 kips  Mem: 5044 Mb 
+18.018 %, 54.7549 kips  Mem: 5101 Mb 
+19.019 %, 55.8737 kips  Mem: 5159 Mb 
+20.02 %, 55.9492 kips  Mem: 5216 Mb 
+21.021 %, 53.8319 kips  Mem: 5291 Mb 
+22.022 %, 55.174 kips  Mem: 5349 Mb 
+23.023 %, 53.7205 kips  Mem: 5413 Mb 
+24.024 %, 54.473 kips  Mem: 5463 Mb 
+25.025 %, 54.4381 kips  Mem: 5521 Mb 
+26.026 %, 53.124 kips  Mem: 5598 Mb 
+27.027 %, 53.7823 kips  Mem: 5655 Mb 
+28.028 %, 53.8453 kips  Mem: 5712 Mb 
+29.029 %, 52.9122 kips  Mem: 5768 Mb 
+30.03 %, 44.9626 kips  Mem: 5849 Mb 
+31.031 %, 53.3624 kips  Mem: 5905 Mb 
+32.032 %, 52.9073 kips  Mem: 5964 Mb 
+33.033 %, 52.8251 kips  Mem: 6021 Mb 
+34.034 %, 52.1403 kips  Mem: 6081 Mb 
+35.035 %, 52.6074 kips  Mem: 6134 Mb 
+36.036 %, 52.9499 kips  Mem: 6190 Mb 
+37.037 %, 52.5932 kips  Mem: 6249 Mb 
+38.038 %, 52.5041 kips  Mem: 6305 Mb 
+39.039 %, 52.4206 kips  Mem: 6362 Mb 
+40.04 %, 52.4799 kips  Mem: 6417 Mb 
+41.041 %, 52.3446 kips  Mem: 6476 Mb 
+42.042 %, 52.039 kips  Mem: 6532 Mb 
+43.043 %, 51.8526 kips  Mem: 6590 Mb 
+44.044 %, 51.8247 kips  Mem: 6646 Mb 
+45.045 %, 51.8126 kips  Mem: 6703 Mb 
+46.046 %, 51.834 kips  Mem: 6760 Mb 
+47.047 %, 51.9075 kips  Mem: 6816 Mb 
+48.048 %, 52.0458 kips  Mem: 6874 Mb 
+49.049 %, 51.3114 kips  Mem: 6931 Mb 
+50.0501 %, 51.8686 kips  Mem: 6986 Mb 
+51.0511 %, 51.1388 kips  Mem: 7045 Mb 
+52.0521 %, 51.4509 kips  Mem: 7103 Mb 
+53.0531 %, 51.0239 kips  Mem: 7159 Mb 
+54.0541 %, 50.9877 kips  Mem: 7217 Mb 
+55.0551 %, 50.107 kips  Mem: 7275 Mb 
+56.0561 %, 50.3874 kips  Mem: 7334 Mb 
+57.0571 %, 51.3496 kips  Mem: 7385 Mb 
+58.0581 %, 51.2521 kips  Mem: 7443 Mb 
+59.0591 %, 50.8818 kips  Mem: 7500 Mb 
+60.0601 %, 37.9404 kips  Mem: 7608 Mb 
+61.0611 %, 51.0982 kips  Mem: 7663 Mb 
+62.0621 %, 50.9035 kips  Mem: 7720 Mb 
+63.0631 %, 50.6699 kips  Mem: 7777 Mb 
+64.0641 %, 50.9888 kips  Mem: 7833 Mb 
+65.0651 %, 50.8467 kips  Mem: 7891 Mb 
+66.0661 %, 50.7908 kips  Mem: 7948 Mb 
+67.0671 %, 50.3055 kips  Mem: 8008 Mb 
+68.0681 %, 50.6666 kips  Mem: 8062 Mb 
+69.0691 %, 50.6337 kips  Mem: 8118 Mb 
+70.0701 %, 50.4662 kips  Mem: 8177 Mb 
+71.0711 %, 50.7366 kips  Mem: 8231 Mb 
+72.0721 %, 50.7716 kips  Mem: 8290 Mb 
+73.0731 %, 50.298 kips  Mem: 8347 Mb 
+74.0741 %, 50.8809 kips  Mem: 8405 Mb 
+75.0751 %, 50.499 kips  Mem: 8460 Mb 
+76.0761 %, 50.307 kips  Mem: 8517 Mb 
+77.0771 %, 50.3795 kips  Mem: 8574 Mb 
+78.0781 %, 50.3136 kips  Mem: 8630 Mb 
+79.0791 %, 50.3488 kips  Mem: 8687 Mb 
+80.0801 %, 49.8546 kips  Mem: 8746 Mb 
+81.0811 %, 50.2513 kips  Mem: 8802 Mb 
+82.0821 %, 50.3528 kips  Mem: 8859 Mb 
+83.0831 %, 50.0508 kips  Mem: 8916 Mb 
+84.0841 %, 49.7605 kips  Mem: 8974 Mb 
+85.0851 %, 50.2917 kips  Mem: 9030 Mb 
+86.0861 %, 49.7239 kips  Mem: 9087 Mb 
+87.0871 %, 49.7154 kips  Mem: 9144 Mb 
+88.0881 %, 49.5423 kips  Mem: 9205 Mb 
+89.0891 %, 49.4364 kips  Mem: 9258 Mb 
+90.0901 %, 49.153 kips  Mem: 9314 Mb 
+91.0911 %, 49.2943 kips  Mem: 9372 Mb 
+92.0921 %, 49.6474 kips  Mem: 9428 Mb 
+93.0931 %, 48.3671 kips  Mem: 9485 Mb 
+94.0941 %, 48.392 kips  Mem: 9542 Mb 
+95.0951 %, 48.236 kips  Mem: 9600 Mb 
+96.0961 %, 49.4872 kips  Mem: 9656 Mb 
+97.0971 %, 48.2875 kips  Mem: 9712 Mb 
+98.0981 %, 48.1965 kips  Mem: 9770 Mb 
+99.0991 %, 48.4198 kips  Mem: 9822 Mb 
+Float graph build time:192.651 seconds; importing graph and writing 4-bit payloads
+build_stage=float_graph_build us=1.92651e+08 kips=51.8554
+build_stage=payload_encode cpu_us=1.03627e+09 wall_us=1.92424e+08 count=9990000 record_bytes=220 total_bytes=2197800000 cpu_kips=9.64036 wall_kips=51.9167 cpu_MBps=2.12088 wall_MBps=11.4217
+Graph/payload import 1.001 %, 477.486 kips
+Graph/payload import 2.002 %, 529.966 kips
+Graph/payload import 3.003 %, 553.517 kips
+Graph/payload import 4.004 %, 562.524 kips
+Graph/payload import 5.00501 %, 563.877 kips
+Graph/payload import 6.00601 %, 570.961 kips
+Graph/payload import 7.00701 %, 573.361 kips
+Graph/payload import 8.00801 %, 573.364 kips
+Graph/payload import 9.00901 %, 578.046 kips
+Graph/payload import 10.01 %, 581.615 kips
+Graph/payload import 11.011 %, 584.542 kips
+Graph/payload import 12.012 %, 587.147 kips
+Graph/payload import 13.013 %, 589.234 kips
+Graph/payload import 14.014 %, 590.794 kips
+Graph/payload import 15.015 %, 586.321 kips
+Graph/payload import 16.016 %, 588.167 kips
+Graph/payload import 17.017 %, 589.813 kips
+Graph/payload import 18.018 %, 591.111 kips
+Graph/payload import 19.019 %, 592.232 kips
+Graph/payload import 20.02 %, 593.324 kips
+Graph/payload import 21.021 %, 594.291 kips
+Graph/payload import 22.022 %, 595.161 kips
+Graph/payload import 23.023 %, 596.017 kips
+Graph/payload import 24.024 %, 595.751 kips
+Graph/payload import 25.025 %, 596.429 kips
+Graph/payload import 26.026 %, 597.05 kips
+Graph/payload import 27.027 %, 597.623 kips
+Graph/payload import 28.028 %, 598.146 kips
+Graph/payload import 29.029 %, 598.66 kips
+Graph/payload import 30.03 %, 592.911 kips
+Graph/payload import 31.031 %, 593.641 kips
+Graph/payload import 32.032 %, 594.394 kips
+Graph/payload import 33.033 %, 595.115 kips
+Graph/payload import 34.034 %, 595.799 kips
+Graph/payload import 35.035 %, 594.971 kips
+Graph/payload import 36.036 %, 595.604 kips
+Graph/payload import 37.037 %, 596.004 kips
+Graph/payload import 38.038 %, 596.372 kips
+Graph/payload import 39.039 %, 596.744 kips
+Graph/payload import 40.04 %, 597.071 kips
+Graph/payload import 41.041 %, 597.376 kips
+Graph/payload import 42.042 %, 597.115 kips
+Graph/payload import 43.043 %, 597.419 kips
+Graph/payload import 44.044 %, 597.708 kips
+Graph/payload import 45.045 %, 598.003 kips
+Graph/payload import 46.046 %, 598.339 kips
+Graph/payload import 47.047 %, 598.639 kips
+Graph/payload import 48.048 %, 598.904 kips
+Graph/payload import 49.049 %, 599.105 kips
+Graph/payload import 50.0501 %, 599.247 kips
+Graph/payload import 51.0511 %, 599.402 kips
+Graph/payload import 52.0521 %, 599.538 kips
+Graph/payload import 53.0531 %, 599.7 kips
+Graph/payload import 54.0541 %, 599.876 kips
+Graph/payload import 55.0551 %, 600.075 kips
+Graph/payload import 56.0561 %, 600.21 kips
+Graph/payload import 57.0571 %, 600.329 kips
+Graph/payload import 58.0581 %, 600.434 kips
+Graph/payload import 59.0591 %, 600.109 kips
+Graph/payload import 60.0601 %, 593.673 kips
+Graph/payload import 61.0611 %, 593.913 kips
+Graph/payload import 62.0621 %, 594.132 kips
+Graph/payload import 63.0631 %, 594.33 kips
+Graph/payload import 64.0641 %, 594.507 kips
+Graph/payload import 65.0651 %, 594.702 kips
+Graph/payload import 66.0661 %, 594.896 kips
+Graph/payload import 67.0671 %, 593.454 kips
+Graph/payload import 68.0681 %, 591.699 kips
+Graph/payload import 69.0691 %, 589.966 kips
+Graph/payload import 70.0701 %, 588.246 kips
+Graph/payload import 71.0711 %, 586.726 kips
+Graph/payload import 72.0721 %, 585.273 kips
+Graph/payload import 73.0731 %, 583.816 kips
+Graph/payload import 74.0741 %, 582.027 kips
+Graph/payload import 75.0751 %, 580.576 kips
+Graph/payload import 76.0761 %, 579.207 kips
+Graph/payload import 77.0771 %, 577.916 kips
+Graph/payload import 78.0781 %, 576.647 kips
+Graph/payload import 79.0791 %, 575.455 kips
+Graph/payload import 80.0801 %, 574.3 kips
+Graph/payload import 81.0811 %, 573.203 kips
+Graph/payload import 82.0821 %, 572.057 kips
+Graph/payload import 83.0831 %, 570.879 kips
+Graph/payload import 84.0841 %, 569.872 kips
+Graph/payload import 85.0851 %, 568.86 kips
+Graph/payload import 86.0861 %, 567.938 kips
+Graph/payload import 87.0871 %, 566.965 kips
+Graph/payload import 88.0881 %, 565.889 kips
+Graph/payload import 89.0891 %, 564.664 kips
+Graph/payload import 90.0901 %, 563.71 kips
+Graph/payload import 91.0911 %, 562.812 kips
+Graph/payload import 92.0921 %, 561.854 kips
+Graph/payload import 93.0931 %, 561.069 kips
+Graph/payload import 94.0941 %, 560.282 kips
+Graph/payload import 95.0951 %, 559.396 kips
+Graph/payload import 96.0961 %, 558.595 kips
+Graph/payload import 97.0971 %, 557.972 kips
+Graph/payload import 98.0981 %, 558.371 kips
+Graph/payload import 99.0991 %, 558.779 kips
+Graph/payload import 100 %, 559.145 kips
+Float graph payload import time:18.1775 seconds
+build_stage=graph_payload_import us=1.81775e+07 count=9990000 record_bytes=220 total_bytes=2197800000 kips=549.58 MBps=120.908
+Build time:210.861  seconds
+build_stage=save_index us=2.13266e+06
+build_total_us=2.12994e+08
+Index storage size: 3681.65 MB (index=3681.65 MB, auxiliary=0.000972 MB, total_bytes=3681647980)
+Parsing gt:
+10000
+Loaded gt
+1	0.1899	26.743 us	hnsw_search_us_per_query=26.743	total_us_per_query=26.743	method=progressive_short_long_residual	fast_residual_candidates=1	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=1	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=1	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+2	0.3194	30.2892 us	hnsw_search_us_per_query=30.2892	total_us_per_query=30.2892	method=progressive_short_long_residual	fast_residual_candidates=2	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=2	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=2	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+3	0.4106	35.3615 us	hnsw_search_us_per_query=35.3615	total_us_per_query=35.3615	method=progressive_short_long_residual	fast_residual_candidates=3	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=3	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=3	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+4	0.4748	44.8726 us	hnsw_search_us_per_query=44.8726	total_us_per_query=44.8726	method=progressive_short_long_residual	fast_residual_candidates=4	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=4	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=4	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+5	0.524	45.6455 us	hnsw_search_us_per_query=45.6455	total_us_per_query=45.6455	method=progressive_short_long_residual	fast_residual_candidates=5	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=5	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=5	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+6	0.5651	48.5834 us	hnsw_search_us_per_query=48.5834	total_us_per_query=48.5834	method=progressive_short_long_residual	fast_residual_candidates=6	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=6	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=6	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+7	0.5989	52.7916 us	hnsw_search_us_per_query=52.7916	total_us_per_query=52.7916	method=progressive_short_long_residual	fast_residual_candidates=7	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=7	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=7	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+8	0.6293	56.1214 us	hnsw_search_us_per_query=56.1214	total_us_per_query=56.1214	method=progressive_short_long_residual	fast_residual_candidates=8	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=8	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=8	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+9	0.652	65.7149 us	hnsw_search_us_per_query=65.7149	total_us_per_query=65.7149	method=progressive_short_long_residual	fast_residual_candidates=9	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=9	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=9	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+10	0.6705	64.7902 us	hnsw_search_us_per_query=64.7902	total_us_per_query=64.7902	method=progressive_short_long_residual	fast_residual_candidates=10	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=10	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=10	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+11	0.688	66.0947 us	hnsw_search_us_per_query=66.0947	total_us_per_query=66.0947	method=progressive_short_long_residual	fast_residual_candidates=11	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=11	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=11	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+12	0.7055	69.5203 us	hnsw_search_us_per_query=69.5203	total_us_per_query=69.5203	method=progressive_short_long_residual	fast_residual_candidates=12	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=12	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=12	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+13	0.72	78.072 us	hnsw_search_us_per_query=78.072	total_us_per_query=78.072	method=progressive_short_long_residual	fast_residual_candidates=13	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=13	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=13	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+14	0.7323	77.8128 us	hnsw_search_us_per_query=77.8128	total_us_per_query=77.8128	method=progressive_short_long_residual	fast_residual_candidates=14	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=14	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=14	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+15	0.7423	78.7173 us	hnsw_search_us_per_query=78.7173	total_us_per_query=78.7173	method=progressive_short_long_residual	fast_residual_candidates=15	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=15	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=15	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+16	0.7528	82.0882 us	hnsw_search_us_per_query=82.0882	total_us_per_query=82.0882	method=progressive_short_long_residual	fast_residual_candidates=16	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=16	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=16	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+17	0.7641	92.1182 us	hnsw_search_us_per_query=92.1182	total_us_per_query=92.1182	method=progressive_short_long_residual	fast_residual_candidates=17	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=17	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=17	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+18	0.7735	88.2321 us	hnsw_search_us_per_query=88.2321	total_us_per_query=88.2321	method=progressive_short_long_residual	fast_residual_candidates=18	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=18	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=18	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+19	0.7822	91.2881 us	hnsw_search_us_per_query=91.2881	total_us_per_query=91.2881	method=progressive_short_long_residual	fast_residual_candidates=19	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=19	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=19	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+20	0.7887	101.887 us	hnsw_search_us_per_query=101.887	total_us_per_query=101.887	method=progressive_short_long_residual	fast_residual_candidates=20	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=20	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=20	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+21	0.7941	97.6042 us	hnsw_search_us_per_query=97.6042	total_us_per_query=97.6042	method=progressive_short_long_residual	fast_residual_candidates=21	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=21	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=21	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+22	0.8002	104.772 us	hnsw_search_us_per_query=104.772	total_us_per_query=104.772	method=progressive_short_long_residual	fast_residual_candidates=22	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=22	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=22	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+23	0.8045	106.058 us	hnsw_search_us_per_query=106.058	total_us_per_query=106.058	method=progressive_short_long_residual	fast_residual_candidates=23	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=23	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=23	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+24	0.81	106.331 us	hnsw_search_us_per_query=106.331	total_us_per_query=106.331	method=progressive_short_long_residual	fast_residual_candidates=24	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=24	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=24	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+25	0.8149	116.105 us	hnsw_search_us_per_query=116.105	total_us_per_query=116.105	method=progressive_short_long_residual	fast_residual_candidates=25	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=25	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=25	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+26	0.8194	112.349 us	hnsw_search_us_per_query=112.349	total_us_per_query=112.349	method=progressive_short_long_residual	fast_residual_candidates=26	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=26	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=26	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+27	0.8238	121.226 us	hnsw_search_us_per_query=121.226	total_us_per_query=121.226	method=progressive_short_long_residual	fast_residual_candidates=27	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=27	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=27	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+28	0.8289	119.763 us	hnsw_search_us_per_query=119.763	total_us_per_query=119.763	method=progressive_short_long_residual	fast_residual_candidates=28	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=28	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=28	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+29	0.8333	121.225 us	hnsw_search_us_per_query=121.225	total_us_per_query=121.225	method=progressive_short_long_residual	fast_residual_candidates=29	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=29	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=29	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+30	0.8366	131.371 us	hnsw_search_us_per_query=131.371	total_us_per_query=131.371	method=progressive_short_long_residual	fast_residual_candidates=30	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=30	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=30	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+40	0.8635	154.988 us	hnsw_search_us_per_query=154.988	total_us_per_query=154.988	method=progressive_short_long_residual	fast_residual_candidates=40	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=40	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=40	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+50	0.8841	185.799 us	hnsw_search_us_per_query=185.799	total_us_per_query=185.799	method=progressive_short_long_residual	fast_residual_candidates=50	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=50	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=50	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+60	0.8949	216.376 us	hnsw_search_us_per_query=216.376	total_us_per_query=216.376	method=progressive_short_long_residual	fast_residual_candidates=60	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=60	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=60	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+70	0.9042	243.909 us	hnsw_search_us_per_query=243.909	total_us_per_query=243.909	method=progressive_short_long_residual	fast_residual_candidates=70	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=70	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=70	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+80	0.9117	272.089 us	hnsw_search_us_per_query=272.089	total_us_per_query=272.089	method=progressive_short_long_residual	fast_residual_candidates=80	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=80	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=80	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+90	0.9176	297.992 us	hnsw_search_us_per_query=297.992	total_us_per_query=297.992	method=progressive_short_long_residual	fast_residual_candidates=90	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=90	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=90	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+100	0.9212	319.974 us	hnsw_search_us_per_query=319.974	total_us_per_query=319.974	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+140	0.931	424.471 us	hnsw_search_us_per_query=424.471	total_us_per_query=424.471	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+180	0.9367	524.068 us	hnsw_search_us_per_query=524.068	total_us_per_query=524.068	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+220	0.9393	617.955 us	hnsw_search_us_per_query=617.955	total_us_per_query=617.955	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+260	0.9414	714.522 us	hnsw_search_us_per_query=714.522	total_us_per_query=714.522	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+300	0.9434	814.174 us	hnsw_search_us_per_query=814.174	total_us_per_query=814.174	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+340	0.9448	926.07 us	hnsw_search_us_per_query=926.07	total_us_per_query=926.07	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+380	0.9457	1018.32 us	hnsw_search_us_per_query=1018.32	total_us_per_query=1018.32	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+420	0.9462	1111.75 us	hnsw_search_us_per_query=1111.75	total_us_per_query=1111.75	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+460	0.947	1211.01 us	hnsw_search_us_per_query=1211.01	total_us_per_query=1211.01	method=progressive_short_long_residual	fast_residual_candidates=100	fast_search_ef_multiplier=1	residual_blend=1	progressive_visited_per_query=0	short_evals_per_query=0	long_evals_per_query=58.8716	residual_evals_per_query=100	short_pruned_per_query=0	short_to_long_per_query=0	long_to_residual_per_query=100	expanded_long_per_query=0	expanded_residual_per_query=0	stabilization_rounds_per_query=0	stabilization_residual_per_query=0	budget_exhausted_queries=0	long_expansion_budget_exhausted_queries=0
+Index storage size: 3681.65 MB (index=3681.65 MB, auxiliary=0.000972 MB, total_bytes=3681647980)
