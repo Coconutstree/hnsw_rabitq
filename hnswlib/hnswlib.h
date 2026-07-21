@@ -180,6 +180,49 @@ template<typename MTYPE>
 //参数一是第一个向量的地址，参数二是第二个向量的地址，参数三是距离函数需要的额外参数（如维度信息等）的地址
 using DISTFUNC = MTYPE(*)(const void *, const void *, const void *);
 
+struct DistanceInterval {
+    float estimate;
+    float lower_bound;
+    float upper_bound;
+};
+
+struct ProgressiveSearchConfig {
+    size_t efSearch = 0;
+    float short_margin = 0.0f;
+    size_t residual_beam = 0;
+    float residual_uncertainty_threshold = 0.0f;
+    float final_margin = 0.0f;
+    size_t max_residual_evaluations = 0;
+    size_t max_long_expansions = 0;
+    size_t long_expand_beam = 0;
+    size_t fast_residual_candidates = 0;
+    float fast_search_ef_multiplier = 1.0f;
+    float fast_residual_score_blend = 1.0f;
+    bool require_residual_before_expand = false;
+    bool enable_interval_stabilization = true;
+    bool fast_search_finalize_residual = false;
+};
+
+struct ProgressiveSearchStats {
+    size_t visited_nodes = 0;
+    size_t short_distance_evaluations = 0;
+    size_t long_distance_evaluations = 0;
+    size_t residual_distance_evaluations = 0;
+    size_t short_pruned_nodes = 0;
+    size_t short_to_long_upgrades = 0;
+    size_t long_to_residual_upgrades = 0;
+    size_t long_reinsertions = 0;
+    size_t residual_reinsertions = 0;
+    size_t expanded_long_nodes = 0;
+    size_t expanded_residual_nodes = 0;
+    size_t ranking_changes_after_long = 0;
+    size_t ranking_changes_after_residual = 0;
+    size_t stabilization_rounds = 0;
+    size_t stabilization_residual_evaluations = 0;
+    bool residual_budget_exhausted = false;
+    bool long_expansion_budget_exhausted = false;
+};
+
 template<typename MTYPE>
 //距离空间接口
 class SpaceInterface {
@@ -229,6 +272,33 @@ class SpaceInterface {
     virtual MTYPE result_distance_by_id(const void *prepared_query, size_t internal_id, const void *data_point) {
         (void) internal_id;
         return result_distance(prepared_query, data_point);
+    }
+
+    virtual bool supports_progressive_query_distance() const {
+        return false;
+    }
+
+    virtual DistanceInterval compute_short_distance_interval(
+        const void *prepared_query,
+        const void *data_point) {
+        const float distance = static_cast<float>(query_distance(prepared_query, data_point));
+        return DistanceInterval{distance, distance, distance};
+    }
+
+    virtual DistanceInterval compute_long_distance_interval(
+        const void *prepared_query,
+        const void *data_point) {
+        const float distance = static_cast<float>(query_distance(prepared_query, data_point));
+        return DistanceInterval{distance, distance, distance};
+    }
+
+    virtual DistanceInterval compute_residual_distance_interval(
+        const void *prepared_query,
+        const void *data_point,
+        float long_distance) {
+        (void) long_distance;
+        const float distance = static_cast<float>(result_distance(prepared_query, data_point));
+        return DistanceInterval{distance, distance, distance};
     }
 
     virtual void prepare_data_for_add(const void *raw_data_point) {

@@ -130,15 +130,93 @@ class RaBitQHierarchicalNSW {
                 }
             });
     }
+
+    void importGraphFromFloatIndexWithPayloadFile(
+        const HierarchicalNSW<float> &float_index,
+        const std::string &payload_path,
+        size_t record_size,
+        bool verbose = false) {
+        const size_t total_count = float_index.cur_element_count;
+        if (record_size != space_.get_data_size()) {
+            throw std::runtime_error("RaBitQ payload record size does not match space data size");
+        }
+
+        std::ifstream payload_input(payload_path.c_str(), std::ios::binary | std::ios::ate);
+        if (!payload_input.is_open()) {
+            throw std::runtime_error("RaBitQ failed to open payload file: " + payload_path);
+        }
+        const size_t payload_bytes = static_cast<size_t>(payload_input.tellg());
+        if (payload_bytes != total_count * record_size) {
+            throw std::runtime_error("RaBitQ payload file size does not match graph element count");
+        }
+
+        size_t copied_count = 0;
+        const auto start_time = std::chrono::steady_clock::now();
+        index_.importGraphAndCopyDataFrom(
+            float_index,
+            [this, &float_index, &payload_input, record_size, total_count, verbose, start_time, &copied_count](
+                tableint source_internal_id,
+                void *target_data) {
+                const labeltype label = float_index.getExternalLabel(source_internal_id);
+                if (label >= total_count) {
+                    throw std::runtime_error("RaBitQ payload label is outside payload file range");
+                }
+                payload_input.clear();
+                payload_input.seekg(static_cast<std::streamoff>(label * record_size), std::ios::beg);
+                payload_input.read(
+                    reinterpret_cast<char *>(target_data),
+                    static_cast<std::streamsize>(record_size));
+                if (!payload_input.good()) {
+                    throw std::runtime_error("RaBitQ failed to read payload record from disk");
+                }
+                ++copied_count;
+                if (verbose && (copied_count % 100000 == 0 || copied_count == total_count)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const double seconds =
+                        std::chrono::duration_cast<std::chrono::duration<double>>(now - start_time).count();
+                    const double kips = seconds > 0.0 ? copied_count / (1000.0 * seconds) : 0.0;
+                    std::cout << "Graph/payload import " << copied_count / (0.01 * total_count)
+                              << " %, " << kips << " kips\n";
+                }
+            });
+    }
 //搜索k近邻，首先将查询向量编码成RaBitQ编码，然后调用index_的searchKnn方法搜索编码后的向量，返回距离和标签的二元组优先队列
     std::priority_queue<std::pair<float, labeltype>>
     searchKnn(const float *raw_query, size_t k, BaseFilterFunctor *isIdAllowed = nullptr) const {
         return index_.searchKnn(raw_query, k, isIdAllowed);
     }
+
+    std::priority_queue<std::pair<float, labeltype>>
+    searchKnnProgressiveRefinement(
+        const float *raw_query,
+        size_t k,
+        ProgressiveSearchConfig config = ProgressiveSearchConfig(),
+        ProgressiveSearchStats *stats = nullptr,
+        BaseFilterFunctor *isIdAllowed = nullptr) const {
+        return index_.searchKnnProgressiveRefinement(raw_query, k, config, stats, isIdAllowed);
+    }
 //搜索k近邻，返回结果按照距离从近到远排序，参数同上
     std::vector<std::pair<float, labeltype>>
     searchKnnCloserFirst(const float *raw_query, size_t k, BaseFilterFunctor *isIdAllowed = nullptr) const {
         return index_.searchKnnCloserFirst(raw_query, k, isIdAllowed);
+    }
+
+    std::vector<std::pair<float, labeltype>>
+    searchKnnProgressiveRefinementCloserFirst(
+        const float *raw_query,
+        size_t k,
+        ProgressiveSearchConfig config = ProgressiveSearchConfig(),
+        ProgressiveSearchStats *stats = nullptr,
+        BaseFilterFunctor *isIdAllowed = nullptr) const {
+        auto result = searchKnnProgressiveRefinement(raw_query, k, config, stats, isIdAllowed);
+        std::vector<std::pair<float, labeltype>> sorted;
+        sorted.reserve(result.size());
+        while (!result.empty()) {
+            sorted.push_back(result.top());
+            result.pop();
+        }
+        std::reverse(sorted.begin(), sorted.end());
+        return sorted;
     }
 
     std::vector<labeltype>

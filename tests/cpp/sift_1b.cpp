@@ -1,10 +1,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
+#include <cerrno>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <random>
@@ -12,6 +17,9 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "../../hnswlib/hnswlib.h"
 #include "../../hnswlib/rabitq_hnsw.h"
@@ -49,7 +57,8 @@ void print_run_config(
     cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
          << " random_seed=" << random_seed << "\n";
     cout << "  build_distance=float32_l2"
-         << " stored_data=4bit_rabitq query_distance=float32_query_to_4bit_code\n";
+         << " stored_data=4bit_rabitq_plus_residual"
+         << " query_distance=progressive_short_long_residual\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
     cout << "  gt_path=" << path_gt << "\n";
@@ -60,6 +69,93 @@ inline bool exists_test(const std::string &name) {
     ifstream f(name.c_str());
     return f.good();
 }
+
+size_t getenv_size_t(const char *name, size_t default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    char *end = nullptr;
+    const unsigned long long parsed = std::strtoull(value, &end, 10);
+    if (end == value) {
+        return default_value;
+    }
+    return static_cast<size_t>(parsed);
+}
+
+float getenv_float(const char *name, float default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    char *end = nullptr;
+    const float parsed = std::strtof(value, &end);
+    if (end == value || !std::isfinite(parsed)) {
+        return default_value;
+    }
+    return parsed;
+}
+
+string getenv_string(const char *name, const string &default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    return string(value);
+}
+
+class DiskPayloadStore {
+ public:
+    DiskPayloadStore(const string &path, size_t total_bytes)
+        : path_(path) {
+        fd_ = ::open(path.c_str(), O_CREAT | O_TRUNC | O_RDWR, 0644);
+        if (fd_ < 0) {
+            throw runtime_error("cannot create payload file: " + path + ": " + strerror(errno));
+        }
+        if (::ftruncate(fd_, static_cast<off_t>(total_bytes)) != 0) {
+            const string error = strerror(errno);
+            ::close(fd_);
+            fd_ = -1;
+            throw runtime_error("cannot resize payload file: " + path + ": " + error);
+        }
+    }
+
+    ~DiskPayloadStore() {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+    }
+
+    const string &path() const {
+        return path_;
+    }
+
+    void writeRecord(size_t label, const char *record, size_t record_size) {
+        size_t written = 0;
+        const off_t base_offset = static_cast<off_t>(label * record_size);
+        while (written < record_size) {
+            const ssize_t n = ::pwrite(
+                fd_,
+                record + written,
+                record_size - written,
+                base_offset + static_cast<off_t>(written));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                throw runtime_error("cannot write payload file: " + path_ + ": " + strerror(errno));
+            }
+            if (n == 0) {
+                throw runtime_error("short write to payload file: " + path_);
+            }
+            written += static_cast<size_t>(n);
+        }
+    }
+
+ private:
+    string path_;
+    int fd_{-1};
+};
 
 string quantizer_state_path(const string &index_path) {
     return index_path + ".rabitq";
@@ -443,6 +539,22 @@ struct SearchReport {
     long survivor_long_computed{0};
     float prune_rate{0.0f};
     float long_computations_per_query{0.0f};
+    size_t progressive_visited_nodes{0};
+    size_t progressive_short_distance_evaluations{0};
+    size_t progressive_long_distance_evaluations{0};
+    size_t progressive_residual_distance_evaluations{0};
+    size_t progressive_short_pruned_nodes{0};
+    size_t progressive_short_to_long_upgrades{0};
+    size_t progressive_long_to_residual_upgrades{0};
+    size_t progressive_expanded_long_nodes{0};
+    size_t progressive_expanded_residual_nodes{0};
+    size_t progressive_stabilization_rounds{0};
+    size_t progressive_stabilization_residual_evaluations{0};
+    size_t progressive_budget_exhausted_queries{0};
+    size_t progressive_long_expansion_budget_exhausted_queries{0};
+    size_t fast_residual_candidates{0};
+    float fast_search_ef_multiplier{1.0f};
+    float residual_blend{1.0f};
 };
 
 static SearchReport test_approx(
@@ -462,12 +574,70 @@ static SearchReport test_approx(
     appr_alg.index().metric_lower_bound_checked = 0;
     appr_alg.index().metric_lower_bound_pruned = 0;
     appr_alg.index().metric_survivor_long_computed = 0;
+    ProgressiveSearchStats total_progressive_stats;
+    size_t progressive_budget_exhausted_queries = 0;
+    size_t progressive_long_expansion_budget_exhausted_queries = 0;
+    const size_t configured_fast_residual_candidates =
+        getenv_size_t("RABITQ_FAST_RESIDUAL_CANDIDATES", 100);
+    const float configured_fast_search_ef_multiplier =
+        getenv_float("RABITQ_FAST_SEARCH_EF_MULTIPLIER", 1.0f);
+    const float configured_residual_blend =
+        getenv_float("RABITQ_RESIDUAL_BLEND", 1.0f);
 
     for (size_t i = 0; i < qsize; i++) {
+        ProgressiveSearchConfig config;
+        config.efSearch = rerank_candidates;
+        config.fast_search_finalize_residual = true;
+        config.fast_residual_candidates = configured_fast_residual_candidates == 0
+            ? std::numeric_limits<size_t>::max()
+            : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
+        config.fast_search_ef_multiplier = configured_fast_search_ef_multiplier;
+        config.fast_residual_score_blend = configured_residual_blend;
+        config.residual_beam = config.fast_residual_candidates;
+        config.max_residual_evaluations = config.fast_residual_candidates;
+        config.long_expand_beam = std::max<size_t>(16, 2 * rerank_candidates);
+        config.max_long_expansions = std::max<size_t>(rerank_candidates * 8, 64);
+        config.short_margin = 0.0f;
+        config.final_margin = 0.0f;
+        config.require_residual_before_expand = false;
+        config.enable_interval_stabilization = false;
+        ProgressiveSearchStats query_stats;
+
         StopW hnsw_timer;
-        vector<pair<float, labeltype>> results =
-            appr_alg.searchKnnCloserFirst(massQ + vecdim * i, k);
+        vector<pair<float, labeltype>> results;
+        try {
+            results = appr_alg.searchKnnProgressiveRefinementCloserFirst(
+                    massQ + vecdim * i,
+                    k,
+                    config,
+                    &query_stats);
+        } catch (const std::exception &error) {
+            cerr << "progressive_query_failed"
+                 << " query=" << i
+                 << " efSearch=" << rerank_candidates
+                 << " error=" << error.what()
+                 << "\n";
+            throw;
+        }
         hnsw_us += hnsw_timer.getElapsedTimeMicro();
+        total_progressive_stats.visited_nodes += query_stats.visited_nodes;
+        total_progressive_stats.short_distance_evaluations += query_stats.short_distance_evaluations;
+        total_progressive_stats.long_distance_evaluations += query_stats.long_distance_evaluations;
+        total_progressive_stats.residual_distance_evaluations += query_stats.residual_distance_evaluations;
+        total_progressive_stats.short_pruned_nodes += query_stats.short_pruned_nodes;
+        total_progressive_stats.short_to_long_upgrades += query_stats.short_to_long_upgrades;
+        total_progressive_stats.long_to_residual_upgrades += query_stats.long_to_residual_upgrades;
+        total_progressive_stats.expanded_long_nodes += query_stats.expanded_long_nodes;
+        total_progressive_stats.expanded_residual_nodes += query_stats.expanded_residual_nodes;
+        total_progressive_stats.stabilization_rounds += query_stats.stabilization_rounds;
+        total_progressive_stats.stabilization_residual_evaluations +=
+            query_stats.stabilization_residual_evaluations;
+        if (query_stats.residual_budget_exhausted) {
+            ++progressive_budget_exhausted_queries;
+        }
+        if (query_stats.long_expansion_budget_exhausted) {
+            ++progressive_long_expansion_budget_exhausted_queries;
+        }
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
@@ -501,6 +671,28 @@ static SearchReport test_approx(
                             : static_cast<float>(
                                   static_cast<double>(report.lower_bound_pruned) /
                                   static_cast<double>(report.lower_bound_checked));
+    report.progressive_visited_nodes = total_progressive_stats.visited_nodes;
+    report.progressive_short_distance_evaluations = total_progressive_stats.short_distance_evaluations;
+    report.progressive_long_distance_evaluations = total_progressive_stats.long_distance_evaluations;
+    report.progressive_residual_distance_evaluations = total_progressive_stats.residual_distance_evaluations;
+    report.progressive_short_pruned_nodes = total_progressive_stats.short_pruned_nodes;
+    report.progressive_short_to_long_upgrades = total_progressive_stats.short_to_long_upgrades;
+    report.progressive_long_to_residual_upgrades = total_progressive_stats.long_to_residual_upgrades;
+    report.progressive_expanded_long_nodes = total_progressive_stats.expanded_long_nodes;
+    report.progressive_expanded_residual_nodes = total_progressive_stats.expanded_residual_nodes;
+    report.progressive_stabilization_rounds = total_progressive_stats.stabilization_rounds;
+    report.progressive_stabilization_residual_evaluations =
+        total_progressive_stats.stabilization_residual_evaluations;
+    report.progressive_budget_exhausted_queries = progressive_budget_exhausted_queries;
+    report.progressive_long_expansion_budget_exhausted_queries =
+        progressive_long_expansion_budget_exhausted_queries;
+    report.fast_search_ef_multiplier = std::max(1.0f, configured_fast_search_ef_multiplier);
+    report.fast_residual_candidates = configured_fast_residual_candidates == 0
+        ? static_cast<size_t>(std::ceil(
+              static_cast<double>(rerank_candidates) *
+              static_cast<double>(report.fast_search_ef_multiplier)))
+        : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
+    report.residual_blend = std::max(0.0f, std::min(1.0f, configured_residual_blend));
     return report;
 }
 
@@ -546,7 +738,39 @@ static void test_vs_recall(
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
-             << "\t" << "total_us_per_query=" << report.total_us_per_query << "\n";
+             << "\t" << "total_us_per_query=" << report.total_us_per_query
+             << "\t" << "method=progressive_short_long_residual"
+             << "\t" << "fast_residual_candidates=" << report.fast_residual_candidates
+             << "\t" << "fast_search_ef_multiplier=" << report.fast_search_ef_multiplier
+             << "\t" << "residual_blend=" << report.residual_blend
+             << "\t" << "progressive_visited_per_query="
+             << static_cast<double>(report.progressive_visited_nodes) / static_cast<double>(qsize)
+             << "\t" << "short_evals_per_query="
+             << static_cast<double>(report.progressive_short_distance_evaluations) / static_cast<double>(qsize)
+             << "\t" << "long_evals_per_query="
+             << static_cast<double>(report.progressive_long_distance_evaluations) / static_cast<double>(qsize)
+             << "\t" << "residual_evals_per_query="
+             << static_cast<double>(report.progressive_residual_distance_evaluations) / static_cast<double>(qsize)
+             << "\t" << "short_pruned_per_query="
+             << static_cast<double>(report.progressive_short_pruned_nodes) / static_cast<double>(qsize)
+             << "\t" << "short_to_long_per_query="
+             << static_cast<double>(report.progressive_short_to_long_upgrades) / static_cast<double>(qsize)
+             << "\t" << "long_to_residual_per_query="
+             << static_cast<double>(report.progressive_long_to_residual_upgrades) / static_cast<double>(qsize)
+             << "\t" << "expanded_long_per_query="
+             << static_cast<double>(report.progressive_expanded_long_nodes) / static_cast<double>(qsize)
+             << "\t" << "expanded_residual_per_query="
+             << static_cast<double>(report.progressive_expanded_residual_nodes) / static_cast<double>(qsize)
+             << "\t" << "stabilization_rounds_per_query="
+             << static_cast<double>(report.progressive_stabilization_rounds) / static_cast<double>(qsize)
+             << "\t" << "stabilization_residual_per_query="
+             << static_cast<double>(report.progressive_stabilization_residual_evaluations) /
+                    static_cast<double>(qsize)
+             << "\t" << "budget_exhausted_queries="
+             << report.progressive_budget_exhausted_queries
+             << "\t" << "long_expansion_budget_exhausted_queries="
+             << report.progressive_long_expansion_budget_exhausted_queries
+             << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
             break;
@@ -555,7 +779,7 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const char *dataset_name = "dbpedia_openai1536";
+    const char *dataset_name = "deep1B";
     const int efConstruction = RABITQ_EF_CONSTRUCTION;
     const int M = 16;
     const int centroid_count = 64;
@@ -563,19 +787,19 @@ void sift_test1B() {
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
-    const size_t vecdim = 1536;
+    const size_t vecdim = 96;
     const size_t gt_width = 100;
 
     char path_index[1024];
-    const char *path_q = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs";
-    const char *path_data = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs";
-    const char *path_gt = "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs";
+    const char *path_q = "/home/kai3/coco/data/deep1B/deep1B_query.fvecs";
+    const char *path_data = "/home/kai3/coco/data/deep1B/deep1B_base.fvecs";
+    const char *path_gt = "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs";
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     snprintf(
         path_index,
         sizeof(path_index),
-        "dbpedia_openai1536_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+        "deep1B_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
         efConstruction,
         M,
         centroid_count);
@@ -636,7 +860,7 @@ void sift_test1B() {
     RaBitQHierarchicalNSW *appr_alg = new RaBitQHierarchicalNSW(
         vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-         << " (4-bit code)\n";
+         << " (4-bit code + residual code)\n";
 
     bool need_build = true;
     if (exists_test(path_index)) {
@@ -655,7 +879,7 @@ void sift_test1B() {
                 appr_alg = new RaBitQHierarchicalNSW(
                     vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-                     << " (4-bit code)\n";
+                     << " (4-bit code + residual code)\n";
                 input.clear();
                 input.seekg(0, ios::beg);
             }
@@ -684,11 +908,24 @@ void sift_test1B() {
         const size_t report_every = 100000;
         const size_t payload_record_size = appr_alg->space().get_data_size();
         const size_t payload_total_bytes = vecsize * payload_record_size;
-        vector<char> payloads(payload_total_bytes, 0);
+        const string payload_mode = getenv_string("RABITQ_PAYLOAD_MODE", "disk");
+        const bool payload_disk_mode = payload_mode != "memory";
+        const string payload_path = string(path_index) + ".payload.tmp";
+        vector<char> payloads;
+        unique_ptr<DiskPayloadStore> disk_payload;
+        if (payload_disk_mode) {
+            disk_payload.reset(new DiskPayloadStore(payload_path, payload_total_bytes));
+        } else {
+            payloads.assign(payload_total_bytes, 0);
+        }
         double payload_encode_cpu_us = 0.0;
-        cout << "payload_mode=memory_array"
+        cout << "payload_mode=" << (payload_disk_mode ? "disk_file" : "memory_array")
              << " payload_record_bytes=" << payload_record_size
-             << " payload_bytes=" << payload_total_bytes << "\n";
+             << " payload_bytes=" << payload_total_bytes;
+        if (payload_disk_mode) {
+            cout << " payload_path=" << payload_path;
+        }
+        cout << "\n";
 
         cout << "Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ\n";
         L2Space float_space(vecdim);
@@ -703,7 +940,13 @@ void sift_test1B() {
         read_fvec_as_float(input, first.data(), vecdim);
         {
             StopW payload_timer;
-            appr_alg->space().encodeVector(first.data(), payloads.data());
+            vector<char> encoded_first(payload_record_size, 0);
+            appr_alg->space().encodeVector(first.data(), encoded_first.data());
+            if (payload_disk_mode) {
+                disk_payload->writeRecord(0, encoded_first.data(), payload_record_size);
+            } else {
+                std::memcpy(payloads.data(), encoded_first.data(), payload_record_size);
+            }
             payload_encode_cpu_us += payload_timer.getElapsedTimeMicro();
         }
         float_index.addPoint(first.data(), (size_t)0);
@@ -726,9 +969,16 @@ void sift_test1B() {
                 }
             }
             StopW payload_timer;
-            appr_alg->space().encodeVector(
-                local_mass.data(),
-                payloads.data() + static_cast<size_t>(label) * payload_record_size);
+            vector<char> encoded_payload(payload_record_size, 0);
+            appr_alg->space().encodeVector(local_mass.data(), encoded_payload.data());
+            if (payload_disk_mode) {
+                disk_payload->writeRecord(static_cast<size_t>(label), encoded_payload.data(), payload_record_size);
+            } else {
+                std::memcpy(
+                    payloads.data() + static_cast<size_t>(label) * payload_record_size,
+                    encoded_payload.data(),
+                    payload_record_size);
+            }
             const double local_payload_encode_us = payload_timer.getElapsedTimeMicro();
 #pragma omp atomic
             payload_encode_cpu_us += local_payload_encode_us;
@@ -757,11 +1007,21 @@ void sift_test1B() {
              << "\n";
 
         StopW convertw;
-        appr_alg->importGraphFromFloatIndexWithPayloads(
-            float_index,
-            payloads,
-            payload_record_size,
-            true);
+        if (payload_disk_mode) {
+            appr_alg->importGraphFromFloatIndexWithPayloadFile(
+                float_index,
+                payload_path,
+                payload_record_size,
+                true);
+            disk_payload.reset();
+            std::remove(payload_path.c_str());
+        } else {
+            appr_alg->importGraphFromFloatIndexWithPayloads(
+                float_index,
+                payloads,
+                payload_record_size,
+                true);
+        }
         const double graph_payload_import_us = convertw.getElapsedTimeMicro();
         const size_t graph_payload_import_count = float_index.cur_element_count;
         cout << "Float graph payload import time:" << 1e-6 * graph_payload_import_us

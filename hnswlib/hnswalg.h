@@ -10,6 +10,8 @@
 #include <list>
 #include <memory>
 #include <functional>
+#include <limits>
+#include <cmath>
 
 //hnsw索引算法本体 
 namespace hnswlib {
@@ -191,6 +193,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             std::pair<dist_t, tableint> const& b) const noexcept {
             return a.first < b.first;
         }
+    };
+
+    enum class DistanceStage : uint8_t {
+        Short = 0,
+        Long = 1,
+        Residual = 2
     };
 
 
@@ -1477,6 +1485,591 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             maxlevel_ = curlevel;
         }
         return cur_c;
+    }
+
+
+    std::priority_queue<std::pair<dist_t, labeltype >>
+    searchKnnProgressiveRefinement(
+        const void *query_data,
+        size_t k,
+        ProgressiveSearchConfig config = ProgressiveSearchConfig(),
+        ProgressiveSearchStats *stats = nullptr,
+        BaseFilterFunctor* isIdAllowed = nullptr) const {
+        std::priority_queue<std::pair<dist_t, labeltype >> result;
+        if (cur_element_count == 0 || k == 0) return result;
+        if (!space_->supports_progressive_query_distance()) {
+            return searchKnn(query_data, k, isIdAllowed);
+        }
+
+        const size_t efSearch = std::max(config.efSearch == 0 ? ef_ : config.efSearch, k);
+        if (config.residual_beam == 0) config.residual_beam = std::max<size_t>(16, 2 * efSearch);
+        if (config.max_residual_evaluations == 0) config.max_residual_evaluations = 16 * efSearch;
+        if (config.long_expand_beam == 0) config.long_expand_beam = std::max<size_t>(16, 2 * efSearch);
+        if (config.max_long_expansions == 0) {
+            config.max_long_expansions = std::max<size_t>(efSearch * 8, 64);
+        }
+        if (config.fast_residual_candidates == 0) {
+            config.fast_residual_candidates = k;
+        }
+        if (!std::isfinite(config.fast_search_ef_multiplier) ||
+            config.fast_search_ef_multiplier < 1.0f) {
+            config.fast_search_ef_multiplier = 1.0f;
+        }
+        config.fast_residual_score_blend = std::max(
+            0.0f,
+            std::min(1.0f, config.fast_residual_score_blend));
+        if (stats) {
+            *stats = ProgressiveSearchStats();
+        }
+
+        if (config.fast_search_finalize_residual) {
+            const void *query_context = space_->prepare_query(query_data);
+            try {
+                tableint currObj = enterpoint_node_;
+                dist_t curdist = space_->query_distance(query_context, getDataByInternalId(enterpoint_node_));
+                if (stats) {
+                    ++stats->long_distance_evaluations;
+                }
+
+                for (int level = maxlevel_; level > 0; level--) {
+                    bool changed = true;
+                    while (changed) {
+                        changed = false;
+                        unsigned int *data = (unsigned int *) get_linklist(currObj, level);
+                        int size = getListCount(data);
+                        metric_hops++;
+                        metric_distance_computations += size;
+
+                        tableint *datal = (tableint *) (data + 1);
+                        for (int i = 0; i < size; i++) {
+                            tableint cand = datal[i];
+                            if (cand < 0 || cand > max_elements_)
+                                throw std::runtime_error("cand error");
+                            char *cand_data = getDataByInternalId(cand);
+                            dist_t d;
+                            if (space_->supports_query_distance_lower_bound()) {
+                                metric_lower_bound_checked++;
+                                if (!space_->query_distance_if_lower_bound_below(
+                                        query_context, cand_data, curdist, &d)) {
+                                    metric_lower_bound_pruned++;
+                                    continue;
+                                }
+                                metric_survivor_long_computed++;
+                            } else {
+                                d = space_->query_distance(query_context, cand_data);
+                            }
+                            if (stats) {
+                                ++stats->long_distance_evaluations;
+                            }
+                            if (d < curdist) {
+                                curdist = d;
+                                currObj = cand;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+
+                std::priority_queue<
+                    std::pair<dist_t, tableint>,
+                    std::vector<std::pair<dist_t, tableint>>,
+                    CompareByFirst> top_candidates;
+                bool bare_bone_search = !num_deleted_ && !isIdAllowed;
+                const size_t fast_search_ef = std::max(
+                    std::max(efSearch, k),
+                    static_cast<size_t>(
+                        std::ceil(static_cast<double>(efSearch) *
+                                  static_cast<double>(config.fast_search_ef_multiplier))));
+                if (bare_bone_search) {
+                    top_candidates = searchBaseLayerST<true>(
+                        currObj, query_context, fast_search_ef, isIdAllowed);
+                } else {
+                    top_candidates = searchBaseLayerST<false>(
+                        currObj, query_context, fast_search_ef, isIdAllowed);
+                }
+
+                const size_t residual_candidates =
+                    std::max(k, std::min(config.fast_residual_candidates, top_candidates.size()));
+                while (top_candidates.size() > residual_candidates) {
+                    top_candidates.pop();
+                }
+
+                std::vector<std::pair<dist_t, tableint>> candidates;
+                candidates.reserve(top_candidates.size());
+                while (!top_candidates.empty()) {
+                    candidates.push_back(top_candidates.top());
+                    top_candidates.pop();
+                }
+
+                for (std::pair<dist_t, tableint> &candidate : candidates) {
+                    const dist_t long_distance = candidate.first;
+                    const DistanceInterval interval = space_->compute_residual_distance_interval(
+                        query_context,
+                        getDataByInternalId(candidate.second),
+                        long_distance);
+                    candidate.first = long_distance +
+                        config.fast_residual_score_blend * (interval.estimate - long_distance);
+                    if (stats) {
+                        ++stats->residual_distance_evaluations;
+                        ++stats->long_to_residual_upgrades;
+                    }
+                }
+
+                std::sort(candidates.begin(), candidates.end());
+                for (size_t i = 0; i < k && i < candidates.size(); ++i) {
+                    result.emplace(candidates[i].first, getExternalLabel(candidates[i].second));
+                }
+            } catch (...) {
+                space_->release_query(query_context);
+                throw;
+            }
+            space_->release_query(query_context);
+            return result;
+        }
+
+        struct CandidateState {
+            tableint id = 0;
+            dist_t estimate = std::numeric_limits<dist_t>::max();
+            dist_t lower_bound = std::numeric_limits<dist_t>::max();
+            dist_t upper_bound = std::numeric_limits<dist_t>::max();
+            dist_t long_distance = std::numeric_limits<dist_t>::max();
+            DistanceStage stage = DistanceStage::Short;
+            bool expanded = false;
+            bool present = false;
+            bool allowed = true;
+            uint32_t version = 0;
+        };
+
+        struct ExpansionItem {
+            dist_t lower_bound;
+            tableint id;
+            uint32_t version;
+        };
+
+        struct CompareExpansion {
+            bool operator()(const ExpansionItem &a, const ExpansionItem &b) const {
+                if (a.lower_bound == b.lower_bound) {
+                    return a.id > b.id;
+                }
+                return a.lower_bound > b.lower_bound;
+            }
+        };
+
+        const void *query_context = space_->prepare_query(query_data);
+        VisitedList *vl = nullptr;
+        try {
+            tableint currObj = enterpoint_node_;
+            dist_t curdist = space_->compute_long_distance_interval(
+                query_context,
+                getDataByInternalId(enterpoint_node_)).estimate;
+            if (stats) {
+                ++stats->long_distance_evaluations;
+            }
+
+            for (int level = maxlevel_; level > 0; level--) {
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    unsigned int *data = (unsigned int *) get_linklist(currObj, level);
+                    int size = getListCount(data);
+                    metric_hops++;
+                    metric_distance_computations += size;
+
+                    tableint *datal = (tableint *) (data + 1);
+                    for (int i = 0; i < size; i++) {
+                        tableint cand = datal[i];
+                        if (cand < 0 || cand > max_elements_)
+                            throw std::runtime_error("cand error");
+                        const DistanceInterval interval = space_->compute_long_distance_interval(
+                            query_context,
+                            getDataByInternalId(cand));
+                        if (stats) {
+                            ++stats->long_distance_evaluations;
+                        }
+                        if (interval.estimate < curdist) {
+                            curdist = interval.estimate;
+                            currObj = cand;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            std::vector<CandidateState> states;
+            states.reserve(std::max<size_t>(efSearch * 8, 1024));
+            std::unordered_map<tableint, size_t> state_index;
+            state_index.reserve(std::max<size_t>(efSearch * 8, 1024));
+            std::priority_queue<ExpansionItem, std::vector<ExpansionItem>, CompareExpansion> expansion_queue;
+            std::vector<tableint> result_ids;
+            result_ids.reserve(efSearch + 1);
+
+            auto state_of = [&](tableint id) -> CandidateState& {
+                typename std::unordered_map<tableint, size_t>::iterator found = state_index.find(id);
+                if (found != state_index.end()) {
+                    return states[found->second];
+                }
+                const size_t new_index = states.size();
+                states.push_back(CandidateState());
+                states.back().id = id;
+                state_index[id] = new_index;
+                return states.back();
+            };
+
+            auto ranking_distance = [&](tableint id) -> dist_t {
+                const CandidateState &candidate = state_of(id);
+                return candidate.stage == DistanceStage::Short ? candidate.upper_bound : candidate.estimate;
+            };
+
+            auto prune_result_ids = [&]() {
+                std::vector<tableint> compact;
+                compact.reserve(result_ids.size());
+                for (tableint id : result_ids) {
+                    const CandidateState &candidate = state_of(id);
+                    if (candidate.present && candidate.allowed) {
+                        bool seen = false;
+                        for (tableint existing : compact) {
+                            if (existing == id) {
+                                seen = true;
+                                break;
+                            }
+                        }
+                        if (!seen) {
+                            compact.push_back(id);
+                        }
+                    }
+                }
+                result_ids.swap(compact);
+                while (result_ids.size() > efSearch) {
+                    size_t worst_index = 0;
+                    dist_t worst_distance = ranking_distance(result_ids[0]);
+                    for (size_t i = 1; i < result_ids.size(); ++i) {
+                        const dist_t distance = ranking_distance(result_ids[i]);
+                        if (distance > worst_distance) {
+                            worst_distance = distance;
+                            worst_index = i;
+                        }
+                    }
+                    result_ids.erase(result_ids.begin() + worst_index);
+                }
+            };
+
+            auto add_or_update_result = [&](tableint id) {
+                if (!state_of(id).allowed) {
+                    return;
+                }
+                bool found = false;
+                for (tableint existing : result_ids) {
+                    if (existing == id) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    result_ids.push_back(id);
+                }
+                prune_result_ids();
+            };
+
+            auto beam_threshold = [&]() -> dist_t {
+                prune_result_ids();
+                if (result_ids.size() < efSearch || result_ids.empty()) {
+                    return std::numeric_limits<dist_t>::max();
+                }
+                dist_t worst = ranking_distance(result_ids[0]);
+                for (tableint id : result_ids) {
+                    worst = std::max(worst, ranking_distance(id));
+                }
+                return worst;
+            };
+
+            auto topk_worst_upper = [&]() -> dist_t {
+                prune_result_ids();
+                if (result_ids.size() < k || result_ids.empty()) {
+                    return std::numeric_limits<dist_t>::max();
+                }
+                std::vector<tableint> sorted = result_ids;
+                std::sort(sorted.begin(), sorted.end(), [&](tableint a, tableint b) {
+                    return state_of(a).estimate < state_of(b).estimate;
+                });
+                dist_t worst = state_of(sorted[0]).upper_bound;
+                for (size_t i = 0; i < k && i < sorted.size(); ++i) {
+                    worst = std::max(worst, state_of(sorted[i]).upper_bound);
+                }
+                return worst;
+            };
+
+            auto rank_of = [&](tableint id) -> size_t {
+                std::vector<tableint> sorted = result_ids;
+                std::sort(sorted.begin(), sorted.end(), [&](tableint a, tableint b) {
+                    return ranking_distance(a) < ranking_distance(b);
+                });
+                for (size_t i = 0; i < sorted.size(); ++i) {
+                    if (sorted[i] == id) {
+                        return i;
+                    }
+                }
+                return sorted.size();
+            };
+
+            auto push_expansion = [&](tableint id) {
+                const CandidateState &candidate = state_of(id);
+                expansion_queue.push(ExpansionItem{candidate.lower_bound, id, candidate.version});
+            };
+
+            auto is_allowed = [&](tableint id) -> bool {
+                return !isMarkedDeleted(id) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(id)));
+            };
+
+            auto upgrade_to_residual = [&](tableint id) -> bool {
+                CandidateState &candidate = state_of(id);
+                if (candidate.stage == DistanceStage::Residual) {
+                    return false;
+                }
+                const DistanceInterval interval = space_->compute_residual_distance_interval(
+                    query_context,
+                    getDataByInternalId(id),
+                    candidate.long_distance);
+                candidate.estimate = interval.estimate;
+                candidate.lower_bound = interval.lower_bound;
+                candidate.upper_bound = interval.upper_bound;
+                candidate.stage = DistanceStage::Residual;
+                ++candidate.version;
+                if (stats) {
+                    ++stats->residual_distance_evaluations;
+                    ++stats->long_to_residual_upgrades;
+                    ++stats->residual_reinsertions;
+                }
+                push_expansion(id);
+                add_or_update_result(id);
+                return true;
+            };
+
+            const DistanceInterval entry_interval = space_->compute_long_distance_interval(
+                query_context,
+                getDataByInternalId(currObj));
+            if (stats) {
+                ++stats->long_distance_evaluations;
+            }
+            CandidateState &entry = state_of(currObj);
+            entry.id = currObj;
+            entry.estimate = entry_interval.estimate;
+            entry.lower_bound = entry_interval.lower_bound;
+            entry.upper_bound = entry_interval.upper_bound;
+            entry.long_distance = entry_interval.estimate;
+            entry.stage = DistanceStage::Long;
+            entry.present = true;
+            entry.allowed = is_allowed(currObj);
+            push_expansion(currObj);
+            add_or_update_result(currObj);
+
+            vl = visited_list_pool_->getFreeVisitedList();
+            vl_type *visited_array = vl->mass;
+            vl_type visited_array_tag = vl->curV;
+            visited_array[currObj] = visited_array_tag;
+            if (stats) {
+                ++stats->visited_nodes;
+            }
+
+            size_t residual_evaluations = 0;
+            size_t long_expansions = 0;
+
+            while (!expansion_queue.empty()) {
+                const ExpansionItem item = expansion_queue.top();
+                expansion_queue.pop();
+                CandidateState &candidate = state_of(item.id);
+                if (!candidate.present || item.version != candidate.version) {
+                    continue;
+                }
+
+                const dist_t threshold = beam_threshold();
+                if (result_ids.size() >= efSearch && candidate.lower_bound > threshold) {
+                    break;
+                }
+
+                if (candidate.stage == DistanceStage::Short) {
+                    const DistanceInterval interval = space_->compute_long_distance_interval(
+                        query_context,
+                        getDataByInternalId(candidate.id));
+                    candidate.estimate = interval.estimate;
+                    candidate.lower_bound = interval.lower_bound;
+                    candidate.upper_bound = interval.upper_bound;
+                    candidate.long_distance = interval.estimate;
+                    candidate.stage = DistanceStage::Long;
+                    ++candidate.version;
+                    if (stats) {
+                        ++stats->long_distance_evaluations;
+                        ++stats->short_to_long_upgrades;
+                        ++stats->long_reinsertions;
+                    }
+                    push_expansion(candidate.id);
+                    add_or_update_result(candidate.id);
+                    continue;
+                }
+
+                const size_t candidate_rank = rank_of(candidate.id);
+                const bool close_to_topk = candidate.lower_bound <= topk_worst_upper() + config.final_margin;
+                const bool in_residual_beam = candidate_rank < config.residual_beam;
+                const bool uncertain = config.residual_uncertainty_threshold > 0.0f &&
+                    candidate.upper_bound - candidate.lower_bound > config.residual_uncertainty_threshold;
+                if (candidate.stage == DistanceStage::Long) {
+                    const bool need_residual =
+                        close_to_topk ||
+                        in_residual_beam ||
+                        config.require_residual_before_expand ||
+                        uncertain;
+                    if (need_residual) {
+                        if (residual_evaluations < config.max_residual_evaluations) {
+                            if (upgrade_to_residual(candidate.id)) {
+                                ++residual_evaluations;
+                            }
+                            continue;
+                        }
+                        if (stats) {
+                            stats->residual_budget_exhausted = true;
+                        }
+                        if (config.require_residual_before_expand) {
+                            continue;
+                        }
+                    }
+
+                    if (candidate_rank >= config.long_expand_beam ||
+                        long_expansions >= config.max_long_expansions) {
+                        if (stats && long_expansions >= config.max_long_expansions) {
+                            stats->long_expansion_budget_exhausted = true;
+                        }
+                        continue;
+                    }
+                }
+
+                if (candidate.expanded) {
+                    continue;
+                }
+                candidate.expanded = true;
+                ++candidate.version;
+                ++metric_hops;
+                if (stats) {
+                    if (candidate.stage == DistanceStage::Residual) {
+                        ++stats->expanded_residual_nodes;
+                    } else {
+                        ++stats->expanded_long_nodes;
+                    }
+                }
+                if (candidate.stage == DistanceStage::Long) {
+                    ++long_expansions;
+                }
+
+                int *data = (int *) get_linklist0(candidate.id);
+                size_t size = getListCount((linklistsizeint*)data);
+                metric_distance_computations += size;
+                for (size_t j = 1; j <= size; j++) {
+                    tableint neighbor_id = static_cast<tableint>(*(data + j));
+                    if (visited_array[neighbor_id] == visited_array_tag) {
+                        continue;
+                    }
+                    visited_array[neighbor_id] = visited_array_tag;
+                    if (stats) {
+                        ++stats->visited_nodes;
+                    }
+
+                    const DistanceInterval interval = space_->compute_short_distance_interval(
+                        query_context,
+                        getDataByInternalId(neighbor_id));
+                    if (stats) {
+                        ++stats->short_distance_evaluations;
+                    }
+
+                    const dist_t current_threshold = beam_threshold();
+                    if (result_ids.size() >= efSearch &&
+                        interval.lower_bound > current_threshold + config.short_margin) {
+                        if (stats) {
+                            ++stats->short_pruned_nodes;
+                        }
+                        continue;
+                    }
+
+                    CandidateState &next = state_of(neighbor_id);
+                    next.id = neighbor_id;
+                    next.estimate = interval.estimate;
+                    next.lower_bound = interval.lower_bound;
+                    next.upper_bound = interval.upper_bound;
+                    next.stage = DistanceStage::Short;
+                    next.expanded = false;
+                    next.present = true;
+                    next.allowed = is_allowed(neighbor_id);
+                    next.version = 0;
+                    push_expansion(neighbor_id);
+                    add_or_update_result(neighbor_id);
+                }
+            }
+
+            if (config.enable_interval_stabilization) {
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    prune_result_ids();
+                    if (result_ids.empty()) {
+                        break;
+                    }
+                    std::vector<tableint> sorted = result_ids;
+                    std::sort(sorted.begin(), sorted.end(), [&](tableint a, tableint b) {
+                        return state_of(a).estimate < state_of(b).estimate;
+                    });
+                    const size_t top_count = std::min(k, sorted.size());
+                    dist_t top_worst_upper_bound = -std::numeric_limits<dist_t>::max();
+                    for (size_t i = 0; i < top_count; ++i) {
+                        top_worst_upper_bound = std::max(top_worst_upper_bound, state_of(sorted[i]).upper_bound);
+                        if (state_of(sorted[i]).stage != DistanceStage::Residual) {
+                            if (residual_evaluations >= config.max_residual_evaluations) {
+                                if (stats) stats->residual_budget_exhausted = true;
+                                continue;
+                            }
+                            if (upgrade_to_residual(sorted[i])) {
+                                ++residual_evaluations;
+                                if (stats) ++stats->stabilization_residual_evaluations;
+                                changed = true;
+                            }
+                        }
+                    }
+                    for (size_t i = top_count; i < sorted.size(); ++i) {
+                        if (state_of(sorted[i]).stage == DistanceStage::Residual ||
+                            state_of(sorted[i]).lower_bound > top_worst_upper_bound + config.final_margin) {
+                            continue;
+                        }
+                        if (residual_evaluations >= config.max_residual_evaluations) {
+                            if (stats) stats->residual_budget_exhausted = true;
+                            continue;
+                        }
+                        if (upgrade_to_residual(sorted[i])) {
+                            ++residual_evaluations;
+                            if (stats) ++stats->stabilization_residual_evaluations;
+                            changed = true;
+                        }
+                    }
+                    if (stats && changed) {
+                        ++stats->stabilization_rounds;
+                    }
+                }
+            }
+
+            visited_list_pool_->releaseVisitedList(vl);
+            vl = nullptr;
+            prune_result_ids();
+            std::sort(result_ids.begin(), result_ids.end(), [&](tableint a, tableint b) {
+                return state_of(a).estimate < state_of(b).estimate;
+            });
+            for (size_t i = 0; i < k && i < result_ids.size(); ++i) {
+                tableint id = result_ids[i];
+                result.emplace(state_of(id).estimate, getExternalLabel(id));
+            }
+        } catch (...) {
+            if (vl != nullptr) {
+                visited_list_pool_->releaseVisitedList(vl);
+            }
+            space_->release_query(query_context);
+            throw;
+        }
+        space_->release_query(query_context);
+        return result;
     }
 
 
