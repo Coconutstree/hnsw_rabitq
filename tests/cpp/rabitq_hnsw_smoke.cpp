@@ -24,6 +24,9 @@ int main() {
     const size_t expected_data_size = sizeof(hnswlib::RaBitQSpace::EncodedHeader) +
                                       sizeof(hnswlib::RaBitQSpace::ShortCodeFactors) +
                                       sizeof(hnswlib::RaBitQSpace::ResidualCodeFactors) +
+                                      ((index.space().get_code_dim() +
+                                        hnswlib::RaBitQSpace::kResidualBlockSize - 1U) /
+                                       hnswlib::RaBitQSpace::kResidualBlockSize) * sizeof(float) +
                                       index.space().get_compact_code_bytes() +
                                       index.space().get_residual_code_bytes();
     assert(index.space().get_data_size() == expected_data_size);
@@ -34,7 +37,10 @@ int main() {
     const auto *code = reinterpret_cast<const unsigned char *>(
         encoded.data() + sizeof(hnswlib::RaBitQSpace::EncodedHeader) +
             sizeof(hnswlib::RaBitQSpace::ShortCodeFactors) +
-            sizeof(hnswlib::RaBitQSpace::ResidualCodeFactors));
+            sizeof(hnswlib::RaBitQSpace::ResidualCodeFactors) +
+            ((index.space().get_code_dim() +
+              hnswlib::RaBitQSpace::kResidualBlockSize - 1U) /
+             hnswlib::RaBitQSpace::kResidualBlockSize) * sizeof(float));
     const auto code_value = [code](size_t index) -> uint8_t {
         const uint8_t byte = code[index >> 1U];
         return static_cast<uint8_t>((index & 1U) ? (byte >> 4U) : (byte & 0x0FU));
@@ -210,6 +216,51 @@ int main() {
     assert(loaded_floatbuild_result.top().second == payload_build_result.top().second);
     std::remove(tmp_floatbuild_index);
     std::remove(tmp_floatbuild_state);
+
+    const char *tmp_external_index = "/tmp/rabitq_hnsw_smoke_external.index";
+    const char *tmp_external_state = "/tmp/rabitq_hnsw_smoke_external.index.rabitq";
+    const char *tmp_external_residual = "/tmp/rabitq_hnsw_smoke_external.index.residual";
+    const char *tmp_external_payload = "/tmp/rabitq_hnsw_smoke_external.payload";
+    std::remove(tmp_external_index);
+    std::remove(tmp_external_state);
+    std::remove(tmp_external_residual);
+    std::remove(tmp_external_payload);
+    hnswlib::RaBitQHierarchicalNSW external_index(dim, 4, 1, 8, 32, 0, false, true);
+    external_index.space().setIdentityRotation();
+    {
+        std::ofstream payload_output(tmp_external_payload, std::ios::binary);
+        assert(payload_output.is_open());
+        std::vector<char> full_encoded(external_index.space().get_full_data_size(), 0);
+        for (size_t i = 0; i < 4; ++i) {
+            external_index.space().encodeVectorFull(data.data() + i * dim, full_encoded.data());
+            payload_output.write(full_encoded.data(), static_cast<std::streamsize>(full_encoded.size()));
+        }
+        assert(payload_output.good());
+    }
+    external_index.importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
+        float_graph,
+        tmp_external_payload,
+        tmp_external_residual,
+        external_index.space().get_full_data_size());
+    hnswlib::ProgressiveSearchConfig external_config;
+    external_config.efSearch = 4;
+    external_config.fast_search_finalize_residual = true;
+    external_config.fast_residual_candidates = 4;
+    auto external_result =
+        external_index.searchKnnProgressiveRefinement(data.data(), 1, external_config);
+    assert(!external_result.empty());
+    assert(std::isfinite(external_result.top().first));
+    external_index.saveIndex(tmp_external_index);
+    hnswlib::RaBitQHierarchicalNSW external_loaded(dim, 4, 1, 8, 32, 0, false, true);
+    external_loaded.loadIndex(tmp_external_index, 4);
+    auto external_loaded_result =
+        external_loaded.searchKnnProgressiveRefinement(data.data(), 1, external_config);
+    assert(!external_loaded_result.empty());
+    assert(std::isfinite(external_loaded_result.top().first));
+    std::remove(tmp_external_index);
+    std::remove(tmp_external_state);
+    std::remove(tmp_external_residual);
+    std::remove(tmp_external_payload);
 
     std::cout << "RaBitQ HNSW smoke test passed\n";
     return 0;

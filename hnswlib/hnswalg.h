@@ -1601,13 +1601,27 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     top_candidates.pop();
                 }
 
-                for (std::pair<dist_t, tableint> &candidate : candidates) {
-                    const dist_t long_distance = candidate.first;
-                    const DistanceInterval interval = space_->compute_residual_distance_interval(
-                        query_context,
-                        getDataByInternalId(candidate.second),
-                        long_distance);
-                    candidate.first = long_distance +
+                std::vector<size_t> residual_ids(candidates.size(), 0);
+                std::vector<const void *> residual_points(candidates.size(), nullptr);
+                std::vector<dist_t> long_distances(candidates.size(), 0);
+                std::vector<DistanceInterval> residual_intervals(candidates.size());
+                for (size_t i = 0; i < candidates.size(); ++i) {
+                    residual_ids[i] = getExternalLabel(candidates[i].second);
+                    residual_points[i] = getDataByInternalId(candidates[i].second);
+                    long_distances[i] = candidates[i].first;
+                }
+                space_->batch_compute_residual_distance_intervals_by_id(
+                    query_context,
+                    residual_ids.data(),
+                    residual_points.data(),
+                    long_distances.data(),
+                    candidates.size(),
+                    residual_intervals.data());
+
+                for (size_t i = 0; i < candidates.size(); ++i) {
+                    const dist_t long_distance = candidates[i].first;
+                    const DistanceInterval interval = residual_intervals[i];
+                    candidates[i].first = long_distance +
                         config.fast_residual_score_blend * (interval.estimate - long_distance);
                     if (stats) {
                         ++stats->residual_distance_evaluations;

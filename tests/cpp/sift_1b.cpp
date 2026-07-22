@@ -46,7 +46,8 @@ void print_run_config(
     const char *path_index,
     const char *path_data,
     const char *path_q,
-    const char *path_gt) {
+    const char *path_gt,
+    bool external_residual_storage) {
     (void) rerank_candidates;
     cout << "Run config:\n";
     cout << "  dataset=" << dataset_name << "\n";
@@ -57,7 +58,8 @@ void print_run_config(
     cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
          << " random_seed=" << random_seed << "\n";
     cout << "  build_distance=float32_l2"
-         << " stored_data=4bit_rabitq_plus_residual"
+         << " stored_data="
+         << (external_residual_storage ? "4bit_rabitq_plus_disk_residual" : "4bit_rabitq_plus_residual")
          << " query_distance=progressive_short_long_residual\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
@@ -161,6 +163,10 @@ string quantizer_state_path(const string &index_path) {
     return index_path + ".rabitq";
 }
 
+string residual_state_path(const string &index_path) {
+    return index_path + ".residual";
+}
+
 size_t file_size_bytes(const string &path) {
     ifstream input(path, ios::binary | ios::ate);
     if (!input.is_open()) {
@@ -179,13 +185,16 @@ double mbps_from_bytes_us(size_t bytes, double us) {
 
 void print_index_file_size(const string &index_path) {
     const string state_path = quantizer_state_path(index_path);
+    const string residual_path = residual_state_path(index_path);
     const size_t index_bytes = file_size_bytes(index_path);
     const size_t auxiliary_bytes = file_size_bytes(state_path);
-    const size_t total_bytes = index_bytes + auxiliary_bytes;
+    const size_t residual_bytes = file_size_bytes(residual_path);
+    const size_t total_bytes = index_bytes + auxiliary_bytes + residual_bytes;
     const double mb = 1000000.0;
     cout << "Index storage size: " << total_bytes / mb << " MB"
          << " (index=" << index_bytes / mb << " MB"
          << ", auxiliary=" << auxiliary_bytes / mb << " MB"
+         << ", residual=" << residual_bytes / mb << " MB"
          << ", total_bytes=" << total_bytes << ")\n";
 }
 
@@ -789,6 +798,7 @@ void sift_test1B() {
     struct DatasetConfig {
         string name;
         size_t dim;
+        size_t gt_width;
         string base_path;
         string query_path;
         string gt_path;
@@ -801,6 +811,7 @@ void sift_test1B() {
         dataset = DatasetConfig{
             "sift10m",
             128,
+            1000,
             "/home/kai3/coco/data/sift10m/sift10m_base.fvecs",
             "/home/kai3/coco/data/sift10m/sift10m_query.fvecs",
             "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs",
@@ -809,6 +820,7 @@ void sift_test1B() {
         dataset = DatasetConfig{
             "dbpedia-openai1536",
             1536,
+            100,
             "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs",
             "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs",
             "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs",
@@ -817,6 +829,7 @@ void sift_test1B() {
         dataset = DatasetConfig{
             "deep1B",
             96,
+            100,
             "/home/kai3/coco/data/deep1B/deep1B_base.fvecs",
             "/home/kai3/coco/data/deep1B/deep1B_query.fvecs",
             "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs",
@@ -829,7 +842,10 @@ void sift_test1B() {
 
     const char *dataset_name = dataset.name.c_str();
     const size_t vecdim = dataset.dim;
-    const size_t gt_width = 1000;
+    const size_t gt_width = dataset.gt_width;
+    const string residual_storage = getenv_string("RABITQ_RESIDUAL_STORAGE", "memory");
+    const bool external_residual_storage =
+        residual_storage == "disk" || residual_storage == "external" || residual_storage == "mmap";
 
     char path_index[1024];
     const char *path_q = dataset.query_path.c_str();
@@ -859,7 +875,8 @@ void sift_test1B() {
         path_index,
         path_data,
         path_q,
-        path_gt);
+        path_gt,
+        external_residual_storage);
 
     cout << "Loading GT:\n";
     ifstream inputGT(path_gt, ios::binary);
@@ -900,9 +917,11 @@ void sift_test1B() {
     }
 
     RaBitQHierarchicalNSW *appr_alg = new RaBitQHierarchicalNSW(
-        vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
+        vecdim, vecsize, centroid_count, M, efConstruction, random_seed, false, external_residual_storage);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-         << " (4-bit code + residual code)\n";
+         << (external_residual_storage
+             ? " (4-bit code in index; residual in mmap sidecar)\n"
+             : " (4-bit code + residual code)\n");
 
     bool need_build = true;
     if (exists_test(path_index)) {
@@ -919,9 +938,11 @@ void sift_test1B() {
                 cout << "Rebuilding the index with the current quantizer format\n";
                 delete appr_alg;
                 appr_alg = new RaBitQHierarchicalNSW(
-                    vecdim, vecsize, centroid_count, M, efConstruction, random_seed);
+                    vecdim, vecsize, centroid_count, M, efConstruction, random_seed, false, external_residual_storage);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-                     << " (4-bit code + residual code)\n";
+                     << (external_residual_storage
+                         ? " (4-bit code in index; residual in mmap sidecar)\n"
+                         : " (4-bit code + residual code)\n");
                 input.clear();
                 input.seekg(0, ios::beg);
             }
@@ -948,7 +969,9 @@ void sift_test1B() {
         StopW stopw;
         StopW float_graph_timer;
         const size_t report_every = 100000;
-        const size_t payload_record_size = appr_alg->space().get_data_size();
+        const size_t payload_record_size = external_residual_storage
+            ? appr_alg->space().get_full_data_size()
+            : appr_alg->space().get_data_size();
         const size_t payload_total_bytes = vecsize * payload_record_size;
         const string payload_mode = getenv_string("RABITQ_PAYLOAD_MODE", "disk");
         const bool payload_disk_mode = payload_mode != "memory";
@@ -983,7 +1006,11 @@ void sift_test1B() {
         {
             StopW payload_timer;
             vector<char> encoded_first(payload_record_size, 0);
-            appr_alg->space().encodeVector(first.data(), encoded_first.data());
+            if (external_residual_storage) {
+                appr_alg->space().encodeVectorFull(first.data(), encoded_first.data());
+            } else {
+                appr_alg->space().encodeVector(first.data(), encoded_first.data());
+            }
             if (payload_disk_mode) {
                 disk_payload->writeRecord(0, encoded_first.data(), payload_record_size);
             } else {
@@ -1012,7 +1039,11 @@ void sift_test1B() {
             }
             StopW payload_timer;
             vector<char> encoded_payload(payload_record_size, 0);
-            appr_alg->space().encodeVector(local_mass.data(), encoded_payload.data());
+            if (external_residual_storage) {
+                appr_alg->space().encodeVectorFull(local_mass.data(), encoded_payload.data());
+            } else {
+                appr_alg->space().encodeVector(local_mass.data(), encoded_payload.data());
+            }
             if (payload_disk_mode) {
                 disk_payload->writeRecord(static_cast<size_t>(label), encoded_payload.data(), payload_record_size);
             } else {
@@ -1049,20 +1080,55 @@ void sift_test1B() {
              << "\n";
 
         StopW convertw;
-        if (payload_disk_mode) {
-            appr_alg->importGraphFromFloatIndexWithPayloadFile(
+        if (external_residual_storage && payload_disk_mode) {
+            appr_alg->importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
                 float_index,
                 payload_path,
+                residual_state_path(path_index),
                 payload_record_size,
                 true);
             disk_payload.reset();
             std::remove(payload_path.c_str());
-        } else {
+        } else if (external_residual_storage) {
+            const string residual_path = residual_state_path(path_index);
+            DiskPayloadStore residual_store(
+                residual_path,
+                vecsize * appr_alg->space().get_residual_disk_record_bytes());
+            vector<char> compact_payloads(vecsize * appr_alg->space().get_data_size(), 0);
+            vector<char> residual_record(appr_alg->space().get_residual_disk_record_bytes(), 0);
+            for (size_t label = 0; label < vecsize; ++label) {
+                const char *full = payloads.data() + label * payload_record_size;
+                appr_alg->space().copyCompactPayloadFromFull(
+                    full,
+                    compact_payloads.data() + label * appr_alg->space().get_data_size());
+                appr_alg->space().copyResidualRecordFromFull(full, residual_record.data());
+                residual_store.writeRecord(
+                    label,
+                    residual_record.data(),
+                    appr_alg->space().get_residual_disk_record_bytes());
+            }
             appr_alg->importGraphFromFloatIndexWithPayloads(
                 float_index,
-                payloads,
-                payload_record_size,
+                compact_payloads,
+                appr_alg->space().get_data_size(),
                 true);
+            appr_alg->space().openExternalResidualStorage(residual_path, vecsize);
+        } else {
+            if (payload_disk_mode) {
+                appr_alg->importGraphFromFloatIndexWithPayloadFile(
+                    float_index,
+                    payload_path,
+                    payload_record_size,
+                    true);
+                disk_payload.reset();
+                std::remove(payload_path.c_str());
+            } else {
+                appr_alg->importGraphFromFloatIndexWithPayloads(
+                    float_index,
+                    payloads,
+                    payload_record_size,
+                    true);
+            }
         }
         const double graph_payload_import_us = convertw.getElapsedTimeMicro();
         const size_t graph_payload_import_count = float_index.cur_element_count;

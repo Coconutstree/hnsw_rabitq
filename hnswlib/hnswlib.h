@@ -301,6 +301,22 @@ class SpaceInterface {
         return DistanceInterval{distance, distance, distance};
     }
 
+    virtual void batch_compute_residual_distance_intervals_by_id(
+        const void *prepared_query,
+        const size_t *internal_ids,
+        const void *const *data_points,
+        const MTYPE *long_distances,
+        size_t count,
+        DistanceInterval *intervals) {
+        for (size_t i = 0; i < count; ++i) {
+            intervals[i] = compute_residual_distance_interval(
+                prepared_query,
+                data_points[i],
+                long_distances[i]);
+        }
+        (void) internal_ids;
+    }
+
     virtual void prepare_data_for_add(const void *raw_data_point) {
         (void) raw_data_point;
     }

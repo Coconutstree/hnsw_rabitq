@@ -11,6 +11,10 @@
 #include <utility>
 #include <vector>
 
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+
 //hnsw底层算法和数据结构的定义，包含了空间接口、算法接口、访问列表池等核心组件的实现
 #include "hnswlib.h"
 #include "space_l2.h"
@@ -23,6 +27,10 @@ class RaBitQHierarchicalNSW {
  private:
     static std::string quantizerStatePath(const std::string &location) {
         return location + ".rabitq";
+    }
+
+    static std::string residualPathForIndex(const std::string &location) {
+        return location + ".residual";
     }
 
  //RabitQ空间对象，负责将原始向量编码成RaBitQ编码，以及计算两个编码向量之间的距离
@@ -39,10 +47,11 @@ class RaBitQHierarchicalNSW {
         size_t ef_construction = 200,//HNSW构图参数，构图时考虑的候选节点数量，默认为200
         size_t random_seed = 100,//随机种子，用于生成随机旋转矩阵，默认为100
         //是否允许替换已删除元素，默认为false，如果为true，在插入新元素时会尝试替换掉被标记为删除的元素，以节省空间
-        bool allow_replace_deleted = false)
+        bool allow_replace_deleted = false,
+        bool external_residual_storage = false)
         //构造spcae_和index_
         //ef_construction指的是建图候选数，M指的是最大邻居数
-        : space_(dim, centroid_count, static_cast<uint32_t>(random_seed)),
+        : space_(dim, centroid_count, static_cast<uint32_t>(random_seed), external_residual_storage),
           index_(&space_, max_elements, M, ef_construction, random_seed, allow_replace_deleted) {
     }
 //访问space_的接口，外部可以通过它改space_的参数或者调用space_的方法
@@ -87,6 +96,7 @@ class RaBitQHierarchicalNSW {
         space_.loadState(quantizer_input);
         quantizer_input.close();
         index_.loadIndex(location, &space_, max_elements);
+        space_.openExternalResidualStorage(residualPathForIndex(location), index_.cur_element_count);
     }
 //添加数据点，首先将原始向量编码成RaBitQ编码，然后调用index_的addPoint方法插入编码后的向量
     void addPoint(const float *raw_vector, labeltype label, bool replace_deleted = false) {
@@ -179,6 +189,110 @@ class RaBitQHierarchicalNSW {
                               << " %, " << kips << " kips\n";
                 }
             });
+    }
+
+    void importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
+        const HierarchicalNSW<float> &float_index,
+        const std::string &payload_path,
+        const std::string &residual_path,
+        size_t full_record_size,
+        bool verbose = false) {
+        const size_t total_count = float_index.cur_element_count;
+        if (!space_.external_residual_storage_enabled()) {
+            throw std::runtime_error("RaBitQ external residual storage is disabled");
+        }
+        if (full_record_size != space_.get_full_data_size()) {
+            throw std::runtime_error("RaBitQ full payload record size does not match space full data size");
+        }
+
+        std::ifstream payload_input(payload_path.c_str(), std::ios::binary | std::ios::ate);
+        if (!payload_input.is_open()) {
+            throw std::runtime_error("RaBitQ failed to open payload file: " + payload_path);
+        }
+        const size_t payload_bytes = static_cast<size_t>(payload_input.tellg());
+        if (payload_bytes != total_count * full_record_size) {
+            throw std::runtime_error("RaBitQ full payload file size does not match graph element count");
+        }
+
+        const int residual_fd = ::open(residual_path.c_str(), O_CREAT | O_TRUNC | O_RDWR, 0644);
+        if (residual_fd < 0) {
+            throw std::runtime_error("RaBitQ failed to create residual file: " + residual_path);
+        }
+        const size_t residual_total_bytes = total_count * space_.get_residual_disk_record_bytes();
+        if (::ftruncate(residual_fd, static_cast<off_t>(residual_total_bytes)) != 0) {
+            ::close(residual_fd);
+            throw std::runtime_error("RaBitQ failed to resize residual file: " + residual_path);
+        }
+
+        size_t copied_count = 0;
+        const auto start_time = std::chrono::steady_clock::now();
+        std::vector<char> full_record(full_record_size, 0);
+        std::vector<char> compact_record(space_.get_data_size(), 0);
+        std::vector<char> residual_record(space_.get_residual_disk_record_bytes(), 0);
+        index_.importGraphAndCopyDataFrom(
+            float_index,
+            [this,
+             &float_index,
+             &payload_input,
+             &full_record,
+             &compact_record,
+             &residual_record,
+             residual_fd,
+             full_record_size,
+             total_count,
+             verbose,
+             start_time,
+             &copied_count,
+             &residual_path](
+                tableint source_internal_id,
+                void *target_data) {
+                const labeltype label = float_index.getExternalLabel(source_internal_id);
+                if (label >= total_count) {
+                    throw std::runtime_error("RaBitQ payload label is outside full payload file range");
+                }
+                payload_input.clear();
+                payload_input.seekg(static_cast<std::streamoff>(label * full_record_size), std::ios::beg);
+                payload_input.read(full_record.data(), static_cast<std::streamsize>(full_record_size));
+                if (!payload_input.good()) {
+                    throw std::runtime_error("RaBitQ failed to read full payload record from disk");
+                }
+                space_.copyCompactPayloadFromFull(full_record.data(), compact_record.data());
+                std::memcpy(target_data, compact_record.data(), compact_record.size());
+                space_.copyResidualRecordFromFull(full_record.data(), residual_record.data());
+
+                size_t written = 0;
+                const size_t record_size = residual_record.size();
+                const off_t base_offset = static_cast<off_t>(label * record_size);
+                while (written < record_size) {
+                    const ssize_t n = ::pwrite(
+                        residual_fd,
+                        residual_record.data() + written,
+                        record_size - written,
+                        base_offset + static_cast<off_t>(written));
+                    if (n < 0) {
+                        if (errno == EINTR) {
+                            continue;
+                        }
+                        throw std::runtime_error("RaBitQ failed to write residual record: " + residual_path);
+                    }
+                    if (n == 0) {
+                        throw std::runtime_error("RaBitQ short write to residual file: " + residual_path);
+                    }
+                    written += static_cast<size_t>(n);
+                }
+
+                ++copied_count;
+                if (verbose && (copied_count % 100000 == 0 || copied_count == total_count)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const double seconds =
+                        std::chrono::duration_cast<std::chrono::duration<double>>(now - start_time).count();
+                    const double kips = seconds > 0.0 ? copied_count / (1000.0 * seconds) : 0.0;
+                    std::cout << "Graph/payload import " << copied_count / (0.01 * total_count)
+                              << " %, " << kips << " kips\n";
+                }
+            });
+        ::close(residual_fd);
+        space_.openExternalResidualStorage(residual_path, total_count);
     }
 //搜索k近邻，首先将查询向量编码成RaBitQ编码，然后调用index_的searchKnn方法搜索编码后的向量，返回距离和标签的二元组优先队列
     std::priority_queue<std::pair<float, labeltype>>
