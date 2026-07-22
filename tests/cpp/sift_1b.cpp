@@ -829,7 +829,7 @@ void sift_test1B() {
 
     const char *dataset_name = dataset.name.c_str();
     const size_t vecdim = dataset.dim;
-    const size_t gt_width = 100;
+    const size_t gt_width = 1000;
 
     char path_index[1024];
     const char *path_q = dataset.query_path.c_str();

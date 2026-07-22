@@ -30,6 +30,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     static constexpr float kUnsignedOffset = 7.5f;
     static constexpr float kRemainingOffset = 3.5f;
     static constexpr size_t kResidualBlockSize = 16;
+    static constexpr double kExtendedRaBitQErrorConstant = 5.75;
 
     struct EncodedHeader {
         float norm_sqr;
@@ -829,7 +830,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     void saveState(std::ostream &output) const {
-        const std::string magic = "EXRBTQ18";
+        const std::string magic = "EXRBTQ20";
         output.write(magic.data(), magic.size());
 
         const uint64_t dim = static_cast<uint64_t>(dim_);
@@ -864,7 +865,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     void loadState(std::istream &input) {
         char magic[8];
         input.read(magic, sizeof(magic));
-        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ18") {
+        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ20") {
             throw std::runtime_error(
                 "Old or incompatible RaBitQ index format. Please rebuild the index.");
         }
@@ -1160,9 +1161,11 @@ class RaBitQSpace : public SpaceInterface<float> {
             }
             o_obar = std::min(0.999999, std::max(1e-6, o_obar));
             const double o2 = o_obar * o_obar;
-            const double fac_err = 2.0 / std::sqrt(static_cast<double>(code_dim_ - 1U));
+            const double fac_err_bound =
+                std::ldexp(kExtendedRaBitQErrorConstant, -static_cast<int>(kTotalBits)) /
+                std::sqrt(static_cast<double>(code_dim_));
             factors->error_scale = static_cast<float>(
-                std::sqrt(std::max(0.0, (1.0 - o2) / o2)) * fac_err * 2.0 * residual_norm);
+                std::sqrt(std::max(0.0, (1.0 - o2) / o2)) * fac_err_bound * 2.0 * residual_norm);
         }
 
         thread_local std::vector<float> quantization_error;
