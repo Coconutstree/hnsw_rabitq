@@ -561,6 +561,8 @@ struct SearchReport {
     size_t progressive_stabilization_residual_evaluations{0};
     size_t progressive_budget_exhausted_queries{0};
     size_t progressive_long_expansion_budget_exhausted_queries{0};
+    size_t actual_search_ef{0};
+    size_t rerank_candidates{0};
     size_t fast_residual_candidates{0};
     float fast_search_ef_multiplier{1.0f};
     float residual_blend{1.0f};
@@ -574,9 +576,9 @@ static SearchReport test_approx(
     size_t vecdim,
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
+    size_t actual_search_ef,
     size_t rerank_candidates) {
     (void) base_path;
-    (void) rerank_candidates;
     size_t correct = 0;
     size_t total = 0;
     double hnsw_us = 0.0;
@@ -595,17 +597,17 @@ static SearchReport test_approx(
 
     for (size_t i = 0; i < qsize; i++) {
         ProgressiveSearchConfig config;
-        config.efSearch = rerank_candidates;
+        config.efSearch = actual_search_ef;
         config.fast_search_finalize_residual = true;
         config.fast_residual_candidates = configured_fast_residual_candidates == 0
-            ? std::numeric_limits<size_t>::max()
+            ? rerank_candidates
             : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
         config.fast_search_ef_multiplier = configured_fast_search_ef_multiplier;
         config.fast_residual_score_blend = configured_residual_blend;
         config.residual_beam = config.fast_residual_candidates;
         config.max_residual_evaluations = config.fast_residual_candidates;
-        config.long_expand_beam = std::max<size_t>(16, 2 * rerank_candidates);
-        config.max_long_expansions = std::max<size_t>(rerank_candidates * 8, 64);
+        config.long_expand_beam = std::max<size_t>(16, 2 * actual_search_ef);
+        config.max_long_expansions = std::max<size_t>(actual_search_ef * 8, 64);
         config.short_margin = 0.0f;
         config.final_margin = 0.0f;
         config.require_residual_before_expand = false;
@@ -623,7 +625,8 @@ static SearchReport test_approx(
         } catch (const std::exception &error) {
             cerr << "progressive_query_failed"
                  << " query=" << i
-                 << " efSearch=" << rerank_candidates
+                 << " efSearch=" << actual_search_ef
+                 << " rerank_candidates=" << rerank_candidates
                  << " error=" << error.what()
                  << "\n";
             throw;
@@ -695,11 +698,11 @@ static SearchReport test_approx(
     report.progressive_budget_exhausted_queries = progressive_budget_exhausted_queries;
     report.progressive_long_expansion_budget_exhausted_queries =
         progressive_long_expansion_budget_exhausted_queries;
+    report.actual_search_ef = actual_search_ef;
+    report.rerank_candidates = rerank_candidates;
     report.fast_search_ef_multiplier = std::max(1.0f, configured_fast_search_ef_multiplier);
     report.fast_residual_candidates = configured_fast_residual_candidates == 0
-        ? static_cast<size_t>(std::ceil(
-              static_cast<double>(rerank_candidates) *
-              static_cast<double>(report.fast_search_ef_multiplier)))
+        ? rerank_candidates
         : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
     report.residual_blend = std::max(0.0f, std::min(1.0f, configured_residual_blend));
     return report;
@@ -715,7 +718,6 @@ static void test_vs_recall(
     size_t k,
     size_t rerank_candidates) {
     vector<size_t> efs;
-    (void) rerank_candidates;
     for (size_t i = 1; i <= 30; i++) {
         if (i >= k) {
             efs.push_back(i);
@@ -733,7 +735,9 @@ static void test_vs_recall(
     }
 
     for (size_t ef : efs) {
-        appr_alg.setEf(ef);
+        const size_t actual_search_ef = ef;
+        const size_t actual_rerank_candidates = std::min(ef, rerank_candidates);
+        appr_alg.setEf(actual_search_ef);
         SearchReport report = test_approx(
             massQ,
             qsize,
@@ -742,10 +746,17 @@ static void test_vs_recall(
             vecdim,
             answers,
             k,
-            ef);
+            actual_search_ef,
+            actual_rerank_candidates);
+        report.actual_search_ef = actual_search_ef;
+        report.rerank_candidates = actual_rerank_candidates;
 
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
+             << "\t" << "recall_at=" << k
+             << "\t" << "requested_ef=" << ef
+             << "\t" << "actual_search_ef=" << report.actual_search_ef
+             << "\t" << "rerank_candidates=" << report.rerank_candidates
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
              << "\t" << "total_us_per_query=" << report.total_us_per_query
              << "\t" << "method=progressive_short_long_residual"
@@ -834,10 +845,28 @@ void sift_test1B() {
             "/home/kai3/coco/data/deep1B/deep1B_query.fvecs",
             "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs",
             "deep1B"};
+    } else if (dataset_choice == "glove") {
+        dataset = DatasetConfig{
+            "glove",
+            25,
+            100,
+            "/home/kai3/coco/data/glove/glove_base.fvecscs",
+            "/home/kai3/coco/data/glove/glove_query.fvecs",
+            "/home/kai3/coco/data/glove/glove.ivecs",
+            "glove"};
+    } else if (dataset_choice == "gist") {
+        dataset = DatasetConfig{
+            "gist",
+            960,
+            100,
+            "/home/kai3/coco/data/gist/gist_base.fvecs",
+            "/home/kai3/coco/data/gist/gist_query.fvecs",
+            "/home/kai3/coco/data/gist/gist_groundtruth.ivecs",
+            "gist"};
     } else {
         throw runtime_error(
             "unknown RABITQ_DATASET=" + dataset_choice +
-            " (expected sift10m, deep1B, or dbpedia)");
+            " (expected sift10m, deep1B, dbpedia, glove, or gist)");
     }
 
     const char *dataset_name = dataset.name.c_str();
@@ -846,6 +875,7 @@ void sift_test1B() {
     const string residual_storage = getenv_string("RABITQ_RESIDUAL_STORAGE", "memory");
     const bool external_residual_storage =
         residual_storage == "disk" || residual_storage == "external" || residual_storage == "mmap";
+    const size_t residual_bits = getenv_size_t("RABITQ_RESIDUAL_BITS", 8);
 
     char path_index[1024];
     const char *path_q = dataset.query_path.c_str();
@@ -853,14 +883,26 @@ void sift_test1B() {
     const char *path_gt = dataset.gt_path.c_str();
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
-    snprintf(
-        path_index,
-        sizeof(path_index),
-        "%s_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
-        dataset.index_prefix.c_str(),
-        efConstruction,
-        M,
-        centroid_count);
+    if (residual_bits == 8) {
+        snprintf(
+            path_index,
+            sizeof(path_index),
+            "%s_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
+            dataset.index_prefix.c_str(),
+            efConstruction,
+            M,
+            centroid_count);
+    } else {
+        snprintf(
+            path_index,
+            sizeof(path_index),
+            "%s_rabitq_floatbuild_ef_%d_M_%d_C_%d_R%zu.bin",
+            dataset.index_prefix.c_str(),
+            efConstruction,
+            M,
+            centroid_count,
+            residual_bits);
+    }
 
     print_run_config(
         dataset_name,
@@ -922,6 +964,10 @@ void sift_test1B() {
          << (external_residual_storage
              ? " (4-bit code in index; residual in mmap sidecar)\n"
              : " (4-bit code + residual code)\n");
+    cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
+         << " residual_code_bytes_per_vector=" << appr_alg->space().get_residual_code_bytes()
+         << " residual_record_bytes_per_vector=" << appr_alg->space().get_residual_disk_record_bytes()
+         << "\n";
 
     bool need_build = true;
     if (exists_test(path_index)) {
@@ -943,6 +989,10 @@ void sift_test1B() {
                      << (external_residual_storage
                          ? " (4-bit code in index; residual in mmap sidecar)\n"
                          : " (4-bit code + residual code)\n");
+                cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
+                     << " residual_code_bytes_per_vector=" << appr_alg->space().get_residual_code_bytes()
+                     << " residual_record_bytes_per_vector=" << appr_alg->space().get_residual_disk_record_bytes()
+                     << "\n";
                 input.clear();
                 input.seekg(0, ios::beg);
             }
@@ -1154,7 +1204,7 @@ void sift_test1B() {
     }
 
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
-    const size_t k = 1;
+    const size_t k = 10;
     cout << "Parsing gt:\n";
     get_gt(massQA, qsize, gt_width, answers, k);
     cout << "Loaded gt\n";
