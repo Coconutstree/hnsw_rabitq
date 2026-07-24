@@ -30,6 +30,7 @@ namespace hnswlib {
 class RaBitQSpace : public SpaceInterface<float> {
  public:
     static constexpr size_t kTotalBits = 4;
+    static constexpr size_t kShortBits = 1;
     static constexpr size_t kRemainingBits = 3;
     static constexpr uint32_t kUnsignedMax = 15;
     static constexpr uint32_t kRemainingMax = 7;
@@ -38,6 +39,26 @@ class RaBitQSpace : public SpaceInterface<float> {
     static constexpr float kRemainingOffset = 3.5f;
     static constexpr size_t kResidualBlockSize = 16;
     static constexpr double kExtendedRaBitQErrorConstant = 5.75;
+
+    enum class ResidualQuantizationBits : uint8_t {
+        B1 = 1,
+        B2 = 2,
+        B4 = 4,
+        B8 = 8,
+        B16 = 16
+    };
+
+    struct ResidualQuantizationConfig {
+        ResidualQuantizationBits bits = ResidualQuantizationBits::B4;
+        size_t block_size = kResidualBlockSize;
+        bool enabled = true;
+        bool enable_block_scaling = true;
+    };
+
+    struct RaBitQConfig {
+        size_t dimension = 0;
+        ResidualQuantizationConfig residual;
+    };
 
     struct EncodedHeader {
         float norm_sqr;
@@ -59,11 +80,13 @@ class RaBitQSpace : public SpaceInterface<float> {
         std::vector<float> rotated_residual_even;
         std::vector<float> rotated_residual_odd;
         mutable std::vector<float> residual_nibble_lut;
+        mutable std::vector<float> residual_2bit_lut;
         float query_norm = 0.0f;
         float query_norm_sqr = 0.0f;
         float half_sum_residual = 0.0f;
         float rotated_residual_sum = 0.0f;
         mutable bool residual_nibble_lut_ready = false;
+        mutable bool residual_2bit_lut_ready = false;
     };
 
     struct LongCodeIps {
@@ -77,6 +100,7 @@ class RaBitQSpace : public SpaceInterface<float> {
     size_t compact_code_bytes_{0};
     size_t short_factor_bytes_{0};
     size_t residual_factor_bytes_{0};
+    size_t residual_block_size_{kResidualBlockSize};
     size_t residual_block_count_{0};
     size_t residual_scale_bytes_{0};
     size_t residual_bits_{8};
@@ -94,6 +118,7 @@ class RaBitQSpace : public SpaceInterface<float> {
 
     uint32_t random_seed_{100};
     std::vector<float> fht_signs_;
+    ResidualQuantizationConfig residual_config_;
     std::vector<float> global_center_;
 
     static size_t roundUp64(size_t value) {
@@ -187,36 +212,243 @@ class RaBitQSpace : public SpaceInterface<float> {
         }
     }
 
-    static size_t configuredResidualBits() {
+ public:
+    static bool is_supported_residual_bits(size_t bits) {
+        return bits == 1 || bits == 2 || bits == 4 || bits == 8 || bits == 16;
+    }
+
+    static int32_t residual_quantized_max(size_t bits) {
+        if (!is_supported_residual_bits(bits)) {
+            throw std::invalid_argument("unsupported residual quantization bits");
+        }
+        if (bits == 1) {
+            return 1;
+        }
+        return static_cast<int32_t>((uint32_t{1} << (bits - 1U)) - 1U);
+    }
+
+    static size_t residual_packed_code_size_bytes(size_t dimension, size_t bits) {
+        if (!is_supported_residual_bits(bits)) {
+            throw std::invalid_argument("unsupported residual quantization bits");
+        }
+        if (dimension > (std::numeric_limits<size_t>::max() - 7U) / bits) {
+            throw std::overflow_error("residual packed code size overflow");
+        }
+        return (dimension * bits + 7U) / 8U;
+    }
+
+    static double primary_code_empirical_error_reference(size_t dimension) {
+        if (dimension == 0) {
+            throw std::invalid_argument("dimension must be positive");
+        }
+        return kExtendedRaBitQErrorConstant /
+               (16.0 * std::sqrt(static_cast<double>(dimension)));
+    }
+
+    static double residual_coordinate_error_bound(double block_scale, size_t residual_bits) {
+        if (!is_supported_residual_bits(residual_bits)) {
+            throw std::invalid_argument("unsupported residual quantization bits");
+        }
+        return residual_bits == 1
+            ? std::abs(block_scale)
+            : 0.5 * std::abs(block_scale);
+    }
+
+    static void pack_residual_codes(
+        const int32_t *codes,
+        size_t dimension,
+        size_t residual_bits,
+        uint8_t *output) {
+        const size_t byte_count = residual_packed_code_size_bytes(dimension, residual_bits);
+        std::memset(output, 0, byte_count);
+        if (residual_bits == 1) {
+            for (size_t i = 0; i < dimension; ++i) {
+                if (codes[i] != -1 && codes[i] != 1) {
+                    throw std::invalid_argument("1-bit residual code must be -1 or +1");
+                }
+                if (codes[i] > 0) {
+                    output[i >> 3U] = static_cast<uint8_t>(
+                        output[i >> 3U] | static_cast<uint8_t>(1U << (i & 7U)));
+                }
+            }
+            return;
+        }
+
+        const int32_t qmax = residual_quantized_max(residual_bits);
+        if (residual_bits == 8) {
+            for (size_t i = 0; i < dimension; ++i) {
+                if (codes[i] < -qmax || codes[i] > qmax) {
+                    throw std::invalid_argument("8-bit residual code is out of range");
+                }
+                output[i] = static_cast<uint8_t>(static_cast<int8_t>(codes[i]));
+            }
+            return;
+        }
+        if (residual_bits == 16) {
+            for (size_t i = 0; i < dimension; ++i) {
+                if (codes[i] < -qmax || codes[i] > qmax) {
+                    throw std::invalid_argument("16-bit residual code is out of range");
+                }
+                const uint16_t raw = static_cast<uint16_t>(static_cast<int16_t>(codes[i]));
+                output[2U * i] = static_cast<uint8_t>(raw & 0xFFU);
+                output[2U * i + 1U] = static_cast<uint8_t>(raw >> 8U);
+            }
+            return;
+        }
+
+        const uint32_t mask = (uint32_t{1} << residual_bits) - 1U;
+        size_t bit_offset = 0;
+        for (size_t i = 0; i < dimension; ++i) {
+            if (codes[i] < -qmax || codes[i] > qmax) {
+                throw std::invalid_argument("packed residual code is out of range");
+            }
+            const uint32_t unsigned_code = static_cast<uint32_t>(codes[i]) & mask;
+            const size_t byte_index = bit_offset >> 3U;
+            const size_t shift = bit_offset & 7U;
+            output[byte_index] = static_cast<uint8_t>(output[byte_index] | (unsigned_code << shift));
+            if (shift + residual_bits > 8U) {
+                output[byte_index + 1U] = static_cast<uint8_t>(
+                    output[byte_index + 1U] | (unsigned_code >> (8U - shift)));
+            }
+            bit_offset += residual_bits;
+        }
+    }
+
+    static void unpack_residual_codes(
+        const uint8_t *packed,
+        size_t dimension,
+        size_t residual_bits,
+        int32_t *output) {
+        (void) residual_packed_code_size_bytes(dimension, residual_bits);
+        if (residual_bits == 1) {
+            for (size_t i = 0; i < dimension; ++i) {
+                output[i] = (packed[i >> 3U] & static_cast<uint8_t>(1U << (i & 7U))) ? 1 : -1;
+            }
+            return;
+        }
+
+        (void) residual_quantized_max(residual_bits);
+        if (residual_bits == 8) {
+            for (size_t i = 0; i < dimension; ++i) {
+                output[i] = static_cast<int32_t>(static_cast<int8_t>(packed[i]));
+            }
+            return;
+        }
+        if (residual_bits == 16) {
+            for (size_t i = 0; i < dimension; ++i) {
+                const uint16_t raw = static_cast<uint16_t>(
+                    static_cast<uint16_t>(packed[2U * i]) |
+                    (static_cast<uint16_t>(packed[2U * i + 1U]) << 8U));
+                output[i] = static_cast<int32_t>(static_cast<int16_t>(raw));
+            }
+            return;
+        }
+
+        const uint32_t mask = (uint32_t{1} << residual_bits) - 1U;
+        size_t bit_offset = 0;
+        for (size_t i = 0; i < dimension; ++i) {
+            const size_t byte_index = bit_offset >> 3U;
+            const size_t shift = bit_offset & 7U;
+            uint32_t raw = static_cast<uint32_t>(packed[byte_index] >> shift);
+            if (shift + residual_bits > 8U) {
+                raw |= static_cast<uint32_t>(packed[byte_index + 1U]) << (8U - shift);
+            }
+            uint32_t value = raw & mask;
+            const uint32_t sign_bit = uint32_t{1} << (residual_bits - 1U);
+            if (value & sign_bit) {
+                value |= ~mask;
+            }
+            output[i] = static_cast<int32_t>(value);
+            bit_offset += residual_bits;
+        }
+    }
+
+ private:
+    static size_t configuredResidualBits(size_t explicit_bits) {
+        if (explicit_bits != 0) {
+            if (!is_supported_residual_bits(explicit_bits)) {
+                throw std::invalid_argument("explicit residual bits must be 1, 2, 4, 8, or 16");
+            }
+            return explicit_bits;
+        }
         const char *value = std::getenv("RABITQ_RESIDUAL_BITS");
         if (value == nullptr || value[0] == '\0') {
             return 8;
         }
         char *end = nullptr;
         const unsigned long parsed = std::strtoul(value, &end, 10);
-        if (end == value) {
-            return 8;
+        if (end == value || *end != '\0') {
+            throw std::invalid_argument("RABITQ_RESIDUAL_BITS must be 1, 2, 4, 8, or 16");
         }
-        if (parsed == 4 || parsed == 8) {
+        if (is_supported_residual_bits(static_cast<size_t>(parsed))) {
             return static_cast<size_t>(parsed);
         }
-        throw std::invalid_argument("RABITQ_RESIDUAL_BITS must be 4 or 8");
+        throw std::invalid_argument("RABITQ_RESIDUAL_BITS must be 1, 2, 4, 8, or 16");
     }
 
-    int residualQuantizedValue(const uint8_t *packed_code, size_t index) const {
-        if (residual_bits_ == 8) {
-            return static_cast<int>(reinterpret_cast<const int8_t *>(packed_code)[index]);
+    static ResidualQuantizationBits residualBitsEnum(size_t bits) {
+        switch (bits) {
+            case 1: return ResidualQuantizationBits::B1;
+            case 2: return ResidualQuantizationBits::B2;
+            case 4: return ResidualQuantizationBits::B4;
+            case 8: return ResidualQuantizationBits::B8;
+            case 16: return ResidualQuantizationBits::B16;
+            default:
+                throw std::invalid_argument("residual bits must be 1, 2, 4, 8, or 16");
         }
-        const uint8_t nibble = codeValue(packed_code, index);
-        return nibble >= 8U ? static_cast<int>(nibble) - 16 : static_cast<int>(nibble);
     }
 
-    void setResidualQuantizedValue(uint8_t *packed_code, size_t index, int value) const {
-        if (residual_bits_ == 8) {
-            reinterpret_cast<int8_t *>(packed_code)[index] = static_cast<int8_t>(value);
-            return;
+    static ResidualQuantizationConfig makeResidualConfig(size_t explicit_bits) {
+        ResidualQuantizationConfig config;
+        config.bits = residualBitsEnum(configuredResidualBits(explicit_bits));
+        return config;
+    }
+
+    static ResidualQuantizationConfig validateResidualConfig(ResidualQuantizationConfig config) {
+        const size_t bits = static_cast<size_t>(config.bits);
+        if (!is_supported_residual_bits(bits)) {
+            throw std::invalid_argument("residual bits must be 1, 2, 4, 8, or 16");
         }
-        setCodeValue(packed_code, index, static_cast<uint8_t>(value) & 0x0FU);
+        if (!config.enabled) {
+            throw std::invalid_argument("RaBitQ residual refinement must remain enabled");
+        }
+        if (config.block_size == 0) {
+            throw std::invalid_argument("residual block size must be positive");
+        }
+        return config;
+    }
+
+    int32_t residualQuantizedValue(const uint8_t *packed_code, size_t index) const {
+        if (residual_bits_ == 1) {
+            return (packed_code[index >> 3U] & static_cast<uint8_t>(1U << (index & 7U))) ? 1 : -1;
+        }
+        if (residual_bits_ == 8) {
+            return static_cast<int32_t>(static_cast<int8_t>(packed_code[index]));
+        }
+        if (residual_bits_ == 16) {
+            const uint16_t raw = static_cast<uint16_t>(
+                static_cast<uint16_t>(packed_code[2U * index]) |
+                (static_cast<uint16_t>(packed_code[2U * index + 1U]) << 8U));
+            return static_cast<int32_t>(static_cast<int16_t>(raw));
+        }
+        if (residual_bits_ == 4) {
+            const uint8_t nibble = codeValue(packed_code, index);
+            return nibble >= 8U ? static_cast<int32_t>(nibble) - 16 : static_cast<int32_t>(nibble);
+        }
+        const size_t bit_offset = index * residual_bits_;
+        const size_t byte_index = bit_offset >> 3U;
+        const size_t shift = bit_offset & 7U;
+        uint32_t raw = static_cast<uint32_t>(packed_code[byte_index] >> shift);
+        if (shift + residual_bits_ > 8U) {
+            raw |= static_cast<uint32_t>(packed_code[byte_index + 1U]) << (8U - shift);
+        }
+        const uint32_t mask = (uint32_t{1} << residual_bits_) - 1U;
+        uint32_t value = raw & mask;
+        const uint32_t sign_bit = uint32_t{1} << (residual_bits_ - 1U);
+        if (value & sign_bit) {
+            value |= ~mask;
+        }
+        return static_cast<int32_t>(value);
     }
 
     const ShortCodeFactors *shortFactors(const void *encoded) const {
@@ -768,10 +1000,26 @@ class RaBitQSpace : public SpaceInterface<float> {
         const QueryContext &query,
         const uint8_t *residual_code,
         const float *residual_scales) const {
-        if (residual_bits_ == 4) {
-            return residualInt4IpAvxDispatch(query, residual_code, residual_scales);
+        switch (residual_bits_) {
+            case 1:
+                return residual_block_size_ == kResidualBlockSize
+                    ? residualInt1IpLut(query, residual_code, residual_scales)
+                    : residualInt1IpScalar(query, residual_code, residual_scales);
+            case 2:
+                return residual_block_size_ == kResidualBlockSize
+                    ? residualInt2IpLut(query, residual_code, residual_scales)
+                    : residualInt2IpScalar(query, residual_code, residual_scales);
+            case 4:
+                return residual_block_size_ == kResidualBlockSize
+                    ? residualInt4IpAvxDispatch(query, residual_code, residual_scales)
+                    : residualInt4IpScalar(query, residual_code, residual_scales);
+            case 8:
+                return residualInt8IpAvxDispatch(query, residual_code, residual_scales);
+            case 16:
+                return residualInt16IpAvxDispatch(query, residual_code, residual_scales);
+            default:
+                throw std::logic_error("unsupported residual bits in residualIp");
         }
-        return residualInt8IpScalar(query, residual_code, residual_scales);
     }
 
     float residualDistanceErrorBound(const QueryContext &query, const float *residual_scales) const {
@@ -781,9 +1029,9 @@ class RaBitQSpace : public SpaceInterface<float> {
             if (scale == 0.0f || !std::isfinite(scale)) {
                 continue;
             }
-            const size_t begin = block * kResidualBlockSize;
-            const size_t end = std::min(code_dim_, begin + kResidualBlockSize);
-            const double per_dim_error = 0.5 * static_cast<double>(scale);
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
+            const double per_dim_error = residual_coordinate_error_bound(scale, residual_bits_);
             residual_error_norm_sqr +=
                 static_cast<double>(end - begin) * per_dim_error * per_dim_error;
         }
@@ -791,27 +1039,284 @@ class RaBitQSpace : public SpaceInterface<float> {
             2.0 * static_cast<double>(query.query_norm) * std::sqrt(residual_error_norm_sqr));
     }
 
-    float residualInt8IpScalar(
+    float residualPackedIpScalar(
         const QueryContext &query,
         const uint8_t *residual_code,
         const float *residual_scales) const {
-        const int8_t *codes = reinterpret_cast<const int8_t *>(residual_code);
         float result = 0.0f;
         for (size_t block = 0; block < residual_block_count_; ++block) {
             const float scale = residual_scales[block];
             if (scale == 0.0f || !std::isfinite(scale)) {
                 continue;
             }
-            const size_t begin = block * kResidualBlockSize;
-            const size_t end = std::min(code_dim_, begin + kResidualBlockSize);
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
             float block_ip = 0.0f;
             for (size_t i = begin; i < end; ++i) {
-                block_ip += static_cast<float>(codes[i]) * query.rotated_residual[i];
+                block_ip += static_cast<float>(residualQuantizedValue(residual_code, i)) *
+                            query.rotated_residual[i];
             }
             result += scale * block_ip;
         }
         return result;
     }
+
+    float residualInt1IpScalar(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        float result = 0.0f;
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
+            float block_ip = 0.0f;
+            for (size_t i = begin; i < end; ++i) {
+                const int32_t q =
+                    (residual_code[i >> 3U] & static_cast<uint8_t>(1U << (i & 7U))) ? 1 : -1;
+                block_ip += static_cast<float>(q) * query.rotated_residual[i];
+            }
+            result += scale * block_ip;
+        }
+        return result;
+    }
+
+    float residualInt1IpLut(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        ensureResidualNibbleLut(query);
+        const float *lut = query.residual_nibble_lut.data();
+        float result = 0.0f;
+        constexpr size_t groups_per_block = kResidualBlockSize / 4U;
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t group_begin = block * groups_per_block;
+            const size_t group_end = std::min((code_dim_ + 3U) >> 2U, group_begin + groups_per_block);
+            float positive_sum = 0.0f;
+            float block_sum = 0.0f;
+            for (size_t group = group_begin; group < group_end; ++group) {
+                const uint8_t packed = residual_code[group >> 1U];
+                const uint8_t nibble = (group & 1U)
+                    ? static_cast<uint8_t>(packed >> 4U)
+                    : static_cast<uint8_t>(packed & 0x0FU);
+                const float *group_lut = lut + (group << 4U);
+                positive_sum += group_lut[nibble];
+                block_sum += group_lut[15U];
+            }
+            result += scale * (2.0f * positive_sum - block_sum);
+        }
+        return result;
+    }
+
+    float residualInt2IpScalar(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        float result = 0.0f;
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
+            float block_ip = 0.0f;
+            for (size_t i = begin; i < end; ++i) {
+                const uint8_t raw = static_cast<uint8_t>(
+                    (residual_code[i >> 2U] >> ((i & 3U) << 1U)) & 0x03U);
+                const int32_t q = (raw & 0x02U) ? static_cast<int32_t>(raw) - 4 : raw;
+                block_ip += static_cast<float>(q) * query.rotated_residual[i];
+            }
+            result += scale * block_ip;
+        }
+        return result;
+    }
+
+    float residualInt2IpLut(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        ensureResidual2BitLut(query);
+        const float *lut = query.residual_2bit_lut.data();
+        float result = 0.0f;
+        constexpr size_t groups_per_block = kResidualBlockSize / 4U;
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t group_begin = block * groups_per_block;
+            const size_t group_end = std::min((code_dim_ + 3U) >> 2U, group_begin + groups_per_block);
+            float block_ip = 0.0f;
+            for (size_t group = group_begin; group < group_end; ++group) {
+                block_ip += lut[(group << 8U) + residual_code[group]];
+            }
+            result += scale * block_ip;
+        }
+        return result;
+    }
+
+    float residualInt8IpAvxDispatch(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+#if defined(__AVX2__)
+        return residualInt8IpAvx2(query, residual_code, residual_scales);
+#else
+        return residualInt8IpScalar(query, residual_code, residual_scales);
+#endif
+    }
+
+    float residualInt8IpScalar(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        float result = 0.0f;
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
+            float block_ip = 0.0f;
+            for (size_t i = begin; i < end; ++i) {
+                const int32_t q = static_cast<int32_t>(static_cast<int8_t>(residual_code[i]));
+                block_ip += static_cast<float>(q) * query.rotated_residual[i];
+            }
+            result += scale * block_ip;
+        }
+        return result;
+    }
+
+    float residualInt16IpAvxDispatch(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+#if defined(__AVX2__)
+        return residualInt16IpAvx2(query, residual_code, residual_scales);
+#else
+        return residualInt16IpScalar(query, residual_code, residual_scales);
+#endif
+    }
+
+    float residualInt16IpScalar(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        float result = 0.0f;
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
+            double block_ip = 0.0;
+            for (size_t i = begin; i < end; ++i) {
+                const size_t offset = 2U * i;
+                const uint16_t raw = static_cast<uint16_t>(residual_code[offset]) |
+                                     static_cast<uint16_t>(residual_code[offset + 1U] << 8U);
+                const int32_t q = static_cast<int32_t>(static_cast<int16_t>(raw));
+                block_ip += static_cast<double>(q) * static_cast<double>(query.rotated_residual[i]);
+            }
+            result += static_cast<float>(static_cast<double>(scale) * block_ip);
+        }
+        return result;
+    }
+
+#if defined(__AVX2__)
+    float residualInt8IpAvx2(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        float result = 0.0f;
+        alignas(32) float lanes[8];
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
+            __m256 sum = _mm256_setzero_ps();
+            size_t i = begin;
+            for (; i + 16U <= end; i += 16U) {
+                const __m128i packed = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(residual_code + i));
+                const __m256 lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(packed));
+                const __m128i hi8 = _mm_srli_si128(packed, 8);
+                const __m256 hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(hi8));
+                sum = _mm256_add_ps(
+                    sum,
+                    _mm256_mul_ps(lo, _mm256_loadu_ps(query.rotated_residual.data() + i)));
+                sum = _mm256_add_ps(
+                    sum,
+                    _mm256_mul_ps(hi, _mm256_loadu_ps(query.rotated_residual.data() + i + 8U)));
+            }
+            _mm256_store_ps(lanes, sum);
+            float block_ip = lanes[0] + lanes[1] + lanes[2] + lanes[3] +
+                             lanes[4] + lanes[5] + lanes[6] + lanes[7];
+            for (; i < end; ++i) {
+                const int32_t q = static_cast<int32_t>(static_cast<int8_t>(residual_code[i]));
+                block_ip += static_cast<float>(q) * query.rotated_residual[i];
+            }
+            result += scale * block_ip;
+        }
+        return result;
+    }
+
+    float residualInt16IpAvx2(
+        const QueryContext &query,
+        const uint8_t *residual_code,
+        const float *residual_scales) const {
+        float result = 0.0f;
+        alignas(32) float lanes[8];
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            const float scale = residual_scales[block];
+            if (scale == 0.0f || !std::isfinite(scale)) {
+                continue;
+            }
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
+            __m256 sum = _mm256_setzero_ps();
+            size_t i = begin;
+            for (; i + 16U <= end; i += 16U) {
+                const __m256i packed = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(residual_code + 2U * i));
+                const __m128i lo16 = _mm256_castsi256_si128(packed);
+                const __m128i hi16 = _mm256_extracti128_si256(packed, 1);
+                const __m256 lo = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(lo16));
+                const __m256 hi = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(hi16));
+                sum = _mm256_add_ps(
+                    sum,
+                    _mm256_mul_ps(lo, _mm256_loadu_ps(query.rotated_residual.data() + i)));
+                sum = _mm256_add_ps(
+                    sum,
+                    _mm256_mul_ps(hi, _mm256_loadu_ps(query.rotated_residual.data() + i + 8U)));
+            }
+            _mm256_store_ps(lanes, sum);
+            double block_ip = static_cast<double>(lanes[0] + lanes[1] + lanes[2] + lanes[3] +
+                                                  lanes[4] + lanes[5] + lanes[6] + lanes[7]);
+            for (; i < end; ++i) {
+                const size_t offset = 2U * i;
+                const uint16_t raw = static_cast<uint16_t>(residual_code[offset]) |
+                                     static_cast<uint16_t>(residual_code[offset + 1U] << 8U);
+                const int32_t q = static_cast<int32_t>(static_cast<int16_t>(raw));
+                block_ip += static_cast<double>(q) * static_cast<double>(query.rotated_residual[i]);
+            }
+            result += static_cast<float>(static_cast<double>(scale) * block_ip);
+        }
+        return result;
+    }
+#endif
 
     float residualInt4IpAvxDispatch(
         const QueryContext &query,
@@ -834,16 +1339,13 @@ class RaBitQSpace : public SpaceInterface<float> {
             if (scale == 0.0f || !std::isfinite(scale)) {
                 continue;
             }
-            const size_t begin_pair = (block * kResidualBlockSize) >> 1U;
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
             float block_ip = 0.0f;
-            for (size_t lane = 0; lane < (kResidualBlockSize >> 1U); ++lane) {
-                const uint8_t packed = residual_code[begin_pair + lane];
-                const uint8_t lo = static_cast<uint8_t>(packed & 0x0FU);
-                const uint8_t hi = static_cast<uint8_t>(packed >> 4U);
-                const int lo_signed = lo >= 8U ? static_cast<int>(lo) - 16 : static_cast<int>(lo);
-                const int hi_signed = hi >= 8U ? static_cast<int>(hi) - 16 : static_cast<int>(hi);
-                block_ip += static_cast<float>(lo_signed) * query.rotated_residual_even[begin_pair + lane];
-                block_ip += static_cast<float>(hi_signed) * query.rotated_residual_odd[begin_pair + lane];
+            for (size_t i = begin; i < end; ++i) {
+                const uint8_t raw = codeValue(residual_code, i);
+                const int32_t q = raw >= 8U ? static_cast<int32_t>(raw) - 16 : raw;
+                block_ip += static_cast<float>(q) * query.rotated_residual[i];
             }
             result += scale * block_ip;
         }
@@ -929,6 +1431,36 @@ class RaBitQSpace : public SpaceInterface<float> {
         query.residual_nibble_lut_ready = true;
     }
 
+    void ensureResidual2BitLut(const QueryContext &query) const {
+        if (query.residual_2bit_lut_ready) {
+            return;
+        }
+        const size_t group_count = (code_dim_ + 3U) >> 2U;
+        query.residual_2bit_lut.assign(group_count * 256U, 0.0f);
+        for (size_t group = 0; group < group_count; ++group) {
+            const size_t base_dim = group << 2U;
+            float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            for (size_t lane = 0; lane < 4U; ++lane) {
+                const size_t dim = base_dim + lane;
+                if (dim < code_dim_) {
+                    values[lane] = query.rotated_residual[dim];
+                }
+            }
+            float *group_lut = query.residual_2bit_lut.data() + (group << 8U);
+            for (uint32_t packed = 0; packed < 256U; ++packed) {
+                float sum = 0.0f;
+                for (size_t lane = 0; lane < 4U; ++lane) {
+                    const uint32_t raw = (packed >> (lane << 1U)) & 0x03U;
+                    const int32_t q = (raw & 0x02U) ? static_cast<int32_t>(raw) - 4
+                                                    : static_cast<int32_t>(raw);
+                    sum += static_cast<float>(q) * values[lane];
+                }
+                group_lut[packed] = sum;
+            }
+        }
+        query.residual_2bit_lut_ready = true;
+    }
+
     static void setResidualSignBit(uint8_t *residual_code, size_t index, bool positive) {
         const uint8_t mask = static_cast<uint8_t>(1U << (index & 7U));
         if (positive) {
@@ -974,16 +1506,32 @@ class RaBitQSpace : public SpaceInterface<float> {
         size_t dim,
         size_t centroid_count = 1,
         uint32_t random_seed = 100,
-        bool external_residual_storage = false)
+        bool external_residual_storage = false,
+        size_t residual_bits = 0)
+        : RaBitQSpace(
+              dim,
+              centroid_count,
+              random_seed,
+              external_residual_storage,
+              makeResidualConfig(residual_bits)) {
+    }
+
+    explicit RaBitQSpace(
+        size_t dim,
+        size_t centroid_count,
+        uint32_t random_seed,
+        bool external_residual_storage,
+        ResidualQuantizationConfig residual_config)
         : dim_(dim),
           code_dim_(roundUp64(dim)),
-          compact_code_bytes_((code_dim_ * kTotalBits + 7U) / 8U),
+          compact_code_bytes_((code_dim_ + 1U) / 2U),
           short_factor_bytes_(sizeof(ShortCodeFactors)),
           residual_factor_bytes_(sizeof(ResidualCodeFactors)),
-          residual_block_count_((code_dim_ + kResidualBlockSize - 1U) / kResidualBlockSize),
+          residual_block_size_(validateResidualConfig(residual_config).block_size),
+          residual_block_count_((code_dim_ + residual_block_size_ - 1U) / residual_block_size_),
           residual_scale_bytes_(residual_block_count_ * sizeof(float)),
-          residual_bits_(configuredResidualBits()),
-          residual_code_bytes_((code_dim_ * residual_bits_ + 7U) / 8U),
+          residual_bits_(static_cast<size_t>(validateResidualConfig(residual_config).bits)),
+          residual_code_bytes_(residual_packed_code_size_bytes(code_dim_, residual_bits_)),
           full_data_size_(sizeof(EncodedHeader) + short_factor_bytes_ + residual_factor_bytes_ +
               residual_scale_bytes_ + compact_code_bytes_ + residual_code_bytes_),
           residual_disk_record_bytes_(residual_factor_bytes_ + residual_scale_bytes_ + residual_code_bytes_),
@@ -995,6 +1543,7 @@ class RaBitQSpace : public SpaceInterface<float> {
           fstdistfunc_(exrabitqDistance),
           random_seed_(random_seed),
           fht_signs_(code_dim_, inv_sqrt_code_dim_),
+          residual_config_(validateResidualConfig(residual_config)),
           global_center_(dim_, 0.0f) {
         (void) centroid_count;
         if (random_seed != 0) {
@@ -1064,6 +1613,18 @@ class RaBitQSpace : public SpaceInterface<float> {
         return residual_bits_;
     }
 
+    size_t get_residual_block_size() const {
+        return residual_block_size_;
+    }
+
+    const ResidualQuantizationConfig &get_residual_config() const {
+        return residual_config_;
+    }
+
+    double get_primary_code_empirical_error_reference() const {
+        return primary_code_empirical_error_reference(code_dim_);
+    }
+
     size_t get_full_data_size() const {
         return full_data_size_;
     }
@@ -1081,12 +1642,13 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     void saveState(std::ostream &output) const {
-        const std::string magic = "EXRBTQ22";
+        const std::string magic = "EXRBTQ30";
         output.write(magic.data(), magic.size());
 
         const uint64_t dim = static_cast<uint64_t>(dim_);
         const uint64_t code_dim = static_cast<uint64_t>(code_dim_);
         const uint32_t total_bits = static_cast<uint32_t>(kTotalBits);
+        const uint32_t short_bits = static_cast<uint32_t>(kShortBits);
         const uint32_t remaining_bits = static_cast<uint32_t>(kRemainingBits);
         const uint64_t encoded_header_size = static_cast<uint64_t>(sizeof(EncodedHeader));
         const uint64_t short_factor_size = static_cast<uint64_t>(sizeof(ShortCodeFactors));
@@ -1099,9 +1661,14 @@ class RaBitQSpace : public SpaceInterface<float> {
         const uint64_t full_data_size = static_cast<uint64_t>(full_data_size_);
         const uint64_t residual_disk_record_bytes = static_cast<uint64_t>(residual_disk_record_bytes_);
         const uint8_t external_residual_storage = external_residual_storage_ ? 1U : 0U;
+        const uint64_t residual_block_size = static_cast<uint64_t>(residual_block_size_);
+        const uint32_t flags =
+            (residual_config_.enabled ? 1U : 0U) |
+            (residual_config_.enable_block_scaling ? 2U : 0U);
         output.write(reinterpret_cast<const char *>(&dim), sizeof(dim));
         output.write(reinterpret_cast<const char *>(&code_dim), sizeof(code_dim));
         output.write(reinterpret_cast<const char *>(&total_bits), sizeof(total_bits));
+        output.write(reinterpret_cast<const char *>(&short_bits), sizeof(short_bits));
         output.write(reinterpret_cast<const char *>(&remaining_bits), sizeof(remaining_bits));
         output.write(reinterpret_cast<const char *>(&encoded_header_size), sizeof(encoded_header_size));
         output.write(reinterpret_cast<const char *>(&short_factor_size), sizeof(short_factor_size));
@@ -1114,6 +1681,8 @@ class RaBitQSpace : public SpaceInterface<float> {
         output.write(reinterpret_cast<const char *>(&full_data_size), sizeof(full_data_size));
         output.write(reinterpret_cast<const char *>(&residual_disk_record_bytes), sizeof(residual_disk_record_bytes));
         output.write(reinterpret_cast<const char *>(&external_residual_storage), sizeof(external_residual_storage));
+        output.write(reinterpret_cast<const char *>(&residual_block_size), sizeof(residual_block_size));
+        output.write(reinterpret_cast<const char *>(&flags), sizeof(flags));
         output.write(reinterpret_cast<const char *>(&random_seed_), sizeof(random_seed_));
         output.write(reinterpret_cast<const char *>(global_center_.data()), global_center_.size() * sizeof(float));
         output.write(reinterpret_cast<const char *>(fht_signs_.data()), fht_signs_.size() * sizeof(float));
@@ -1126,7 +1695,10 @@ class RaBitQSpace : public SpaceInterface<float> {
     void loadState(std::istream &input) {
         char magic[8];
         input.read(magic, sizeof(magic));
-        if (!input.good() || std::string(magic, sizeof(magic)) != "EXRBTQ22") {
+        const std::string magic_value(magic, sizeof(magic));
+        const bool new_format = magic_value == "EXRBTQ30";
+        const bool old_format = magic_value == "EXRBTQ22";
+        if (!input.good() || (!new_format && !old_format)) {
             throw std::runtime_error(
                 "Old or incompatible RaBitQ index format. Please rebuild the index.");
         }
@@ -1134,6 +1706,7 @@ class RaBitQSpace : public SpaceInterface<float> {
         uint64_t stored_dim = 0;
         uint64_t stored_code_dim = 0;
         uint32_t stored_total_bits = 0;
+        uint32_t stored_short_bits = kShortBits;
         uint32_t stored_remaining_bits = 0;
         uint64_t stored_header_size = 0;
         uint64_t stored_factor_size = 0;
@@ -1146,9 +1719,14 @@ class RaBitQSpace : public SpaceInterface<float> {
         uint64_t stored_full_data_size = 0;
         uint64_t stored_residual_disk_record_bytes = 0;
         uint8_t stored_external_residual_storage = 0;
+        uint64_t stored_residual_block_size = kResidualBlockSize;
+        uint32_t stored_flags = 3U;
         input.read(reinterpret_cast<char *>(&stored_dim), sizeof(stored_dim));
         input.read(reinterpret_cast<char *>(&stored_code_dim), sizeof(stored_code_dim));
         input.read(reinterpret_cast<char *>(&stored_total_bits), sizeof(stored_total_bits));
+        if (new_format) {
+            input.read(reinterpret_cast<char *>(&stored_short_bits), sizeof(stored_short_bits));
+        }
         input.read(reinterpret_cast<char *>(&stored_remaining_bits), sizeof(stored_remaining_bits));
         input.read(reinterpret_cast<char *>(&stored_header_size), sizeof(stored_header_size));
         input.read(reinterpret_cast<char *>(&stored_factor_size), sizeof(stored_factor_size));
@@ -1161,13 +1739,21 @@ class RaBitQSpace : public SpaceInterface<float> {
         input.read(reinterpret_cast<char *>(&stored_full_data_size), sizeof(stored_full_data_size));
         input.read(reinterpret_cast<char *>(&stored_residual_disk_record_bytes), sizeof(stored_residual_disk_record_bytes));
         input.read(reinterpret_cast<char *>(&stored_external_residual_storage), sizeof(stored_external_residual_storage));
+        if (new_format) {
+            input.read(reinterpret_cast<char *>(&stored_residual_block_size), sizeof(stored_residual_block_size));
+            input.read(reinterpret_cast<char *>(&stored_flags), sizeof(stored_flags));
+        }
 
         if (!input.good()) {
             throw std::runtime_error("RaBitQSpace failed to read ExRaBitQ state header");
         }
+        if (!is_supported_residual_bits(stored_residual_bits)) {
+            throw std::runtime_error("RaBitQ index has unsupported residual bits");
+        }
         if (stored_dim != dim_ ||
             stored_code_dim != code_dim_ ||
             stored_total_bits != kTotalBits ||
+            stored_short_bits != kShortBits ||
             stored_remaining_bits != kRemainingBits ||
             stored_header_size != sizeof(EncodedHeader) ||
             stored_factor_size != sizeof(ShortCodeFactors) ||
@@ -1179,6 +1765,8 @@ class RaBitQSpace : public SpaceInterface<float> {
             stored_data_size != data_size_ ||
             stored_full_data_size != full_data_size_ ||
             stored_residual_disk_record_bytes != residual_disk_record_bytes_ ||
+            stored_residual_block_size != residual_block_size_ ||
+            (new_format && ((stored_flags & 1U) == 0U)) ||
             (stored_external_residual_storage != 0) != external_residual_storage_) {
             throw std::runtime_error("Old or incompatible RaBitQ index format. Please rebuild the index.");
         }
@@ -1273,6 +1861,7 @@ class RaBitQSpace : public SpaceInterface<float> {
         query->half_sum_residual = 0.0f;
         query->rotated_residual_sum = 0.0f;
         query->residual_nibble_lut_ready = false;
+        query->residual_2bit_lut_ready = false;
         for (size_t pair = 0; pair < pair_count; ++pair) {
             const float even_value = query->rotated_residual[pair << 1U];
             const float odd_value = query->rotated_residual[(pair << 1U) + 1U];
@@ -1526,29 +2115,38 @@ class RaBitQSpace : public SpaceInterface<float> {
         }
         double decoded_residual_norm_sqr = 0.0;
         double x4_residual_ip = 0.0;
-        const int residual_quantized_max = residual_bits_ == 4 ? 7 : 127;
-        const int residual_quantized_min = -residual_quantized_max;
+        thread_local std::vector<int32_t> residual_codes;
+        residual_codes.assign(code_dim_, residual_bits_ == 1 ? -1 : 0);
+        const int32_t residual_qmax = residual_quantized_max(residual_bits_);
+        const int32_t residual_qmin = -residual_qmax;
         for (size_t block = 0; block < residual_block_count_; ++block) {
-            const size_t begin = block * kResidualBlockSize;
-            const size_t end = std::min(code_dim_, begin + kResidualBlockSize);
+            const size_t begin = block * residual_block_size_;
+            const size_t end = std::min(code_dim_, begin + residual_block_size_);
             float max_abs_residual_error = 0.0f;
             for (size_t i = begin; i < end; ++i) {
                 max_abs_residual_error =
                     std::max(max_abs_residual_error, static_cast<float>(std::abs(quantization_error[i])));
             }
             const float residual_scale = max_abs_residual_error > 0.0f
-                ? max_abs_residual_error / static_cast<float>(residual_quantized_max)
+                ? (residual_bits_ == 1
+                    ? max_abs_residual_error
+                    : max_abs_residual_error / static_cast<float>(residual_qmax))
                 : 0.0f;
             residual_scales[block] = residual_scale;
             if (residual_scale == 0.0f || !std::isfinite(residual_scale)) {
                 continue;
             }
             for (size_t i = begin; i < end; ++i) {
-                const int quantized = static_cast<int>(std::round(
-                    static_cast<double>(quantization_error[i]) /
-                    static_cast<double>(residual_scale)));
-                const int clipped = std::max(residual_quantized_min, std::min(residual_quantized_max, quantized));
-                setResidualQuantizedValue(residual_code, i, clipped);
+                const int32_t clipped = residual_bits_ == 1
+                    ? (quantization_error[i] >= 0.0f ? 1 : -1)
+                    : std::max(
+                        residual_qmin,
+                        std::min(
+                            residual_qmax,
+                            static_cast<int32_t>(std::round(
+                                static_cast<double>(quantization_error[i]) /
+                                static_cast<double>(residual_scale)))));
+                residual_codes[i] = clipped;
                 const double decoded_residual =
                     static_cast<double>(residual_scale) * static_cast<double>(clipped);
                 const double x4_value = 0.5 * static_cast<double>(header.long_scale) *
@@ -1558,6 +2156,7 @@ class RaBitQSpace : public SpaceInterface<float> {
                 x4_residual_ip += x4_value * decoded_residual;
             }
         }
+        pack_residual_codes(residual_codes.data(), code_dim_, residual_bits_, residual_code);
         residual_factors->residual_norm_sqr = static_cast<float>(decoded_residual_norm_sqr);
         residual_factors->long_residual_inner_product = static_cast<float>(x4_residual_ip);
         std::memcpy(encoded_out, &header, sizeof(header));

@@ -48,10 +48,35 @@ class RaBitQHierarchicalNSW {
         size_t random_seed = 100,//随机种子，用于生成随机旋转矩阵，默认为100
         //是否允许替换已删除元素，默认为false，如果为true，在插入新元素时会尝试替换掉被标记为删除的元素，以节省空间
         bool allow_replace_deleted = false,
-        bool external_residual_storage = false)
+        bool external_residual_storage = false,
+        size_t residual_bits = 0)
         //构造spcae_和index_
         //ef_construction指的是建图候选数，M指的是最大邻居数
-        : space_(dim, centroid_count, static_cast<uint32_t>(random_seed), external_residual_storage),
+        : space_(
+              dim,
+              centroid_count,
+              static_cast<uint32_t>(random_seed),
+              external_residual_storage,
+              residual_bits),
+          index_(&space_, max_elements, M, ef_construction, random_seed, allow_replace_deleted) {
+    }
+
+    RaBitQHierarchicalNSW(
+        size_t dim,
+        size_t max_elements,
+        size_t centroid_count,
+        size_t M,
+        size_t ef_construction,
+        size_t random_seed,
+        bool allow_replace_deleted,
+        bool external_residual_storage,
+        RaBitQSpace::ResidualQuantizationConfig residual_config)
+        : space_(
+              dim,
+              centroid_count,
+              static_cast<uint32_t>(random_seed),
+              external_residual_storage,
+              residual_config),
           index_(&space_, max_elements, M, ef_construction, random_seed, allow_replace_deleted) {
     }
 //访问space_的接口，外部可以通过它改space_的参数或者调用space_的方法

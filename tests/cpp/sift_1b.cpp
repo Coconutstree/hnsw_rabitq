@@ -106,6 +106,16 @@ string getenv_string(const char *name, const string &default_value) {
     return string(value);
 }
 
+string join_path(const string &dir, const string &name) {
+    if (dir.empty() || dir == ".") {
+        return name;
+    }
+    if (dir.back() == '/') {
+        return dir + name;
+    }
+    return dir + "/" + name;
+}
+
 class DiskPayloadStore {
  public:
     DiskPayloadStore(const string &path, size_t total_bytes)
@@ -799,8 +809,9 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const int efConstruction = RABITQ_EF_CONSTRUCTION;
-    const int M = 16;
+    const int efConstruction = static_cast<int>(
+        getenv_size_t("RABITQ_EF_CONSTRUCTION", RABITQ_EF_CONSTRUCTION));
+    const int M = static_cast<int>(getenv_size_t("RABITQ_M", 16));
     const int centroid_count = 64;
     const int rerank_candidates = 100;
     const size_t centroid_train_samples = 200000;
@@ -877,32 +888,24 @@ void sift_test1B() {
         residual_storage == "disk" || residual_storage == "external" || residual_storage == "mmap";
     const size_t residual_bits = getenv_size_t("RABITQ_RESIDUAL_BITS", 8);
 
-    char path_index[1024];
+    char index_name[1024];
     const char *path_q = dataset.query_path.c_str();
     const char *path_data = dataset.base_path.c_str();
     const char *path_gt = dataset.gt_path.c_str();
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
-    if (residual_bits == 8) {
-        snprintf(
-            path_index,
-            sizeof(path_index),
-            "%s_rabitq_floatbuild_ef_%d_M_%d_C_%d.bin",
-            dataset.index_prefix.c_str(),
-            efConstruction,
-            M,
-            centroid_count);
-    } else {
-        snprintf(
-            path_index,
-            sizeof(path_index),
-            "%s_rabitq_floatbuild_ef_%d_M_%d_C_%d_R%zu.bin",
-            dataset.index_prefix.c_str(),
-            efConstruction,
-            M,
-            centroid_count,
-            residual_bits);
-    }
+    snprintf(
+        index_name,
+        sizeof(index_name),
+        "%s_primary4_residual%zu_floatbuild_ef_%d_M_%d_C_%d.bin",
+        dataset.index_prefix.c_str(),
+        residual_bits,
+        efConstruction,
+        M,
+        centroid_count);
+    const string index_dir = getenv_string("RABITQ_INDEX_DIR", "build");
+    const string path_index_string = join_path(index_dir, index_name);
+    const char *path_index = path_index_string.c_str();
 
     print_run_config(
         dataset_name,
@@ -965,8 +968,14 @@ void sift_test1B() {
              ? " (4-bit code in index; residual in mmap sidecar)\n"
              : " (4-bit code + residual code)\n");
     cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
+         << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
+         << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
+         << " remaining_bits=" << hnswlib::RaBitQSpace::kRemainingBits
+         << " compact_primary_bytes_per_vector=" << appr_alg->space().get_compact_code_bytes()
          << " residual_code_bytes_per_vector=" << appr_alg->space().get_residual_code_bytes()
          << " residual_record_bytes_per_vector=" << appr_alg->space().get_residual_disk_record_bytes()
+         << " primary_4bit_empirical_error_reference="
+         << appr_alg->space().get_primary_code_empirical_error_reference()
          << "\n";
 
     bool need_build = true;
@@ -990,8 +999,14 @@ void sift_test1B() {
                          ? " (4-bit code in index; residual in mmap sidecar)\n"
                          : " (4-bit code + residual code)\n");
                 cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
+                     << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
+                     << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
+                     << " remaining_bits=" << hnswlib::RaBitQSpace::kRemainingBits
+                     << " compact_primary_bytes_per_vector=" << appr_alg->space().get_compact_code_bytes()
                      << " residual_code_bytes_per_vector=" << appr_alg->space().get_residual_code_bytes()
                      << " residual_record_bytes_per_vector=" << appr_alg->space().get_residual_disk_record_bytes()
+                     << " primary_4bit_empirical_error_reference="
+                     << appr_alg->space().get_primary_code_empirical_error_reference()
                      << "\n";
                 input.clear();
                 input.seekg(0, ios::beg);

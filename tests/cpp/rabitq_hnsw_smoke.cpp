@@ -5,12 +5,127 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "../../hnswlib/hnswlib.h"
 #include "../../hnswlib/rabitq_hnsw.h"
 
+static void test_residual_pack_roundtrip() {
+    const std::vector<size_t> bits_list = {1, 2, 4, 8, 16};
+    const std::vector<size_t> dims = {1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 128, 1536};
+    for (const size_t bits : bits_list) {
+        const int32_t qmax = hnswlib::RaBitQSpace::residual_quantized_max(bits);
+        for (const size_t dim : dims) {
+            std::vector<int32_t> codes(dim, 0);
+            for (size_t i = 0; i < dim; ++i) {
+                if (bits == 1) {
+                    codes[i] = (i & 1U) ? 1 : -1;
+                } else {
+                    const int32_t span = 2 * qmax + 1;
+                    codes[i] = static_cast<int32_t>(i % static_cast<size_t>(span)) - qmax;
+                    if (bits == 2 && codes[i] == -2) {
+                        codes[i] = -1;
+                    }
+                }
+            }
+            const size_t bytes = hnswlib::RaBitQSpace::residual_packed_code_size_bytes(dim, bits);
+            std::vector<uint8_t> packed(bytes, 0xFF);
+            std::vector<int32_t> decoded(dim, 0);
+            hnswlib::RaBitQSpace::pack_residual_codes(codes.data(), dim, bits, packed.data());
+            hnswlib::RaBitQSpace::unpack_residual_codes(packed.data(), dim, bits, decoded.data());
+            assert(decoded == codes);
+            if ((dim * bits) % 8U != 0U) {
+                const uint8_t used = static_cast<uint8_t>((dim * bits) & 7U);
+                const uint8_t unused_mask = static_cast<uint8_t>(0xFFU << used);
+                assert((packed.back() & unused_mask) == 0U);
+            }
+        }
+    }
+}
+
+static void run_residual_bits_smoke(size_t residual_bits) {
+    const size_t dim = 4;
+    const std::vector<float> data = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+
+    hnswlib::RaBitQHierarchicalNSW index(dim, 4, 1, 8, 32, 0, false, false, residual_bits);
+    index.space().setIdentityRotation();
+    assert(index.space().get_residual_bits() == residual_bits);
+    assert(index.space().get_compact_code_bytes() == (index.space().get_code_dim() + 1U) / 2U);
+    assert(index.space().get_residual_code_bytes() ==
+           hnswlib::RaBitQSpace::residual_packed_code_size_bytes(index.space().get_code_dim(), residual_bits));
+    for (size_t i = 0; i < 4; ++i) {
+        index.addPoint(data.data() + i * dim, i);
+    }
+    hnswlib::ProgressiveSearchConfig progressive_config;
+    progressive_config.efSearch = 4;
+    progressive_config.fast_search_finalize_residual = true;
+    progressive_config.fast_residual_candidates = 4;
+    hnswlib::ProgressiveSearchStats stats;
+    auto result = index.searchKnnProgressiveRefinement(data.data(), 1, progressive_config, &stats);
+    assert(!result.empty());
+    assert(std::isfinite(result.top().first));
+    assert(stats.residual_distance_evaluations > 0);
+
+    const std::string suffix = std::to_string(residual_bits);
+    const std::string tmp_index = "/tmp/rabitq_hnsw_smoke_r" + suffix + ".index";
+    const std::string tmp_state = tmp_index + ".rabitq";
+    std::remove(tmp_index.c_str());
+    std::remove(tmp_state.c_str());
+    index.saveIndex(tmp_index);
+    hnswlib::RaBitQHierarchicalNSW loaded(dim, 4, 1, 8, 32, 0, false, false, residual_bits);
+    loaded.loadIndex(tmp_index, 4);
+    auto loaded_result = loaded.searchKnnProgressiveRefinement(data.data(), 1, progressive_config);
+    assert(!loaded_result.empty());
+    assert(std::isfinite(loaded_result.top().first));
+    std::remove(tmp_index.c_str());
+    std::remove(tmp_state.c_str());
+
+    hnswlib::L2Space float_space(dim);
+    hnswlib::HierarchicalNSW<float> float_graph(&float_space, 4, 8, 32, 0);
+    for (size_t i = 0; i < 4; ++i) {
+        float_graph.addPoint(data.data() + i * dim, i);
+    }
+    hnswlib::RaBitQHierarchicalNSW external_index(dim, 4, 1, 8, 32, 0, false, true, residual_bits);
+    external_index.space().setIdentityRotation();
+    const std::string tmp_external_residual = "/tmp/rabitq_hnsw_smoke_external_r" + suffix + ".residual";
+    const std::string tmp_external_payload = "/tmp/rabitq_hnsw_smoke_external_r" + suffix + ".payload";
+    std::remove(tmp_external_residual.c_str());
+    std::remove(tmp_external_payload.c_str());
+    {
+        std::ofstream payload_output(tmp_external_payload, std::ios::binary);
+        assert(payload_output.is_open());
+        std::vector<char> full_encoded(external_index.space().get_full_data_size(), 0);
+        for (size_t i = 0; i < 4; ++i) {
+            external_index.space().encodeVectorFull(data.data() + i * dim, full_encoded.data());
+            payload_output.write(full_encoded.data(), static_cast<std::streamsize>(full_encoded.size()));
+        }
+        assert(payload_output.good());
+    }
+    external_index.importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
+        float_graph,
+        tmp_external_payload,
+        tmp_external_residual,
+        external_index.space().get_full_data_size());
+    auto external_result =
+        external_index.searchKnnProgressiveRefinement(data.data(), 1, progressive_config);
+    assert(!external_result.empty());
+    assert(std::isfinite(external_result.top().first));
+    std::remove(tmp_external_residual.c_str());
+    std::remove(tmp_external_payload.c_str());
+}
+
 int main() {
+    test_residual_pack_roundtrip();
+    for (size_t bits : {size_t(1), size_t(2), size_t(4), size_t(8), size_t(16)}) {
+        run_residual_bits_smoke(bits);
+    }
+
     const size_t dim = 4;
     const std::vector<float> data = {
         1.0f, 0.0f, 0.0f, 0.0f,
