@@ -657,8 +657,8 @@ static SearchReport test_approx(
             : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
         config.fast_search_ef_multiplier = configured_fast_search_ef_multiplier;
         config.fast_residual_score_blend = configured_residual_blend;
-        config.uncertainty_aware_residual_finalize = configured_uncertainty_residual;
-        config.residual_uncertainty_margin = configured_residual_uncertainty_margin;
+        config.residual_uncertainty_threshold =
+            configured_uncertainty_residual ? configured_residual_uncertainty_margin : 0.0f;
         config.residual_beam = config.fast_residual_candidates;
         config.max_residual_evaluations = config.fast_residual_candidates;
         config.long_expand_beam = std::max<size_t>(16, 2 * actual_search_ef);
@@ -688,15 +688,6 @@ static SearchReport test_approx(
         }
         hnsw_us += hnsw_timer.getElapsedTimeMicro();
         if (configured_profile_query) {
-            total_progressive_stats.graph_total_time_us += query_stats.graph_total_time_us;
-            total_progressive_stats.graph_prepare_query_time_us += query_stats.graph_prepare_query_time_us;
-            total_progressive_stats.graph_entry_search_time_us += query_stats.graph_entry_search_time_us;
-            total_progressive_stats.graph_base_layer_time_us += query_stats.graph_base_layer_time_us;
-            total_progressive_stats.graph_distance_time_us += query_stats.graph_distance_time_us;
-            total_progressive_stats.graph_heap_time_us += query_stats.graph_heap_time_us;
-            total_progressive_stats.graph_finalize_residual_time_us +=
-                query_stats.graph_finalize_residual_time_us;
-            total_progressive_stats.graph_result_sort_time_us += query_stats.graph_result_sort_time_us;
             total_progressive_stats.visited_nodes += query_stats.visited_nodes;
             total_progressive_stats.short_distance_evaluations += query_stats.short_distance_evaluations;
             total_progressive_stats.long_distance_evaluations += query_stats.long_distance_evaluations;
@@ -706,14 +697,6 @@ static SearchReport test_approx(
             total_progressive_stats.long_to_residual_upgrades += query_stats.long_to_residual_upgrades;
             total_progressive_stats.expanded_long_nodes += query_stats.expanded_long_nodes;
             total_progressive_stats.expanded_residual_nodes += query_stats.expanded_residual_nodes;
-            total_progressive_stats.bound_check_count += query_stats.bound_check_count;
-            total_progressive_stats.bound_reject_count += query_stats.bound_reject_count;
-            total_progressive_stats.bound_accept_count += query_stats.bound_accept_count;
-            total_progressive_stats.residual_trigger_count += query_stats.residual_trigger_count;
-            total_progressive_stats.candidate_generated += query_stats.candidate_generated;
-            total_progressive_stats.candidate_after_long += query_stats.candidate_after_long;
-            total_progressive_stats.candidate_after_bound += query_stats.candidate_after_bound;
-            total_progressive_stats.candidate_after_residual += query_stats.candidate_after_residual;
             total_progressive_stats.stabilization_rounds += query_stats.stabilization_rounds;
             total_progressive_stats.stabilization_residual_evaluations +=
                 query_stats.stabilization_residual_evaluations;
@@ -747,21 +730,14 @@ static SearchReport test_approx(
     report.redundant_rerank_us_per_query = 0.0f;
     report.total_us_per_query = report.hnsw_search_us_per_query;
     const double query_count = static_cast<double>(qsize);
-    report.graph_total_us_per_query = total_progressive_stats.graph_total_time_us / query_count;
-    report.graph_prepare_us_per_query =
-        total_progressive_stats.graph_prepare_query_time_us / query_count;
-    report.graph_entry_us_per_query =
-        total_progressive_stats.graph_entry_search_time_us / query_count;
-    report.graph_base_layer_us_per_query =
-        total_progressive_stats.graph_base_layer_time_us / query_count;
-    report.graph_distance_us_per_query =
-        total_progressive_stats.graph_distance_time_us / query_count;
-    report.graph_heap_us_per_query =
-        total_progressive_stats.graph_heap_time_us / query_count;
-    report.graph_finalize_residual_us_per_query =
-        total_progressive_stats.graph_finalize_residual_time_us / query_count;
-    report.graph_result_sort_us_per_query =
-        total_progressive_stats.graph_result_sort_time_us / query_count;
+    report.graph_total_us_per_query = report.hnsw_search_us_per_query;
+    report.graph_prepare_us_per_query = 0.0;
+    report.graph_entry_us_per_query = 0.0;
+    report.graph_base_layer_us_per_query = 0.0;
+    report.graph_distance_us_per_query = 0.0;
+    report.graph_heap_us_per_query = 0.0;
+    report.graph_finalize_residual_us_per_query = 0.0;
+    report.graph_result_sort_us_per_query = 0.0;
     const double measured_graph_parts =
         report.graph_prepare_us_per_query +
         report.graph_entry_us_per_query +
@@ -790,14 +766,6 @@ static SearchReport test_approx(
     report.progressive_long_to_residual_upgrades = total_progressive_stats.long_to_residual_upgrades;
     report.progressive_expanded_long_nodes = total_progressive_stats.expanded_long_nodes;
     report.progressive_expanded_residual_nodes = total_progressive_stats.expanded_residual_nodes;
-    report.progressive_bound_check_count = total_progressive_stats.bound_check_count;
-    report.progressive_bound_reject_count = total_progressive_stats.bound_reject_count;
-    report.progressive_bound_accept_count = total_progressive_stats.bound_accept_count;
-    report.progressive_residual_trigger_count = total_progressive_stats.residual_trigger_count;
-    report.progressive_candidate_generated = total_progressive_stats.candidate_generated;
-    report.progressive_candidate_after_long = total_progressive_stats.candidate_after_long;
-    report.progressive_candidate_after_bound = total_progressive_stats.candidate_after_bound;
-    report.progressive_candidate_after_residual = total_progressive_stats.candidate_after_residual;
     report.progressive_stabilization_rounds = total_progressive_stats.stabilization_rounds;
     report.progressive_stabilization_residual_evaluations =
         total_progressive_stats.stabilization_residual_evaluations;
