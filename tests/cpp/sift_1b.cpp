@@ -77,12 +77,29 @@ size_t getenv_size_t(const char *name, size_t default_value) {
     if (value == nullptr || value[0] == '\0') {
         return default_value;
     }
+    if (value[0] == '-') {
+        throw runtime_error(string(name) + " must be a non-negative integer");
+    }
     char *end = nullptr;
     const unsigned long long parsed = std::strtoull(value, &end, 10);
     if (end == value) {
         return default_value;
     }
     return static_cast<size_t>(parsed);
+}
+
+bool getenv_bool01_strict(const char *name, bool default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    if (std::strcmp(value, "0") == 0) {
+        return false;
+    }
+    if (std::strcmp(value, "1") == 0) {
+        return true;
+    }
+    throw runtime_error(string(name) + " must be 0 or 1");
 }
 
 float getenv_float(const char *name, float default_value) {
@@ -553,6 +570,15 @@ struct SearchReport {
     float hnsw_search_us_per_query{0.0f};
     float redundant_rerank_us_per_query{0.0f};
     float total_us_per_query{0.0f};
+    double graph_total_us_per_query{0.0};
+    double graph_prepare_us_per_query{0.0};
+    double graph_entry_us_per_query{0.0};
+    double graph_base_layer_us_per_query{0.0};
+    double graph_distance_us_per_query{0.0};
+    double graph_heap_us_per_query{0.0};
+    double graph_finalize_residual_us_per_query{0.0};
+    double graph_result_sort_us_per_query{0.0};
+    double graph_other_us_per_query{0.0};
     long lower_bound_checked{0};
     long lower_bound_pruned{0};
     long survivor_long_computed{0};
@@ -567,6 +593,14 @@ struct SearchReport {
     size_t progressive_long_to_residual_upgrades{0};
     size_t progressive_expanded_long_nodes{0};
     size_t progressive_expanded_residual_nodes{0};
+    size_t progressive_bound_check_count{0};
+    size_t progressive_bound_reject_count{0};
+    size_t progressive_bound_accept_count{0};
+    size_t progressive_residual_trigger_count{0};
+    size_t progressive_candidate_generated{0};
+    size_t progressive_candidate_after_long{0};
+    size_t progressive_candidate_after_bound{0};
+    size_t progressive_candidate_after_residual{0};
     size_t progressive_stabilization_rounds{0};
     size_t progressive_stabilization_residual_evaluations{0};
     size_t progressive_budget_exhausted_queries{0};
@@ -576,6 +610,9 @@ struct SearchReport {
     size_t fast_residual_candidates{0};
     float fast_search_ef_multiplier{1.0f};
     float residual_blend{1.0f};
+    bool profile_query{false};
+    bool uncertainty_aware_residual{false};
+    float residual_uncertainty_margin{0.0f};
 };
 
 static SearchReport test_approx(
@@ -604,6 +641,12 @@ static SearchReport test_approx(
         getenv_float("RABITQ_FAST_SEARCH_EF_MULTIPLIER", 1.0f);
     const float configured_residual_blend =
         getenv_float("RABITQ_RESIDUAL_BLEND", 1.0f);
+    const bool configured_profile_query =
+        getenv_bool01_strict("RABITQ_PROFILE_QUERY", false);
+    const bool configured_uncertainty_residual =
+        getenv_bool01_strict("RABITQ_UNCERTAINTY_RESIDUAL", false);
+    const float configured_residual_uncertainty_margin =
+        getenv_float("RABITQ_RESIDUAL_UNCERTAINTY_MARGIN", 0.0f);
 
     for (size_t i = 0; i < qsize; i++) {
         ProgressiveSearchConfig config;
@@ -614,6 +657,8 @@ static SearchReport test_approx(
             : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
         config.fast_search_ef_multiplier = configured_fast_search_ef_multiplier;
         config.fast_residual_score_blend = configured_residual_blend;
+        config.uncertainty_aware_residual_finalize = configured_uncertainty_residual;
+        config.residual_uncertainty_margin = configured_residual_uncertainty_margin;
         config.residual_beam = config.fast_residual_candidates;
         config.max_residual_evaluations = config.fast_residual_candidates;
         config.long_expand_beam = std::max<size_t>(16, 2 * actual_search_ef);
@@ -631,7 +676,7 @@ static SearchReport test_approx(
                     massQ + vecdim * i,
                     k,
                     config,
-                    &query_stats);
+                    configured_profile_query ? &query_stats : nullptr);
         } catch (const std::exception &error) {
             cerr << "progressive_query_failed"
                  << " query=" << i
@@ -642,23 +687,42 @@ static SearchReport test_approx(
             throw;
         }
         hnsw_us += hnsw_timer.getElapsedTimeMicro();
-        total_progressive_stats.visited_nodes += query_stats.visited_nodes;
-        total_progressive_stats.short_distance_evaluations += query_stats.short_distance_evaluations;
-        total_progressive_stats.long_distance_evaluations += query_stats.long_distance_evaluations;
-        total_progressive_stats.residual_distance_evaluations += query_stats.residual_distance_evaluations;
-        total_progressive_stats.short_pruned_nodes += query_stats.short_pruned_nodes;
-        total_progressive_stats.short_to_long_upgrades += query_stats.short_to_long_upgrades;
-        total_progressive_stats.long_to_residual_upgrades += query_stats.long_to_residual_upgrades;
-        total_progressive_stats.expanded_long_nodes += query_stats.expanded_long_nodes;
-        total_progressive_stats.expanded_residual_nodes += query_stats.expanded_residual_nodes;
-        total_progressive_stats.stabilization_rounds += query_stats.stabilization_rounds;
-        total_progressive_stats.stabilization_residual_evaluations +=
-            query_stats.stabilization_residual_evaluations;
-        if (query_stats.residual_budget_exhausted) {
-            ++progressive_budget_exhausted_queries;
-        }
-        if (query_stats.long_expansion_budget_exhausted) {
-            ++progressive_long_expansion_budget_exhausted_queries;
+        if (configured_profile_query) {
+            total_progressive_stats.graph_total_time_us += query_stats.graph_total_time_us;
+            total_progressive_stats.graph_prepare_query_time_us += query_stats.graph_prepare_query_time_us;
+            total_progressive_stats.graph_entry_search_time_us += query_stats.graph_entry_search_time_us;
+            total_progressive_stats.graph_base_layer_time_us += query_stats.graph_base_layer_time_us;
+            total_progressive_stats.graph_distance_time_us += query_stats.graph_distance_time_us;
+            total_progressive_stats.graph_heap_time_us += query_stats.graph_heap_time_us;
+            total_progressive_stats.graph_finalize_residual_time_us +=
+                query_stats.graph_finalize_residual_time_us;
+            total_progressive_stats.graph_result_sort_time_us += query_stats.graph_result_sort_time_us;
+            total_progressive_stats.visited_nodes += query_stats.visited_nodes;
+            total_progressive_stats.short_distance_evaluations += query_stats.short_distance_evaluations;
+            total_progressive_stats.long_distance_evaluations += query_stats.long_distance_evaluations;
+            total_progressive_stats.residual_distance_evaluations += query_stats.residual_distance_evaluations;
+            total_progressive_stats.short_pruned_nodes += query_stats.short_pruned_nodes;
+            total_progressive_stats.short_to_long_upgrades += query_stats.short_to_long_upgrades;
+            total_progressive_stats.long_to_residual_upgrades += query_stats.long_to_residual_upgrades;
+            total_progressive_stats.expanded_long_nodes += query_stats.expanded_long_nodes;
+            total_progressive_stats.expanded_residual_nodes += query_stats.expanded_residual_nodes;
+            total_progressive_stats.bound_check_count += query_stats.bound_check_count;
+            total_progressive_stats.bound_reject_count += query_stats.bound_reject_count;
+            total_progressive_stats.bound_accept_count += query_stats.bound_accept_count;
+            total_progressive_stats.residual_trigger_count += query_stats.residual_trigger_count;
+            total_progressive_stats.candidate_generated += query_stats.candidate_generated;
+            total_progressive_stats.candidate_after_long += query_stats.candidate_after_long;
+            total_progressive_stats.candidate_after_bound += query_stats.candidate_after_bound;
+            total_progressive_stats.candidate_after_residual += query_stats.candidate_after_residual;
+            total_progressive_stats.stabilization_rounds += query_stats.stabilization_rounds;
+            total_progressive_stats.stabilization_residual_evaluations +=
+                query_stats.stabilization_residual_evaluations;
+            if (query_stats.residual_budget_exhausted) {
+                ++progressive_budget_exhausted_queries;
+            }
+            if (query_stats.long_expansion_budget_exhausted) {
+                ++progressive_long_expansion_budget_exhausted_queries;
+            }
         }
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
@@ -682,6 +746,30 @@ static SearchReport test_approx(
     report.hnsw_search_us_per_query = static_cast<float>(hnsw_us / static_cast<double>(qsize));
     report.redundant_rerank_us_per_query = 0.0f;
     report.total_us_per_query = report.hnsw_search_us_per_query;
+    const double query_count = static_cast<double>(qsize);
+    report.graph_total_us_per_query = total_progressive_stats.graph_total_time_us / query_count;
+    report.graph_prepare_us_per_query =
+        total_progressive_stats.graph_prepare_query_time_us / query_count;
+    report.graph_entry_us_per_query =
+        total_progressive_stats.graph_entry_search_time_us / query_count;
+    report.graph_base_layer_us_per_query =
+        total_progressive_stats.graph_base_layer_time_us / query_count;
+    report.graph_distance_us_per_query =
+        total_progressive_stats.graph_distance_time_us / query_count;
+    report.graph_heap_us_per_query =
+        total_progressive_stats.graph_heap_time_us / query_count;
+    report.graph_finalize_residual_us_per_query =
+        total_progressive_stats.graph_finalize_residual_time_us / query_count;
+    report.graph_result_sort_us_per_query =
+        total_progressive_stats.graph_result_sort_time_us / query_count;
+    const double measured_graph_parts =
+        report.graph_prepare_us_per_query +
+        report.graph_entry_us_per_query +
+        report.graph_base_layer_us_per_query +
+        report.graph_finalize_residual_us_per_query +
+        report.graph_result_sort_us_per_query;
+    report.graph_other_us_per_query =
+        std::max(0.0, report.graph_total_us_per_query - measured_graph_parts);
     report.lower_bound_checked = appr_alg.index().metric_lower_bound_checked.load();
     report.lower_bound_pruned = appr_alg.index().metric_lower_bound_pruned.load();
     report.survivor_long_computed = appr_alg.index().metric_survivor_long_computed.load();
@@ -702,6 +790,14 @@ static SearchReport test_approx(
     report.progressive_long_to_residual_upgrades = total_progressive_stats.long_to_residual_upgrades;
     report.progressive_expanded_long_nodes = total_progressive_stats.expanded_long_nodes;
     report.progressive_expanded_residual_nodes = total_progressive_stats.expanded_residual_nodes;
+    report.progressive_bound_check_count = total_progressive_stats.bound_check_count;
+    report.progressive_bound_reject_count = total_progressive_stats.bound_reject_count;
+    report.progressive_bound_accept_count = total_progressive_stats.bound_accept_count;
+    report.progressive_residual_trigger_count = total_progressive_stats.residual_trigger_count;
+    report.progressive_candidate_generated = total_progressive_stats.candidate_generated;
+    report.progressive_candidate_after_long = total_progressive_stats.candidate_after_long;
+    report.progressive_candidate_after_bound = total_progressive_stats.candidate_after_bound;
+    report.progressive_candidate_after_residual = total_progressive_stats.candidate_after_residual;
     report.progressive_stabilization_rounds = total_progressive_stats.stabilization_rounds;
     report.progressive_stabilization_residual_evaluations =
         total_progressive_stats.stabilization_residual_evaluations;
@@ -715,6 +811,9 @@ static SearchReport test_approx(
         ? rerank_candidates
         : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
     report.residual_blend = std::max(0.0f, std::min(1.0f, configured_residual_blend));
+    report.profile_query = configured_profile_query;
+    report.uncertainty_aware_residual = configured_uncertainty_residual;
+    report.residual_uncertainty_margin = configured_residual_uncertainty_margin;
     return report;
 }
 
@@ -761,6 +860,20 @@ static void test_vs_recall(
         report.actual_search_ef = actual_search_ef;
         report.rerank_candidates = actual_rerank_candidates;
 
+        const char *slowest_stage = "prepare";
+        double slowest_us = report.graph_prepare_us_per_query;
+        auto consider_slowest = [&](const char *stage, double us) {
+            if (us > slowest_us) {
+                slowest_stage = stage;
+                slowest_us = us;
+            }
+        };
+        consider_slowest("entry_search", report.graph_entry_us_per_query);
+        consider_slowest("base_layer", report.graph_base_layer_us_per_query);
+        consider_slowest("finalize_residual", report.graph_finalize_residual_us_per_query);
+        consider_slowest("result_sort", report.graph_result_sort_us_per_query);
+        consider_slowest("other", report.graph_other_us_per_query);
+
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
              << "\t" << "recall_at=" << k
@@ -769,37 +882,19 @@ static void test_vs_recall(
              << "\t" << "rerank_candidates=" << report.rerank_candidates
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
              << "\t" << "total_us_per_query=" << report.total_us_per_query
-             << "\t" << "method=progressive_short_long_residual"
-             << "\t" << "fast_residual_candidates=" << report.fast_residual_candidates
-             << "\t" << "fast_search_ef_multiplier=" << report.fast_search_ef_multiplier
-             << "\t" << "residual_blend=" << report.residual_blend
-             << "\t" << "progressive_visited_per_query="
-             << static_cast<double>(report.progressive_visited_nodes) / static_cast<double>(qsize)
-             << "\t" << "short_evals_per_query="
-             << static_cast<double>(report.progressive_short_distance_evaluations) / static_cast<double>(qsize)
-             << "\t" << "long_evals_per_query="
-             << static_cast<double>(report.progressive_long_distance_evaluations) / static_cast<double>(qsize)
-             << "\t" << "residual_evals_per_query="
-             << static_cast<double>(report.progressive_residual_distance_evaluations) / static_cast<double>(qsize)
-             << "\t" << "short_pruned_per_query="
-             << static_cast<double>(report.progressive_short_pruned_nodes) / static_cast<double>(qsize)
-             << "\t" << "short_to_long_per_query="
-             << static_cast<double>(report.progressive_short_to_long_upgrades) / static_cast<double>(qsize)
-             << "\t" << "long_to_residual_per_query="
-             << static_cast<double>(report.progressive_long_to_residual_upgrades) / static_cast<double>(qsize)
-             << "\t" << "expanded_long_per_query="
-             << static_cast<double>(report.progressive_expanded_long_nodes) / static_cast<double>(qsize)
-             << "\t" << "expanded_residual_per_query="
-             << static_cast<double>(report.progressive_expanded_residual_nodes) / static_cast<double>(qsize)
-             << "\t" << "stabilization_rounds_per_query="
-             << static_cast<double>(report.progressive_stabilization_rounds) / static_cast<double>(qsize)
-             << "\t" << "stabilization_residual_per_query="
-             << static_cast<double>(report.progressive_stabilization_residual_evaluations) /
-                    static_cast<double>(qsize)
-             << "\t" << "budget_exhausted_queries="
-             << report.progressive_budget_exhausted_queries
-             << "\t" << "long_expansion_budget_exhausted_queries="
-             << report.progressive_long_expansion_budget_exhausted_queries
+             << "\t" << "profile_query=" << (report.profile_query ? 1 : 0)
+             << "\t" << "graph_total_us_per_query=" << report.graph_total_us_per_query
+             << "\t" << "graph_prepare_us_per_query=" << report.graph_prepare_us_per_query
+             << "\t" << "graph_entry_search_us_per_query=" << report.graph_entry_us_per_query
+             << "\t" << "graph_base_layer_us_per_query=" << report.graph_base_layer_us_per_query
+             << "\t" << "graph_distance_us_per_query=" << report.graph_distance_us_per_query
+             << "\t" << "graph_heap_us_per_query=" << report.graph_heap_us_per_query
+             << "\t" << "graph_finalize_residual_us_per_query="
+             << report.graph_finalize_residual_us_per_query
+             << "\t" << "graph_result_sort_us_per_query=" << report.graph_result_sort_us_per_query
+             << "\t" << "graph_other_us_per_query=" << report.graph_other_us_per_query
+             << "\t" << "graph_slowest_stage=" << slowest_stage
+             << "\t" << "graph_slowest_us_per_query=" << slowest_us
              << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
