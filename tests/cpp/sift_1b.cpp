@@ -27,10 +27,6 @@
 using namespace std;
 using namespace hnswlib;
 
-#ifndef RABITQ_EF_CONSTRUCTION
-#define RABITQ_EF_CONSTRUCTION 40
-#endif
-
 namespace {
 
 void print_run_config(
@@ -60,7 +56,7 @@ void print_run_config(
     cout << "  build_distance=float32_l2"
          << " stored_data="
          << (external_residual_storage ? "4bit_rabitq_plus_disk_residual" : "4bit_rabitq_plus_residual")
-         << " query_distance=progressive_short_long_residual\n";
+         << " query_distance=plain_hnsw_plus_residual_rerank\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
     cout << "  gt_path=" << path_gt << "\n";
@@ -579,40 +575,8 @@ struct SearchReport {
     double graph_finalize_residual_us_per_query{0.0};
     double graph_result_sort_us_per_query{0.0};
     double graph_other_us_per_query{0.0};
-    long lower_bound_checked{0};
-    long lower_bound_pruned{0};
-    long survivor_long_computed{0};
-    float prune_rate{0.0f};
-    float long_computations_per_query{0.0f};
-    size_t progressive_visited_nodes{0};
-    size_t progressive_short_distance_evaluations{0};
-    size_t progressive_long_distance_evaluations{0};
-    size_t progressive_residual_distance_evaluations{0};
-    size_t progressive_short_pruned_nodes{0};
-    size_t progressive_short_to_long_upgrades{0};
-    size_t progressive_long_to_residual_upgrades{0};
-    size_t progressive_expanded_long_nodes{0};
-    size_t progressive_expanded_residual_nodes{0};
-    size_t progressive_bound_check_count{0};
-    size_t progressive_bound_reject_count{0};
-    size_t progressive_bound_accept_count{0};
-    size_t progressive_residual_trigger_count{0};
-    size_t progressive_candidate_generated{0};
-    size_t progressive_candidate_after_long{0};
-    size_t progressive_candidate_after_bound{0};
-    size_t progressive_candidate_after_residual{0};
-    size_t progressive_stabilization_rounds{0};
-    size_t progressive_stabilization_residual_evaluations{0};
-    size_t progressive_budget_exhausted_queries{0};
-    size_t progressive_long_expansion_budget_exhausted_queries{0};
     size_t actual_search_ef{0};
     size_t rerank_candidates{0};
-    size_t fast_residual_candidates{0};
-    float fast_search_ef_multiplier{1.0f};
-    float residual_blend{1.0f};
-    bool profile_query{false};
-    bool uncertainty_aware_residual{false};
-    float residual_uncertainty_margin{0.0f};
 };
 
 static SearchReport test_approx(
@@ -629,56 +593,17 @@ static SearchReport test_approx(
     size_t correct = 0;
     size_t total = 0;
     double hnsw_us = 0.0;
-    appr_alg.index().metric_lower_bound_checked = 0;
-    appr_alg.index().metric_lower_bound_pruned = 0;
-    appr_alg.index().metric_survivor_long_computed = 0;
-    ProgressiveSearchStats total_progressive_stats;
-    size_t progressive_budget_exhausted_queries = 0;
-    size_t progressive_long_expansion_budget_exhausted_queries = 0;
-    const size_t configured_fast_residual_candidates =
-        getenv_size_t("RABITQ_FAST_RESIDUAL_CANDIDATES", 100);
-    const float configured_fast_search_ef_multiplier =
-        getenv_float("RABITQ_FAST_SEARCH_EF_MULTIPLIER", 1.0f);
-    const float configured_residual_blend =
-        getenv_float("RABITQ_RESIDUAL_BLEND", 1.0f);
-    const bool configured_profile_query =
-        getenv_bool01_strict("RABITQ_PROFILE_QUERY", false);
-    const bool configured_uncertainty_residual =
-        getenv_bool01_strict("RABITQ_UNCERTAINTY_RESIDUAL", false);
-    const float configured_residual_uncertainty_margin =
-        getenv_float("RABITQ_RESIDUAL_UNCERTAINTY_MARGIN", 0.0f);
 
     for (size_t i = 0; i < qsize; i++) {
-        ProgressiveSearchConfig config;
-        config.efSearch = actual_search_ef;
-        config.fast_search_finalize_residual = true;
-        config.fast_residual_candidates = configured_fast_residual_candidates == 0
-            ? rerank_candidates
-            : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
-        config.fast_search_ef_multiplier = configured_fast_search_ef_multiplier;
-        config.fast_residual_score_blend = configured_residual_blend;
-        config.residual_uncertainty_threshold =
-            configured_uncertainty_residual ? configured_residual_uncertainty_margin : 0.0f;
-        config.residual_beam = config.fast_residual_candidates;
-        config.max_residual_evaluations = config.fast_residual_candidates;
-        config.long_expand_beam = std::max<size_t>(16, 2 * actual_search_ef);
-        config.max_long_expansions = std::max<size_t>(actual_search_ef * 8, 64);
-        config.short_margin = 0.0f;
-        config.final_margin = 0.0f;
-        config.require_residual_before_expand = false;
-        config.enable_interval_stabilization = false;
-        ProgressiveSearchStats query_stats;
-
         StopW hnsw_timer;
         vector<pair<float, labeltype>> results;
         try {
-            results = appr_alg.searchKnnProgressiveRefinementCloserFirst(
+            results = appr_alg.searchKnnPlainThenResidualRerankCloserFirst(
                     massQ + vecdim * i,
                     k,
-                    config,
-                    configured_profile_query ? &query_stats : nullptr);
+                    rerank_candidates);
         } catch (const std::exception &error) {
-            cerr << "progressive_query_failed"
+            cerr << "plain_hnsw_residual_rerank_query_failed"
                  << " query=" << i
                  << " efSearch=" << actual_search_ef
                  << " rerank_candidates=" << rerank_candidates
@@ -687,26 +612,6 @@ static SearchReport test_approx(
             throw;
         }
         hnsw_us += hnsw_timer.getElapsedTimeMicro();
-        if (configured_profile_query) {
-            total_progressive_stats.visited_nodes += query_stats.visited_nodes;
-            total_progressive_stats.short_distance_evaluations += query_stats.short_distance_evaluations;
-            total_progressive_stats.long_distance_evaluations += query_stats.long_distance_evaluations;
-            total_progressive_stats.residual_distance_evaluations += query_stats.residual_distance_evaluations;
-            total_progressive_stats.short_pruned_nodes += query_stats.short_pruned_nodes;
-            total_progressive_stats.short_to_long_upgrades += query_stats.short_to_long_upgrades;
-            total_progressive_stats.long_to_residual_upgrades += query_stats.long_to_residual_upgrades;
-            total_progressive_stats.expanded_long_nodes += query_stats.expanded_long_nodes;
-            total_progressive_stats.expanded_residual_nodes += query_stats.expanded_residual_nodes;
-            total_progressive_stats.stabilization_rounds += query_stats.stabilization_rounds;
-            total_progressive_stats.stabilization_residual_evaluations +=
-                query_stats.stabilization_residual_evaluations;
-            if (query_stats.residual_budget_exhausted) {
-                ++progressive_budget_exhausted_queries;
-            }
-            if (query_stats.long_expansion_budget_exhausted) {
-                ++progressive_long_expansion_budget_exhausted_queries;
-            }
-        }
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
@@ -729,7 +634,6 @@ static SearchReport test_approx(
     report.hnsw_search_us_per_query = static_cast<float>(hnsw_us / static_cast<double>(qsize));
     report.redundant_rerank_us_per_query = 0.0f;
     report.total_us_per_query = report.hnsw_search_us_per_query;
-    const double query_count = static_cast<double>(qsize);
     report.graph_total_us_per_query = report.hnsw_search_us_per_query;
     report.graph_prepare_us_per_query = 0.0;
     report.graph_entry_us_per_query = 0.0;
@@ -746,42 +650,8 @@ static SearchReport test_approx(
         report.graph_result_sort_us_per_query;
     report.graph_other_us_per_query =
         std::max(0.0, report.graph_total_us_per_query - measured_graph_parts);
-    report.lower_bound_checked = appr_alg.index().metric_lower_bound_checked.load();
-    report.lower_bound_pruned = appr_alg.index().metric_lower_bound_pruned.load();
-    report.survivor_long_computed = appr_alg.index().metric_survivor_long_computed.load();
-    report.long_computations_per_query =
-        static_cast<float>(static_cast<double>(report.survivor_long_computed) /
-                           static_cast<double>(qsize));
-    report.prune_rate = report.lower_bound_checked == 0
-                            ? 0.0f
-                            : static_cast<float>(
-                                  static_cast<double>(report.lower_bound_pruned) /
-                                  static_cast<double>(report.lower_bound_checked));
-    report.progressive_visited_nodes = total_progressive_stats.visited_nodes;
-    report.progressive_short_distance_evaluations = total_progressive_stats.short_distance_evaluations;
-    report.progressive_long_distance_evaluations = total_progressive_stats.long_distance_evaluations;
-    report.progressive_residual_distance_evaluations = total_progressive_stats.residual_distance_evaluations;
-    report.progressive_short_pruned_nodes = total_progressive_stats.short_pruned_nodes;
-    report.progressive_short_to_long_upgrades = total_progressive_stats.short_to_long_upgrades;
-    report.progressive_long_to_residual_upgrades = total_progressive_stats.long_to_residual_upgrades;
-    report.progressive_expanded_long_nodes = total_progressive_stats.expanded_long_nodes;
-    report.progressive_expanded_residual_nodes = total_progressive_stats.expanded_residual_nodes;
-    report.progressive_stabilization_rounds = total_progressive_stats.stabilization_rounds;
-    report.progressive_stabilization_residual_evaluations =
-        total_progressive_stats.stabilization_residual_evaluations;
-    report.progressive_budget_exhausted_queries = progressive_budget_exhausted_queries;
-    report.progressive_long_expansion_budget_exhausted_queries =
-        progressive_long_expansion_budget_exhausted_queries;
     report.actual_search_ef = actual_search_ef;
     report.rerank_candidates = rerank_candidates;
-    report.fast_search_ef_multiplier = std::max(1.0f, configured_fast_search_ef_multiplier);
-    report.fast_residual_candidates = configured_fast_residual_candidates == 0
-        ? rerank_candidates
-        : std::min<size_t>(configured_fast_residual_candidates, rerank_candidates);
-    report.residual_blend = std::max(0.0f, std::min(1.0f, configured_residual_blend));
-    report.profile_query = configured_profile_query;
-    report.uncertainty_aware_residual = configured_uncertainty_residual;
-    report.residual_uncertainty_margin = configured_residual_uncertainty_margin;
     return report;
 }
 
@@ -850,7 +720,6 @@ static void test_vs_recall(
              << "\t" << "rerank_candidates=" << report.rerank_candidates
              << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
              << "\t" << "total_us_per_query=" << report.total_us_per_query
-             << "\t" << "profile_query=" << (report.profile_query ? 1 : 0)
              << "\t" << "graph_total_us_per_query=" << report.graph_total_us_per_query
              << "\t" << "graph_prepare_us_per_query=" << report.graph_prepare_us_per_query
              << "\t" << "graph_entry_search_us_per_query=" << report.graph_entry_us_per_query
@@ -872,9 +741,8 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const int efConstruction = static_cast<int>(
-        getenv_size_t("RABITQ_EF_CONSTRUCTION", RABITQ_EF_CONSTRUCTION));
-    const int M = static_cast<int>(getenv_size_t("RABITQ_M", 16));
+    const int efConstruction = 400;
+    const int M = 32;
     const int centroid_count = 64;
     const int rerank_candidates = 100;
     const size_t centroid_train_samples = 200000;
@@ -890,65 +758,19 @@ void sift_test1B() {
         string index_prefix;
     };
 
-    const string dataset_choice = getenv_string("RABITQ_DATASET", "deep1B");
-    DatasetConfig dataset;
-    if (dataset_choice == "sift10m") {
-        dataset = DatasetConfig{
-            "sift10m",
-            128,
-            1000,
-            "/home/kai3/coco/data/sift10m/sift10m_base.fvecs",
-            "/home/kai3/coco/data/sift10m/sift10m_query.fvecs",
-            "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs",
-            "sift10m"};
-    } else if (dataset_choice == "dbpedia" || dataset_choice == "dbpedia-openai1536") {
-        dataset = DatasetConfig{
-            "dbpedia-openai1536",
-            1536,
-            100,
-            "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_base.fvecs",
-            "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_query.fvecs",
-            "/home/kai3/coco/data/dbpedia_openai1536/dbpedia_openai1536_groundtruth.ivecs",
-            "dbpedia-openai1536"};
-    } else if (dataset_choice == "deep1B") {
-        dataset = DatasetConfig{
-            "deep1B",
-            96,
-            100,
-            "/home/kai3/coco/data/deep1B/deep1B_base.fvecs",
-            "/home/kai3/coco/data/deep1B/deep1B_query.fvecs",
-            "/home/kai3/coco/data/deep1B/deep1B_groundtruth.ivecs",
-            "deep1B"};
-    } else if (dataset_choice == "glove") {
-        dataset = DatasetConfig{
-            "glove",
-            25,
-            100,
-            "/home/kai3/coco/data/glove/glove_base.fvecscs",
-            "/home/kai3/coco/data/glove/glove_query.fvecs",
-            "/home/kai3/coco/data/glove/glove.ivecs",
-            "glove"};
-    } else if (dataset_choice == "gist") {
-        dataset = DatasetConfig{
-            "gist",
-            960,
-            100,
-            "/home/kai3/coco/data/gist/gist_base.fvecs",
-            "/home/kai3/coco/data/gist/gist_query.fvecs",
-            "/home/kai3/coco/data/gist/gist_groundtruth.ivecs",
-            "gist"};
-    } else {
-        throw runtime_error(
-            "unknown RABITQ_DATASET=" + dataset_choice +
-            " (expected sift10m, deep1B, dbpedia, glove, or gist)");
-    }
+    const DatasetConfig dataset{
+        "sift10m",
+        128,
+        1000,
+        "/home/kai3/coco/data/sift10m/sift10m_base.fvecs",
+        "/home/kai3/coco/data/sift10m/sift10m_query.fvecs",
+        "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs",
+        "sift10m"};
 
     const char *dataset_name = dataset.name.c_str();
     const size_t vecdim = dataset.dim;
     const size_t gt_width = dataset.gt_width;
-    const string residual_storage = getenv_string("RABITQ_RESIDUAL_STORAGE", "memory");
-    const bool external_residual_storage =
-        residual_storage == "disk" || residual_storage == "external" || residual_storage == "mmap";
+    const bool external_residual_storage = true;
     const size_t residual_bits = getenv_size_t("RABITQ_RESIDUAL_BITS", 8);
 
     char index_name[1024];
@@ -1101,8 +923,7 @@ void sift_test1B() {
             ? appr_alg->space().get_full_data_size()
             : appr_alg->space().get_data_size();
         const size_t payload_total_bytes = vecsize * payload_record_size;
-        const string payload_mode = getenv_string("RABITQ_PAYLOAD_MODE", "disk");
-        const bool payload_disk_mode = payload_mode != "memory";
+        const bool payload_disk_mode = true;
         const string payload_path = string(path_index) + ".payload.tmp";
         vector<char> payloads;
         unique_ptr<DiskPayloadStore> disk_payload;

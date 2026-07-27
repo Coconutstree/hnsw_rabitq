@@ -186,43 +186,6 @@ struct DistanceInterval {
     float upper_bound;
 };
 
-struct ProgressiveSearchConfig {
-    size_t efSearch = 0;
-    float short_margin = 0.0f;
-    size_t residual_beam = 0;
-    float residual_uncertainty_threshold = 0.0f;
-    float final_margin = 0.0f;
-    size_t max_residual_evaluations = 0;
-    size_t max_long_expansions = 0;
-    size_t long_expand_beam = 0;
-    size_t fast_residual_candidates = 0;
-    float fast_search_ef_multiplier = 1.0f;
-    float fast_residual_score_blend = 1.0f;
-    bool require_residual_before_expand = false;
-    bool enable_interval_stabilization = true;
-    bool fast_search_finalize_residual = false;
-};
-
-struct ProgressiveSearchStats {
-    size_t visited_nodes = 0;
-    size_t short_distance_evaluations = 0;
-    size_t long_distance_evaluations = 0;
-    size_t residual_distance_evaluations = 0;
-    size_t short_pruned_nodes = 0;
-    size_t short_to_long_upgrades = 0;
-    size_t long_to_residual_upgrades = 0;
-    size_t long_reinsertions = 0;
-    size_t residual_reinsertions = 0;
-    size_t expanded_long_nodes = 0;
-    size_t expanded_residual_nodes = 0;
-    size_t ranking_changes_after_long = 0;
-    size_t ranking_changes_after_residual = 0;
-    size_t stabilization_rounds = 0;
-    size_t stabilization_residual_evaluations = 0;
-    bool residual_budget_exhausted = false;
-    bool long_expansion_budget_exhausted = false;
-};
-
 template<typename MTYPE>
 //距离空间接口
 class SpaceInterface {
@@ -247,24 +210,6 @@ class SpaceInterface {
         return get_dist_func()(prepared_query, data_point, get_dist_func_param());
     }
 
-    virtual bool supports_query_distance_lower_bound() const {
-        return false;
-    }
-
-    virtual MTYPE query_distance_lower_bound(const void *prepared_query, const void *data_point) {
-        return query_distance(prepared_query, data_point);
-    }
-
-    virtual bool query_distance_if_lower_bound_below(
-        const void *prepared_query,
-        const void *data_point,
-        MTYPE threshold,
-        MTYPE *distance) {
-        (void) threshold;
-        *distance = query_distance(prepared_query, data_point);
-        return true;
-    }
-
     virtual MTYPE result_distance(const void *prepared_query, const void *data_point) {
         return query_distance(prepared_query, data_point);
     }
@@ -272,10 +217,6 @@ class SpaceInterface {
     virtual MTYPE result_distance_by_id(const void *prepared_query, size_t internal_id, const void *data_point) {
         (void) internal_id;
         return result_distance(prepared_query, data_point);
-    }
-
-    virtual bool supports_progressive_query_distance() const {
-        return false;
     }
 
     virtual DistanceInterval compute_short_distance_interval(
@@ -324,47 +265,6 @@ class SpaceInterface {
     virtual void commit_data_for_add(size_t internal_id, const void *data_point) {
         (void) internal_id;
         (void) data_point;
-    }
-
-    virtual bool supports_batch_query_distance() const {
-        return false;
-    }
-
-    virtual void batch_query_distance(
-        const void *prepared_query,
-        const void *const *data_points,
-        size_t count,
-        MTYPE *distances) {
-        for (size_t i = 0; i < count; ++i) {
-            distances[i] = query_distance(prepared_query, data_points[i]);
-        }
-    }
-
-    virtual void batch_query_distance_lower_bound(
-        const void *prepared_query,
-        const void *const *data_points,
-        size_t count,
-        MTYPE *lower_bounds) {
-        for (size_t i = 0; i < count; ++i) {
-            lower_bounds[i] = query_distance_lower_bound(prepared_query, data_points[i]);
-        }
-    }
-
-    virtual size_t batch_query_distance_if_lower_bound_below(
-        const void *prepared_query,
-        const void *const *data_points,
-        size_t count,
-        MTYPE threshold,
-        bool use_threshold,
-        MTYPE *distances,
-        size_t *survivor_indices) {
-        (void) threshold;
-        (void) use_threshold;
-        for (size_t i = 0; i < count; ++i) {
-            distances[i] = query_distance(prepared_query, data_points[i]);
-            survivor_indices[i] = i;
-        }
-        return count;
     }
 
     virtual ~SpaceInterface() {}

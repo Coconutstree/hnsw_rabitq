@@ -326,13 +326,12 @@ class RaBitQHierarchicalNSW {
     }
 
     std::priority_queue<std::pair<float, labeltype>>
-    searchKnnProgressiveRefinement(
+    searchKnnPlainThenResidualRerank(
         const float *raw_query,
         size_t k,
-        ProgressiveSearchConfig config = ProgressiveSearchConfig(),
-        ProgressiveSearchStats *stats = nullptr,
+        size_t rerank_candidates,
         BaseFilterFunctor *isIdAllowed = nullptr) const {
-        return index_.searchKnnProgressiveRefinement(raw_query, k, config, stats, isIdAllowed);
+        return index_.searchKnnPlainThenResidualRerank(raw_query, k, rerank_candidates, isIdAllowed);
     }
 //搜索k近邻，返回结果按照距离从近到远排序，参数同上
     std::vector<std::pair<float, labeltype>>
@@ -341,13 +340,12 @@ class RaBitQHierarchicalNSW {
     }
 
     std::vector<std::pair<float, labeltype>>
-    searchKnnProgressiveRefinementCloserFirst(
+    searchKnnPlainThenResidualRerankCloserFirst(
         const float *raw_query,
         size_t k,
-        ProgressiveSearchConfig config = ProgressiveSearchConfig(),
-        ProgressiveSearchStats *stats = nullptr,
+        size_t rerank_candidates,
         BaseFilterFunctor *isIdAllowed = nullptr) const {
-        auto result = searchKnnProgressiveRefinement(raw_query, k, config, stats, isIdAllowed);
+        auto result = searchKnnPlainThenResidualRerank(raw_query, k, rerank_candidates, isIdAllowed);
         std::vector<std::pair<float, labeltype>> sorted;
         sorted.reserve(result.size());
         while (!result.empty()) {

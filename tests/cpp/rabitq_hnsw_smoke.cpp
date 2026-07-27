@@ -62,15 +62,9 @@ static void run_residual_bits_smoke(size_t residual_bits) {
     for (size_t i = 0; i < 4; ++i) {
         index.addPoint(data.data() + i * dim, i);
     }
-    hnswlib::ProgressiveSearchConfig progressive_config;
-    progressive_config.efSearch = 4;
-    progressive_config.fast_search_finalize_residual = true;
-    progressive_config.fast_residual_candidates = 4;
-    hnswlib::ProgressiveSearchStats stats;
-    auto result = index.searchKnnProgressiveRefinement(data.data(), 1, progressive_config, &stats);
+    auto result = index.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
     assert(!result.empty());
     assert(std::isfinite(result.top().first));
-    assert(stats.residual_distance_evaluations > 0);
 
     const std::string suffix = std::to_string(residual_bits);
     const std::string tmp_index = "/tmp/rabitq_hnsw_smoke_r" + suffix + ".index";
@@ -80,7 +74,7 @@ static void run_residual_bits_smoke(size_t residual_bits) {
     index.saveIndex(tmp_index);
     hnswlib::RaBitQHierarchicalNSW loaded(dim, 4, 1, 8, 32, 0, false, false, residual_bits);
     loaded.loadIndex(tmp_index, 4);
-    auto loaded_result = loaded.searchKnnProgressiveRefinement(data.data(), 1, progressive_config);
+    auto loaded_result = loaded.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
     assert(!loaded_result.empty());
     assert(std::isfinite(loaded_result.top().first));
     std::remove(tmp_index.c_str());
@@ -113,7 +107,7 @@ static void run_residual_bits_smoke(size_t residual_bits) {
         tmp_external_residual,
         external_index.space().get_full_data_size());
     auto external_result =
-        external_index.searchKnnProgressiveRefinement(data.data(), 1, progressive_config);
+        external_index.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
     assert(!external_result.empty());
     assert(std::isfinite(external_result.top().first));
     std::remove(tmp_external_residual.c_str());
@@ -223,17 +217,12 @@ int main() {
         points.push_back(encoded_points.back().data());
     }
 
-    for (size_t count : {size_t(1), size_t(17), size_t(31), size_t(32), size_t(33), size_t(64)}) {
-        std::vector<float> batch_distance(count, 0.0f);
-        index.space().batch_query_distance(query_context, points.data(), count, batch_distance.data());
-        for (size_t i = 0; i < count; ++i) {
-            assert(std::isfinite(batch_distance[i]));
-        }
+    for (const void *point : points) {
+        assert(std::isfinite(index.space().query_distance(query_context, point)));
     }
-    float one_distance[1] = {0.0f};
-    index.space().batch_query_distance(query_context, &points[0], 1, one_distance);
+    const float one_distance = index.space().query_distance(query_context, points[0]);
     index.space().release_query(query_context);
-    assert(std::fabs(single_distance - one_distance[0]) < 1e-5f);
+    assert(std::fabs(single_distance - one_distance) < 1e-5f);
 
     for (size_t i = 0; i < 4; ++i) {
         index.addPoint(data.data() + i * dim, i);
@@ -242,17 +231,9 @@ int main() {
     auto result = index.searchKnn(data.data(), 1);
     assert(!result.empty());
     assert(std::isfinite(result.top().first));
-    hnswlib::ProgressiveSearchConfig progressive_config;
-    progressive_config.efSearch = 4;
-    progressive_config.max_residual_evaluations = 16;
-    hnswlib::ProgressiveSearchStats progressive_stats;
-    auto progressive_result =
-        index.searchKnnProgressiveRefinement(data.data(), 1, progressive_config, &progressive_stats);
-    assert(!progressive_result.empty());
-    assert(std::isfinite(progressive_result.top().first));
-    assert(progressive_stats.long_distance_evaluations > 0);
-    assert(progressive_stats.residual_distance_evaluations > 0);
-
+    auto plain_rerank_result = index.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
+    assert(!plain_rerank_result.empty());
+    assert(std::isfinite(plain_rerank_result.top().first));
     const char *tmp_index = "/tmp/rabitq_hnsw_smoke.index";
     const char *tmp_state = "/tmp/rabitq_hnsw_smoke.index.rabitq";
     std::remove(tmp_index);
@@ -264,10 +245,10 @@ int main() {
     assert(!loaded_result.empty());
     assert(loaded_result.top().second == result.top().second);
     assert(std::fabs(loaded_result.top().first - result.top().first) < 1e-5f);
-    auto loaded_progressive =
-        loaded.searchKnnProgressiveRefinement(data.data(), 1, progressive_config);
-    assert(!loaded_progressive.empty());
-    assert(std::isfinite(loaded_progressive.top().first));
+    auto loaded_plain_rerank =
+        loaded.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
+    assert(!loaded_plain_rerank.empty());
+    assert(std::isfinite(loaded_plain_rerank.top().first));
     std::remove(tmp_index);
     std::remove(tmp_state);
 
@@ -357,19 +338,15 @@ int main() {
         tmp_external_payload,
         tmp_external_residual,
         external_index.space().get_full_data_size());
-    hnswlib::ProgressiveSearchConfig external_config;
-    external_config.efSearch = 4;
-    external_config.fast_search_finalize_residual = true;
-    external_config.fast_residual_candidates = 4;
     auto external_result =
-        external_index.searchKnnProgressiveRefinement(data.data(), 1, external_config);
+        external_index.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
     assert(!external_result.empty());
     assert(std::isfinite(external_result.top().first));
     external_index.saveIndex(tmp_external_index);
     hnswlib::RaBitQHierarchicalNSW external_loaded(dim, 4, 1, 8, 32, 0, false, true);
     external_loaded.loadIndex(tmp_external_index, 4);
     auto external_loaded_result =
-        external_loaded.searchKnnProgressiveRefinement(data.data(), 1, external_config);
+        external_loaded.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
     assert(!external_loaded_result.empty());
     assert(std::isfinite(external_loaded_result.top().first));
     std::remove(tmp_external_index);

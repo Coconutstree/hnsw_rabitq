@@ -1885,37 +1885,8 @@ class RaBitQSpace : public SpaceInterface<float> {
         return queryDistanceLong(*static_cast<const QueryContext *>(prepared_query), data_point);
     }
 
-    bool supports_query_distance_lower_bound() const override {
-        return true;
-    }
-
-    float query_distance_lower_bound(const void *prepared_query, const void *data_point) override {
-        return queryDistanceLowerBound(*static_cast<const QueryContext *>(prepared_query), data_point);
-    }
-
-    bool query_distance_if_lower_bound_below(
-        const void *prepared_query,
-        const void *data_point,
-        float threshold,
-        float *distance) override {
-        const QueryContext &query = *static_cast<const QueryContext *>(prepared_query);
-        const EncodedHeader header = loadHeader(data_point);
-        const ShortCodeFactors factors = *shortFactors(data_point);
-        const float short_ip = shortCodeIp(query, codeBytes(data_point));
-        const float lower_bound = queryDistanceLowerBoundWithShortIp(query, header, factors, short_ip);
-        if (lower_bound > threshold) {
-            return false;
-        }
-        *distance = queryDistanceLongWithShortIp(query, data_point, header, short_ip);
-        return true;
-    }
-
     float result_distance(const void *prepared_query, const void *data_point) override {
         return query_distance(prepared_query, data_point);
-    }
-
-    bool supports_progressive_query_distance() const override {
-        return true;
     }
 
     DistanceInterval compute_short_distance_interval(
@@ -1965,68 +1936,6 @@ class RaBitQSpace : public SpaceInterface<float> {
                     long_distances[i]);
             }
         }
-    }
-
-    bool supports_batch_query_distance() const override {
-        return true;
-    }
-
-    void batch_query_distance(
-        const void *prepared_query,
-        const void *const *data_points,
-        size_t count,
-        float *distances) override {
-        const QueryContext &query = *static_cast<const QueryContext *>(prepared_query);
-        for (size_t i = 0; i < count; ++i) {
-            distances[i] = queryDistanceLong(query, data_points[i]);
-        }
-    }
-
-    void batch_query_distance_lower_bound(
-        const void *prepared_query,
-        const void *const *data_points,
-        size_t count,
-        float *lower_bounds) override {
-        const QueryContext &query = *static_cast<const QueryContext *>(prepared_query);
-        thread_local std::vector<float> short_ips;
-        short_ips.assign(count, 0.0f);
-        batchShortCodeIp(query, data_points, count, short_ips.data());
-        for (size_t i = 0; i < count; ++i) {
-            const EncodedHeader header = loadHeader(data_points[i]);
-            const ShortCodeFactors factors = *shortFactors(data_points[i]);
-            lower_bounds[i] = queryDistanceLowerBoundWithShortIp(query, header, factors, short_ips[i]);
-        }
-    }
-
-    size_t batch_query_distance_if_lower_bound_below(
-        const void *prepared_query,
-        const void *const *data_points,
-        size_t count,
-        float threshold,
-        bool use_threshold,
-        float *distances,
-        size_t *survivor_indices) override {
-        const QueryContext &query = *static_cast<const QueryContext *>(prepared_query);
-        thread_local std::vector<float> short_ips;
-        short_ips.assign(count, 0.0f);
-        batchShortCodeIp(query, data_points, count, short_ips.data());
-        size_t survivor_count = 0;
-        for (size_t i = 0; i < count; ++i) {
-            const void *encoded = data_points[i];
-            const EncodedHeader header = loadHeader(encoded);
-            if (use_threshold) {
-                const ShortCodeFactors factors = *shortFactors(encoded);
-                const float lower_bound =
-                    queryDistanceLowerBoundWithShortIp(query, header, factors, short_ips[i]);
-                if (lower_bound > threshold) {
-                    continue;
-                }
-            }
-            distances[survivor_count] = queryDistanceLongWithShortIp(query, encoded, header, short_ips[i]);
-            survivor_indices[survivor_count] = i;
-            ++survivor_count;
-        }
-        return survivor_count;
     }
 
     void encodeVectorFull(const float *raw_vector, void *encoded_out) const {
