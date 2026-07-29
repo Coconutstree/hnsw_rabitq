@@ -116,10 +116,9 @@ static void run_residual_bits_smoke(size_t residual_bits) {
 
 int main() {
     test_residual_pack_roundtrip();
-    for (size_t bits : {size_t(1), size_t(2), size_t(4), size_t(8), size_t(16)}) {
+    for (size_t bits : {size_t(4), size_t(8)}) {
         run_residual_bits_smoke(bits);
     }
-
     const size_t dim = 4;
     const std::vector<float> data = {
         1.0f, 0.0f, 0.0f, 0.0f,

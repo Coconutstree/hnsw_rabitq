@@ -19,6 +19,8 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "../../hnswlib/hnswlib.h"
@@ -29,6 +31,67 @@ using namespace hnswlib;
 
 namespace {
 
+enum class QueryMode {
+    ResidualRerank,
+};
+
+const char *query_mode_name(QueryMode) {
+    return "primary4_plus_residual_rerank";
+}
+
+QueryMode parse_query_mode(const string &value) {
+    if (value == "plain" || value == "plain_residual" ||
+        value == "plain_hnsw_plus_residual_rerank" ||
+        value == "residual4" || value == "residual8" ||
+        value == "primary4_residual4" || value == "primary4_residual8") {
+        return QueryMode::ResidualRerank;
+    }
+    throw runtime_error(
+        "RABITQ_RERANK_MODE only supports residual4/residual8/plain_residual");
+}
+
+QueryMode configured_query_mode() {
+    const char *rerank_mode = std::getenv("RABITQ_RERANK_MODE");
+    if (rerank_mode != nullptr && rerank_mode[0] != '\0') {
+        return parse_query_mode(rerank_mode);
+    }
+    const char *query_mode = std::getenv("RABITQ_QUERY_MODE");
+    if (query_mode != nullptr && query_mode[0] != '\0') {
+        return parse_query_mode(query_mode);
+    }
+    return QueryMode::ResidualRerank;
+}
+
+size_t configured_residual_bits(size_t default_value) {
+    const char *rerank_mode = std::getenv("RABITQ_RERANK_MODE");
+    const char *mode = rerank_mode;
+    if (mode == nullptr || mode[0] == '\0') {
+        mode = std::getenv("RABITQ_QUERY_MODE");
+    }
+    if (mode != nullptr) {
+        const string value(mode);
+        if (value == "residual4" || value == "primary4_residual4") {
+            return 4;
+        }
+        if (value == "residual8" || value == "primary4_residual8") {
+            return 8;
+        }
+    }
+    const char *bits = std::getenv("RABITQ_RESIDUAL_BITS");
+    if (bits == nullptr || bits[0] == '\0') {
+        return default_value;
+    }
+    if (bits[0] == '-') {
+        throw runtime_error("RABITQ_RESIDUAL_BITS must be a non-negative integer");
+    }
+    char *end = nullptr;
+    const unsigned long long parsed = std::strtoull(bits, &end, 10);
+    if (end == bits) {
+        return default_value;
+    }
+    return static_cast<size_t>(parsed);
+}
+
 void print_run_config(
     const char *dataset_name,
     size_t vecsize,
@@ -37,14 +100,15 @@ void print_run_config(
     int efConstruction,
     int M,
     int centroid_count,
-    int rerank_candidates,
+    size_t rerank_candidates,
     int random_seed,
+    size_t residual_bits,
+    QueryMode query_mode,
     const char *path_index,
     const char *path_data,
     const char *path_q,
     const char *path_gt,
     bool external_residual_storage) {
-    (void) rerank_candidates;
     cout << "Run config:\n";
     cout << "  dataset=" << dataset_name << "\n";
     cout << "  base_count=" << vecsize << "\n";
@@ -53,10 +117,16 @@ void print_run_config(
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
     cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
          << " random_seed=" << random_seed << "\n";
+    cout << "  rerank_mode=" << query_mode_name(query_mode)
+         << " method=" << query_mode_name(query_mode)
+         << " rerank_candidates=" << rerank_candidates << "\n";
     cout << "  build_distance=float32_l2"
          << " stored_data="
          << (external_residual_storage ? "4bit_rabitq_plus_disk_residual" : "4bit_rabitq_plus_residual")
-         << " query_distance=plain_hnsw_plus_residual_rerank\n";
+         << " residual_bits=" << residual_bits
+         << " query_distance=" << query_mode_name(query_mode) << "\n";
+    cout << "  enabled_paths=primary4_residual4,primary4_residual8"
+         << " routing=primary4 rerank_distance=residual" << residual_bits << "\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
     cout << "  gt_path=" << path_gt << "\n";
@@ -129,6 +199,35 @@ string join_path(const string &dir, const string &name) {
     return dir + "/" + name;
 }
 
+void ensure_directory_exists(const string &dir) {
+    if (dir.empty() || dir == ".") {
+        return;
+    }
+    string current;
+    size_t pos = 0;
+    if (dir[0] == '/') {
+        current = "/";
+        pos = 1;
+    }
+    while (pos <= dir.size()) {
+        const size_t slash = dir.find('/', pos);
+        const string part = dir.substr(pos, slash == string::npos ? string::npos : slash - pos);
+        if (!part.empty()) {
+            if (!current.empty() && current.back() != '/') {
+                current += "/";
+            }
+            current += part;
+            if (::mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
+                throw runtime_error("cannot create directory: " + current + ": " + strerror(errno));
+            }
+        }
+        if (slash == string::npos) {
+            break;
+        }
+        pos = slash + 1;
+    }
+}
+
 class DiskPayloadStore {
  public:
     DiskPayloadStore(const string &path, size_t total_bytes)
@@ -190,6 +289,11 @@ string residual_state_path(const string &index_path) {
     return index_path + ".residual";
 }
 
+string residual_state_path(const string &index_path, QueryMode query_mode) {
+    (void) query_mode;
+    return residual_state_path(index_path);
+}
+
 size_t file_size_bytes(const string &path) {
     ifstream input(path, ios::binary | ios::ate);
     if (!input.is_open()) {
@@ -206,9 +310,10 @@ double mbps_from_bytes_us(size_t bytes, double us) {
     return us > 0.0 ? static_cast<double>(bytes) / 1000000.0 / (us * 1e-6) : 0.0;
 }
 
-void print_index_file_size(const string &index_path) {
+void print_index_file_size(const string &index_path, QueryMode query_mode = QueryMode::ResidualRerank) {
+    (void) query_mode;
     const string state_path = quantizer_state_path(index_path);
-    const string residual_path = residual_state_path(index_path);
+    const string residual_path = residual_state_path(index_path, query_mode);
     const size_t index_bytes = file_size_bytes(index_path);
     const size_t auxiliary_bytes = file_size_bytes(state_path);
     const size_t residual_bytes = file_size_bytes(residual_path);
@@ -217,7 +322,8 @@ void print_index_file_size(const string &index_path) {
     cout << "Index storage size: " << total_bytes / mb << " MB"
          << " (index=" << index_bytes / mb << " MB"
          << ", auxiliary=" << auxiliary_bytes / mb << " MB"
-         << ", residual=" << residual_bytes / mb << " MB"
+         << ", residual="
+         << residual_bytes / mb << " MB"
          << ", total_bytes=" << total_bytes << ")\n";
 }
 
@@ -588,7 +694,8 @@ static SearchReport test_approx(
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
     size_t actual_search_ef,
-    size_t rerank_candidates) {
+    size_t rerank_candidates,
+    QueryMode query_mode) {
     (void) base_path;
     size_t correct = 0;
     size_t total = 0;
@@ -599,11 +706,11 @@ static SearchReport test_approx(
         vector<pair<float, labeltype>> results;
         try {
             results = appr_alg.searchKnnPlainThenResidualRerankCloserFirst(
-                    massQ + vecdim * i,
-                    k,
-                    rerank_candidates);
+                massQ + vecdim * i,
+                k,
+                rerank_candidates);
         } catch (const std::exception &error) {
-            cerr << "plain_hnsw_residual_rerank_query_failed"
+            cerr << query_mode_name(query_mode) << "_query_failed"
                  << " query=" << i
                  << " efSearch=" << actual_search_ef
                  << " rerank_candidates=" << rerank_candidates
@@ -663,7 +770,8 @@ static void test_vs_recall(
     size_t vecdim,
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
-    size_t rerank_candidates) {
+    size_t rerank_candidates,
+    QueryMode query_mode) {
     vector<size_t> efs;
     for (size_t i = 1; i <= 30; i++) {
         if (i >= k) {
@@ -694,7 +802,8 @@ static void test_vs_recall(
             answers,
             k,
             actual_search_ef,
-            actual_rerank_candidates);
+            actual_rerank_candidates,
+            query_mode);
         report.actual_search_ef = actual_search_ef;
         report.rerank_candidates = actual_rerank_candidates;
 
@@ -714,11 +823,12 @@ static void test_vs_recall(
 
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
+             << "\t" << "method=" << query_mode_name(query_mode)
              << "\t" << "recall_at=" << k
              << "\t" << "requested_ef=" << ef
              << "\t" << "actual_search_ef=" << report.actual_search_ef
-             << "\t" << "rerank_candidates=" << report.rerank_candidates
-             << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
+             << "\t" << "rerank_candidates=" << report.rerank_candidates;
+        cout << "\t" << "hnsw_search_us_per_query=" << report.hnsw_search_us_per_query
              << "\t" << "total_us_per_query=" << report.total_us_per_query
              << "\t" << "graph_total_us_per_query=" << report.graph_total_us_per_query
              << "\t" << "graph_prepare_us_per_query=" << report.graph_prepare_us_per_query
@@ -744,7 +854,8 @@ void sift_test1B() {
     const int efConstruction = 400;
     const int M = 32;
     const int centroid_count = 64;
-    const int rerank_candidates = 100;
+    const size_t rerank_candidates =
+        getenv_size_t("RABITQ_RERANK_CANDIDATES", 100);
     const size_t centroid_train_samples = 200000;
     const int random_seed = 100;
 
@@ -771,7 +882,11 @@ void sift_test1B() {
     const size_t vecdim = dataset.dim;
     const size_t gt_width = dataset.gt_width;
     const bool external_residual_storage = true;
-    const size_t residual_bits = getenv_size_t("RABITQ_RESIDUAL_BITS", 8);
+    const QueryMode query_mode = configured_query_mode();
+    const size_t residual_bits = configured_residual_bits(8);
+    if (residual_bits != 4 && residual_bits != 8) {
+        throw runtime_error("Only primary4+residual4 and primary4+residual8 are supported");
+    }
 
     char index_name[1024];
     const char *path_q = dataset.query_path.c_str();
@@ -789,6 +904,7 @@ void sift_test1B() {
         M,
         centroid_count);
     const string index_dir = getenv_string("RABITQ_INDEX_DIR", "build");
+    ensure_directory_exists(index_dir);
     const string path_index_string = join_path(index_dir, index_name);
     const char *path_index = path_index_string.c_str();
 
@@ -802,6 +918,8 @@ void sift_test1B() {
         centroid_count,
         rerank_candidates,
         random_seed,
+        residual_bits,
+        query_mode,
         path_index,
         path_data,
         path_q,
@@ -847,11 +965,19 @@ void sift_test1B() {
     }
 
     RaBitQHierarchicalNSW *appr_alg = new RaBitQHierarchicalNSW(
-        vecdim, vecsize, centroid_count, M, efConstruction, random_seed, false, external_residual_storage);
+        vecdim,
+        vecsize,
+        centroid_count,
+        M,
+        efConstruction,
+        random_seed,
+        false,
+        external_residual_storage,
+        residual_bits);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
          << (external_residual_storage
-             ? " (4-bit code in index; residual in mmap sidecar)\n"
-             : " (4-bit code + residual code)\n");
+                ? " (4-bit code in index; residual in mmap sidecar)\n"
+                : " (4-bit code + residual code)\n");
     cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
          << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
          << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
@@ -871,18 +997,26 @@ void sift_test1B() {
         } else {
             try {
                 appr_alg->loadIndex(path_index, vecsize);
-                print_index_file_size(path_index);
+                print_index_file_size(path_index, query_mode);
                 need_build = false;
             } catch (const std::exception &error) {
                 cout << "Existing index is incompatible: " << error.what() << "\n";
                 cout << "Rebuilding the index with the current quantizer format\n";
                 delete appr_alg;
                 appr_alg = new RaBitQHierarchicalNSW(
-                    vecdim, vecsize, centroid_count, M, efConstruction, random_seed, false, external_residual_storage);
+                    vecdim,
+                    vecsize,
+                    centroid_count,
+                    M,
+                    efConstruction,
+                    random_seed,
+                    false,
+                    external_residual_storage,
+                    residual_bits);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
                      << (external_residual_storage
-                         ? " (4-bit code in index; residual in mmap sidecar)\n"
-                         : " (4-bit code + residual code)\n");
+                            ? " (4-bit code in index; residual in mmap sidecar)\n"
+                            : " (4-bit code + residual code)\n");
                 cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
                      << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
                      << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
@@ -1033,13 +1167,13 @@ void sift_test1B() {
             appr_alg->importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
                 float_index,
                 payload_path,
-                residual_state_path(path_index),
+                residual_state_path(path_index, query_mode),
                 payload_record_size,
                 true);
             disk_payload.reset();
             std::remove(payload_path.c_str());
         } else if (external_residual_storage) {
-            const string residual_path = residual_state_path(path_index);
+            const string residual_path = residual_state_path(path_index, query_mode);
             DiskPayloadStore residual_store(
                 residual_path,
                 vecsize * appr_alg->space().get_residual_disk_record_bytes());
@@ -1099,7 +1233,7 @@ void sift_test1B() {
         cout << "build_stage=save_index"
              << " us=" << save_index_us << "\n";
         cout << "build_total_us=" << total_build_timer.getElapsedTimeMicro() << "\n";
-        print_index_file_size(path_index);
+        print_index_file_size(path_index, query_mode);
     }
 
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
@@ -1115,6 +1249,7 @@ void sift_test1B() {
         vecdim,
         answers,
         k,
-        rerank_candidates);
-    print_index_file_size(path_index);
+        rerank_candidates,
+        query_mode);
+    print_index_file_size(path_index, query_mode);
 }

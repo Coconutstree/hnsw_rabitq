@@ -15,3 +15,6 @@ var/
 *.pyc
 *.bin
 *.rabitq
+*.residual
+*.refine4
+*.nested4x4_low4

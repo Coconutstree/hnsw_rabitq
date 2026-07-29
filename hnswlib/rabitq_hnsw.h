@@ -30,6 +30,9 @@ class RaBitQHierarchicalNSW {
     }
 
     static std::string residualPathForIndex(const std::string &location) {
+        if (location.find("nested4x4") != std::string::npos) {
+            return location + ".nested4x4_low4";
+        }
         return location + ".residual";
     }
 
@@ -333,6 +336,22 @@ class RaBitQHierarchicalNSW {
         BaseFilterFunctor *isIdAllowed = nullptr) const {
         return index_.searchKnnPlainThenResidualRerank(raw_query, k, rerank_candidates, isIdAllowed);
     }
+
+    std::priority_queue<std::pair<float, labeltype>>
+    searchKnnNested4x4Rerank(
+        const float *raw_query,
+        size_t k,
+        size_t rerank_candidates,
+        BaseFilterFunctor *isIdAllowed = nullptr) const {
+        if (space_.get_residual_bits() != 4) {
+            throw std::runtime_error("nested4x4 rerank requires 4-bit residual storage");
+        }
+        return index_.searchKnnNested4x4Rerank(
+            raw_query,
+            k,
+            rerank_candidates,
+            isIdAllowed);
+    }
 //搜索k近邻，返回结果按照距离从近到远排序，参数同上
     std::vector<std::pair<float, labeltype>>
     searchKnnCloserFirst(const float *raw_query, size_t k, BaseFilterFunctor *isIdAllowed = nullptr) const {
@@ -346,6 +365,24 @@ class RaBitQHierarchicalNSW {
         size_t rerank_candidates,
         BaseFilterFunctor *isIdAllowed = nullptr) const {
         auto result = searchKnnPlainThenResidualRerank(raw_query, k, rerank_candidates, isIdAllowed);
+        std::vector<std::pair<float, labeltype>> sorted;
+        sorted.reserve(result.size());
+        while (!result.empty()) {
+            sorted.push_back(result.top());
+            result.pop();
+        }
+        std::reverse(sorted.begin(), sorted.end());
+        return sorted;
+    }
+
+    std::vector<std::pair<float, labeltype>>
+    searchKnnNested4x4RerankCloserFirst(
+        const float *raw_query,
+        size_t k,
+        size_t rerank_candidates,
+        BaseFilterFunctor *isIdAllowed = nullptr) const {
+        auto result =
+            searchKnnNested4x4Rerank(raw_query, k, rerank_candidates, isIdAllowed);
         std::vector<std::pair<float, labeltype>> sorted;
         sorted.reserve(result.size());
         while (!result.empty()) {

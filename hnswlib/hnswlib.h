@@ -258,6 +258,20 @@ class SpaceInterface {
         (void) internal_ids;
     }
 
+    virtual void batch_compute_nested4x4_distances_by_internal_id(
+        const void *prepared_query,
+        const size_t *internal_ids,
+        const void *const *data_points,
+        const MTYPE *high4_distances,
+        size_t count,
+        MTYPE *distances) {
+        for (size_t i = 0; i < count; ++i) {
+            distances[i] = result_distance(prepared_query, data_points[i]);
+        }
+        (void) internal_ids;
+        (void) high4_distances;
+    }
+
     virtual void prepare_data_for_add(const void *raw_data_point) {
         (void) raw_data_point;
     }

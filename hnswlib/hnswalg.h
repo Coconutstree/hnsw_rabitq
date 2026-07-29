@@ -1480,10 +1480,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             const bool bare_bone_search = !num_deleted_ && !isIdAllowed;
             if (bare_bone_search) {
                 top_candidates = searchBaseLayerST<true>(
-                    currObj, query_context, std::max(ef_, rerank_candidates), isIdAllowed);
+                    currObj, query_context, ef_, isIdAllowed);
             } else {
                 top_candidates = searchBaseLayerST<false>(
-                    currObj, query_context, std::max(ef_, rerank_candidates), isIdAllowed);
+                    currObj, query_context, ef_, isIdAllowed);
             }
 
             while (top_candidates.size() > rerank_candidates) {
@@ -1516,6 +1516,107 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     residual_intervals.data());
                 for (size_t i = 0; i < candidates.size(); ++i) {
                     candidates[i].first = residual_intervals[i].estimate;
+                }
+            }
+
+            std::sort(candidates.begin(), candidates.end());
+            for (size_t i = 0; i < k && i < candidates.size(); ++i) {
+                result.emplace(candidates[i].first, getExternalLabel(candidates[i].second));
+            }
+        } catch (...) {
+            space_->release_query(query_context);
+            throw;
+        }
+        space_->release_query(query_context);
+        return result;
+    }
+
+    std::priority_queue<std::pair<dist_t, labeltype >>
+    searchKnnNested4x4Rerank(
+        const void *query_data,
+        size_t k,
+        size_t rerank_candidates,
+        BaseFilterFunctor* isIdAllowed = nullptr) const {
+        std::priority_queue<std::pair<dist_t, labeltype >> result;
+        if (cur_element_count == 0 || k == 0) return result;
+
+        rerank_candidates = std::max(k, rerank_candidates);
+
+        const void *query_context = space_->prepare_query(query_data);
+        tableint currObj = enterpoint_node_;
+        dist_t curdist = space_->query_distance(query_context, getDataByInternalId(enterpoint_node_));
+
+        try {
+            for (int level = maxlevel_; level > 0; level--) {
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    unsigned int *data = (unsigned int *) get_linklist(currObj, level);
+                    int size = getListCount(data);
+                    metric_hops++;
+                    metric_distance_computations += size;
+
+                    tableint *datal = (tableint *) (data + 1);
+                    for (int i = 0; i < size; i++) {
+                        tableint cand = datal[i];
+                        if (cand < 0 || cand > max_elements_) {
+                            throw std::runtime_error("cand error");
+                        }
+                        char *cand_data = getDataByInternalId(cand);
+                        dist_t d = space_->query_distance(query_context, cand_data);
+                        if (d < curdist) {
+                            curdist = d;
+                            currObj = cand;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            std::priority_queue<
+                std::pair<dist_t, tableint>,
+                std::vector<std::pair<dist_t, tableint>>,
+                CompareByFirst> top_candidates;
+            const bool bare_bone_search = !num_deleted_ && !isIdAllowed;
+            if (bare_bone_search) {
+                top_candidates = searchBaseLayerST<true>(
+                    currObj, query_context, ef_, isIdAllowed);
+            } else {
+                top_candidates = searchBaseLayerST<false>(
+                    currObj, query_context, ef_, isIdAllowed);
+            }
+
+            std::vector<std::pair<dist_t, tableint>> candidates;
+            candidates.reserve(top_candidates.size());
+            while (!top_candidates.empty()) {
+                candidates.push_back(top_candidates.top());
+                top_candidates.pop();
+            }
+
+            if (!candidates.empty()) {
+                std::sort(candidates.begin(), candidates.end());
+                if (candidates.size() > rerank_candidates) {
+                    candidates.resize(rerank_candidates);
+                }
+                std::vector<size_t> internal_ids(candidates.size(), 0);
+                std::vector<const void *> data_points(candidates.size(), nullptr);
+                std::vector<dist_t> high4_distances(candidates.size(), 0);
+                std::vector<dist_t> nested_distances(candidates.size(), 0);
+                for (size_t i = 0; i < candidates.size(); ++i) {
+                    internal_ids[i] = candidates[i].second;
+                    data_points[i] = getDataByInternalId(candidates[i].second);
+                    high4_distances[i] = candidates[i].first;
+                }
+                space_->batch_compute_nested4x4_distances_by_internal_id(
+                    query_context,
+                    internal_ids.data(),
+                    data_points.data(),
+                    high4_distances.data(),
+                    candidates.size(),
+                    nested_distances.data());
+
+                for (size_t i = 0; i < candidates.size(); ++i) {
+                    candidates[i].first = nested_distances[i];
                 }
             }
 
