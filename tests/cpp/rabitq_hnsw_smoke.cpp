@@ -134,8 +134,9 @@ int main() {
                                       sizeof(hnswlib::RaBitQSpace::ResidualCodeFactors) +
                                       ((index.space().get_code_dim() +
                                         hnswlib::RaBitQSpace::kResidualBlockSize - 1U) /
-                                       hnswlib::RaBitQSpace::kResidualBlockSize) * sizeof(float) +
+                                      hnswlib::RaBitQSpace::kResidualBlockSize) * sizeof(float) +
                                       index.space().get_compact_code_bytes() +
+                                      sizeof(uint8_t) +
                                       index.space().get_residual_code_bytes();
     assert(index.space().get_data_size() == expected_data_size);
 

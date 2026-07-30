@@ -23,6 +23,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <omp.h>
+
 #include "../../hnswlib/hnswlib.h"
 #include "../../hnswlib/rabitq_hnsw.h"
 
@@ -103,6 +105,8 @@ void print_run_config(
     size_t rerank_candidates,
     int random_seed,
     size_t residual_bits,
+    size_t residual_block_size,
+    const char *residual_scale_mode,
     QueryMode query_mode,
     const char *path_index,
     const char *path_data,
@@ -124,6 +128,8 @@ void print_run_config(
          << " stored_data="
          << (external_residual_storage ? "4bit_rabitq_plus_disk_residual" : "4bit_rabitq_plus_residual")
          << " residual_bits=" << residual_bits
+         << " residual_block_size=" << residual_block_size
+         << " residual_scale_mode=" << residual_scale_mode
          << " query_distance=" << query_mode_name(query_mode) << "\n";
     cout << "  enabled_paths=primary4_residual4,primary4_residual8"
          << " routing=primary4 rerank_distance=residual" << residual_bits << "\n";
@@ -466,6 +472,7 @@ vector<float> train_kmeans_centroids(
     size_t sample_count,
     int random_seed,
     vector<unsigned char> &scratch) {
+    (void) scratch;
     if (centroid_count == 0) {
         throw runtime_error("centroid_count must be positive");
     }
@@ -480,28 +487,73 @@ vector<float> train_kmeans_centroids(
 
     vector<float> samples(actual_sample_count * vecdim, 0.0f);
     for (size_t i = 0; i < actual_sample_count; ++i) {
-        read_bvec_as_float(input, samples.data() + i * vecdim, vecdim, scratch);
+        read_fvec_as_float(input, samples.data() + i * vecdim, vecdim);
     }
 
     std::mt19937 rng(random_seed);
-    vector<size_t> init_ids(actual_sample_count);
-    iota(init_ids.begin(), init_ids.end(), 0);
-    shuffle(init_ids.begin(), init_ids.end(), rng);
-
+    vector<float> min_dist(actual_sample_count, numeric_limits<float>::infinity());
     vector<float> centroids(centroid_count * vecdim, 0.0f);
-    for (size_t centroid_id = 0; centroid_id < centroid_count; ++centroid_id) {
-        const float *src = samples.data() + init_ids[centroid_id] * vecdim;
-        copy(src, src + vecdim, centroids.data() + centroid_id * vecdim);
+    vector<size_t> init_ids;
+    init_ids.reserve(centroid_count);
+    init_ids.push_back(static_cast<size_t>(random_seed) % actual_sample_count);
+    copy(
+        samples.data() + init_ids[0] * vecdim,
+        samples.data() + (init_ids[0] + 1U) * vecdim,
+        centroids.data());
+    for (size_t centroid_id = 1; centroid_id < centroid_count; ++centroid_id) {
+        double objective = 0.0;
+        const float *last_centroid = centroids.data() + (centroid_id - 1U) * vecdim;
+#pragma omp parallel for reduction(+:objective) schedule(static)
+        for (size_t sample_id = 0; sample_id < actual_sample_count; ++sample_id) {
+            const float *sample = samples.data() + sample_id * vecdim;
+            float dist = 0.0f;
+            for (size_t d = 0; d < vecdim; ++d) {
+                const float diff = sample[d] - last_centroid[d];
+                dist += diff * diff;
+            }
+            min_dist[sample_id] = std::min(min_dist[sample_id], dist);
+            objective += min_dist[sample_id];
+        }
+        std::uniform_real_distribution<double> pick(0.0, objective);
+        double target = pick(rng);
+        size_t chosen = actual_sample_count - 1U;
+        for (size_t sample_id = 0; sample_id < actual_sample_count; ++sample_id) {
+            target -= min_dist[sample_id];
+            if (target <= 0.0) {
+                chosen = sample_id;
+                break;
+            }
+        }
+        init_ids.push_back(chosen);
+        copy(
+            samples.data() + chosen * vecdim,
+            samples.data() + (chosen + 1U) * vecdim,
+            centroids.data() + centroid_id * vecdim);
     }
 
     vector<float> next_centroids(centroid_count * vecdim, 0.0f);
     vector<size_t> counts(centroid_count, 0);
-    const size_t kmeans_iters = 8;
+    vector<float> sample_best_dist(actual_sample_count, 0.0f);
+    vector<size_t> assignments(actual_sample_count, 0);
+    const size_t kmeans_iters = 20;
+    const int thread_count = std::max(1, omp_get_max_threads());
+    vector<vector<double> > thread_sums(
+        static_cast<size_t>(thread_count),
+        vector<double>(centroid_count * vecdim, 0.0));
+    vector<vector<size_t> > thread_counts(
+        static_cast<size_t>(thread_count),
+        vector<size_t>(centroid_count, 0));
 
     for (size_t iter = 0; iter < kmeans_iters; ++iter) {
         fill(next_centroids.begin(), next_centroids.end(), 0.0f);
         fill(counts.begin(), counts.end(), 0);
+        for (int tid = 0; tid < thread_count; ++tid) {
+            fill(thread_sums[tid].begin(), thread_sums[tid].end(), 0.0);
+            fill(thread_counts[tid].begin(), thread_counts[tid].end(), 0);
+        }
 
+        double objective = 0.0;
+#pragma omp parallel for reduction(+:objective) schedule(static)
         for (size_t sample_id = 0; sample_id < actual_sample_count; ++sample_id) {
             const float *sample = samples.data() + sample_id * vecdim;
             size_t best_centroid = 0;
@@ -519,19 +571,40 @@ vector<float> train_kmeans_centroids(
                 }
             }
 
-            ++counts[best_centroid];
-            float *dst = next_centroids.data() + best_centroid * vecdim;
+            assignments[sample_id] = best_centroid;
+            sample_best_dist[sample_id] = best_dist;
+            objective += best_dist;
+            const int tid = omp_get_thread_num();
+            ++thread_counts[static_cast<size_t>(tid)][best_centroid];
+            double *dst = thread_sums[static_cast<size_t>(tid)].data() + best_centroid * vecdim;
             for (size_t d = 0; d < vecdim; ++d) {
                 dst[d] += sample[d];
             }
         }
 
+        for (int tid = 0; tid < thread_count; ++tid) {
+            for (size_t centroid_id = 0; centroid_id < centroid_count; ++centroid_id) {
+                counts[centroid_id] += thread_counts[static_cast<size_t>(tid)][centroid_id];
+                float *dst = next_centroids.data() + centroid_id * vecdim;
+                const double *src =
+                    thread_sums[static_cast<size_t>(tid)].data() + centroid_id * vecdim;
+                for (size_t d = 0; d < vecdim; ++d) {
+                    dst[d] += static_cast<float>(src[d]);
+                }
+            }
+        }
+
+        size_t empty_count = 0;
         for (size_t centroid_id = 0; centroid_id < centroid_count; ++centroid_id) {
             float *dst = next_centroids.data() + centroid_id * vecdim;
             if (counts[centroid_id] == 0) {
-                const size_t fallback_id = init_ids[centroid_id % actual_sample_count];
+                ++empty_count;
+                const size_t fallback_id = static_cast<size_t>(
+                    max_element(sample_best_dist.begin(), sample_best_dist.end()) -
+                    sample_best_dist.begin());
                 const float *fallback = samples.data() + fallback_id * vecdim;
                 copy(fallback, fallback + vecdim, dst);
+                sample_best_dist[fallback_id] = 0.0f;
                 continue;
             }
 
@@ -541,6 +614,15 @@ vector<float> train_kmeans_centroids(
             }
         }
 
+        double movement = 0.0;
+        for (size_t i = 0; i < centroids.size(); ++i) {
+            const double diff = static_cast<double>(centroids[i]) - static_cast<double>(next_centroids[i]);
+            movement += diff * diff;
+        }
+        cout << "kmeans_iter=" << iter
+             << " objective=" << objective
+             << " movement=" << std::sqrt(movement)
+             << " empty_clusters=" << empty_count << "\n";
         centroids.swap(next_centroids);
     }
 
@@ -853,10 +935,12 @@ static void test_vs_recall(
 void sift_test1B() {
     const int efConstruction = 400;
     const int M = 32;
-    const int centroid_count = 64;
+    const int centroid_count = static_cast<int>(getenv_size_t("RABITQ_CENTROID_COUNT", 64));
     const size_t rerank_candidates =
         getenv_size_t("RABITQ_RERANK_CANDIDATES", 100);
-    const size_t centroid_train_samples = 200000;
+    const size_t default_centroid_train_samples = centroid_count == 1 ? 200000 : 1000000;
+    const size_t centroid_train_samples =
+        getenv_size_t("RABITQ_CENTROID_TRAIN_SAMPLES", default_centroid_train_samples);
     const int random_seed = 100;
 
     struct DatasetConfig {
@@ -887,6 +971,33 @@ void sift_test1B() {
     if (residual_bits != 4 && residual_bits != 8) {
         throw runtime_error("Only primary4+residual4 and primary4+residual8 are supported");
     }
+    const hnswlib::RaBitQSpace::ResidualQuantizationConfig residual_config =
+        [&]() {
+            hnswlib::RaBitQSpace::ResidualQuantizationConfig config;
+            config.bits = residual_bits == 4
+                ? hnswlib::RaBitQSpace::ResidualQuantizationBits::B4
+                : hnswlib::RaBitQSpace::ResidualQuantizationBits::B8;
+            if (const char *value = std::getenv("RABITQ_RESIDUAL_BLOCK_SIZE")) {
+                char *end = nullptr;
+                const unsigned long parsed = std::strtoul(value, &end, 10);
+                if (end == value || *end != '\0' || parsed == 0) {
+                    throw runtime_error("RABITQ_RESIDUAL_BLOCK_SIZE must be a positive integer");
+                }
+                config.block_size = static_cast<size_t>(parsed);
+            }
+            if (const char *value = std::getenv("RABITQ_RESIDUAL_SCALE_MODE")) {
+                if (std::strcmp(value, "max_abs") == 0) {
+                    config.mse_optimal_scale = false;
+                } else if (std::strcmp(value, "mse") == 0 || std::strcmp(value, "mse_optimal") == 0) {
+                    config.mse_optimal_scale = true;
+                } else {
+                    throw runtime_error("RABITQ_RESIDUAL_SCALE_MODE must be max_abs or mse");
+                }
+            }
+            return config;
+        }();
+    const char *residual_scale_mode =
+        residual_config.mse_optimal_scale ? "mse" : "max_abs";
 
     char index_name[1024];
     const char *path_q = dataset.query_path.c_str();
@@ -894,15 +1005,25 @@ void sift_test1B() {
     const char *path_gt = dataset.gt_path.c_str();
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
-    snprintf(
-        index_name,
-        sizeof(index_name),
-        "%s_primary4_residual%zu_floatbuild_ef_%d_M_%d_C_%d.bin",
-        dataset.index_prefix.c_str(),
-        residual_bits,
-        efConstruction,
-        M,
-        centroid_count);
+    if (centroid_count == 64 && residual_bits == 4) {
+        snprintf(
+            index_name,
+            sizeof(index_name),
+            "%s_primary4_residual4_trueK64_floatbuild_ef_%d_M_%d.bin",
+            dataset.index_prefix.c_str(),
+            efConstruction,
+            M);
+    } else {
+        snprintf(
+            index_name,
+            sizeof(index_name),
+            "%s_primary4_residual%zu_trueK%d_floatbuild_ef_%d_M_%d.bin",
+            dataset.index_prefix.c_str(),
+            residual_bits,
+            centroid_count,
+            efConstruction,
+            M);
+    }
     const string index_dir = getenv_string("RABITQ_INDEX_DIR", "build");
     ensure_directory_exists(index_dir);
     const string path_index_string = join_path(index_dir, index_name);
@@ -919,6 +1040,8 @@ void sift_test1B() {
         rerank_candidates,
         random_seed,
         residual_bits,
+        residual_config.block_size,
+        residual_scale_mode,
         query_mode,
         path_index,
         path_data,
@@ -973,12 +1096,15 @@ void sift_test1B() {
         random_seed,
         false,
         external_residual_storage,
-        residual_bits);
+        residual_config);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
          << (external_residual_storage
                 ? " (4-bit code in index; residual in mmap sidecar)\n"
                 : " (4-bit code + residual code)\n");
     cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
+         << " residual_block_size=" << appr_alg->space().get_residual_block_size()
+         << " residual_scale_mode="
+         << (appr_alg->space().get_residual_mse_optimal_scale() ? "mse" : "max_abs")
          << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
          << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
          << " remaining_bits=" << hnswlib::RaBitQSpace::kRemainingBits
@@ -1012,12 +1138,15 @@ void sift_test1B() {
                     random_seed,
                     false,
                     external_residual_storage,
-                    residual_bits);
+                    residual_config);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
                      << (external_residual_storage
                             ? " (4-bit code in index; residual in mmap sidecar)\n"
                             : " (4-bit code + residual code)\n");
                 cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
+                     << " residual_block_size=" << appr_alg->space().get_residual_block_size()
+                     << " residual_scale_mode="
+                     << (appr_alg->space().get_residual_mse_optimal_scale() ? "mse" : "max_abs")
                      << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
                      << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
                      << " remaining_bits=" << hnswlib::RaBitQSpace::kRemainingBits
@@ -1036,18 +1165,33 @@ void sift_test1B() {
     if (need_build) {
         StopW total_build_timer;
         cout << "Building index:\n";
-        cout << "Training one global ExRaBitQ center from "
+        cout << "Training " << centroid_count << " ExRaBitQ centroid(s) from "
              << min(centroid_train_samples, vecsize) << " base vectors\n";
         StopW train_center_timer;
-        vector<float> global_center = train_global_center(
-            input,
-            vecdim,
-            vecsize,
-            centroid_train_samples);
-        appr_alg->space().setGlobalCenter(global_center.data());
+        vector<float> centroids;
+        vector<unsigned char> centroid_scratch;
+        if (centroid_count == 1) {
+            centroids = train_global_center(
+                input,
+                vecdim,
+                vecsize,
+                centroid_train_samples);
+            appr_alg->space().setGlobalCenter(centroids.data());
+        } else {
+            centroids = train_kmeans_centroids(
+                input,
+                vecdim,
+                vecsize,
+                static_cast<size_t>(centroid_count),
+                centroid_train_samples,
+                random_seed,
+                centroid_scratch);
+            appr_alg->space().setCentroids(centroids.data(), static_cast<size_t>(centroid_count));
+        }
         const double train_center_us = train_center_timer.getElapsedTimeMicro();
         cout << "build_stage=train_center"
              << " us=" << train_center_us << "\n";
+        vector<size_t> centroid_counts(static_cast<size_t>(centroid_count), 0);
 
         int j1 = 0;
         StopW stopw;
@@ -1089,8 +1233,10 @@ void sift_test1B() {
         {
             StopW payload_timer;
             vector<char> encoded_first(payload_record_size, 0);
+            const uint8_t centroid_id = appr_alg->space().assignCentroid(first.data());
+            ++centroid_counts[centroid_id];
             if (external_residual_storage) {
-                appr_alg->space().encodeVectorFull(first.data(), encoded_first.data());
+                appr_alg->space().encodeVectorFullWithCentroid(first.data(), centroid_id, encoded_first.data());
             } else {
                 appr_alg->space().encodeVector(first.data(), encoded_first.data());
             }
@@ -1122,8 +1268,11 @@ void sift_test1B() {
             }
             StopW payload_timer;
             vector<char> encoded_payload(payload_record_size, 0);
+            const uint8_t centroid_id = appr_alg->space().assignCentroid(local_mass.data());
+#pragma omp atomic
+            centroid_counts[centroid_id]++;
             if (external_residual_storage) {
-                appr_alg->space().encodeVectorFull(local_mass.data(), encoded_payload.data());
+                appr_alg->space().encodeVectorFullWithCentroid(local_mass.data(), centroid_id, encoded_payload.data());
             } else {
                 appr_alg->space().encodeVector(local_mass.data(), encoded_payload.data());
             }
@@ -1160,6 +1309,22 @@ void sift_test1B() {
              << " wall_kips=" << kips_from_count_us(vecsize, payload_encode_wall_us)
              << " cpu_MBps=" << mbps_from_bytes_us(payload_total_bytes, payload_encode_cpu_us)
              << " wall_MBps=" << mbps_from_bytes_us(payload_total_bytes, payload_encode_wall_us)
+             << "\n";
+        vector<size_t> sorted_centroid_counts = centroid_counts;
+        sort(sorted_centroid_counts.begin(), sorted_centroid_counts.end());
+        const size_t empty_centroids = static_cast<size_t>(
+            count(sorted_centroid_counts.begin(), sorted_centroid_counts.end(), size_t{0}));
+        const size_t p50_index = sorted_centroid_counts.empty() ? 0 : sorted_centroid_counts.size() / 2U;
+        const size_t p95_index = sorted_centroid_counts.empty() ? 0 :
+            min(sorted_centroid_counts.size() - 1U,
+                static_cast<size_t>(ceil(0.95 * static_cast<double>(sorted_centroid_counts.size()))) - 1U);
+        cout << "centroid_assignment_stats"
+             << " count=" << centroid_count
+             << " min=" << (sorted_centroid_counts.empty() ? 0 : sorted_centroid_counts.front())
+             << " max=" << (sorted_centroid_counts.empty() ? 0 : sorted_centroid_counts.back())
+             << " p50=" << (sorted_centroid_counts.empty() ? 0 : sorted_centroid_counts[p50_index])
+             << " p95=" << (sorted_centroid_counts.empty() ? 0 : sorted_centroid_counts[p95_index])
+             << " empty=" << empty_centroids
              << "\n";
 
         StopW convertw;

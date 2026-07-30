@@ -1,0 +1,18 @@
+Exact residual oracle config:
+  dataset=sift10m base_count=10000000 query_count=1000 dimension=128
+  M=32 efConstruction=400 efSearch=400 primary_top_candidates=100 recall_at=10
+  primary_bits=4 residual_oracle=exact_unquantized residual_bits_for_loaded_index=4 centroid_count=64 random_seed=100
+  index_path=build/sift10m_primary4_residual4_floatbuild_ef_400_M_32_C_64.bin
+  base_path=/home/kai3/coco/data/sift10m/sift10m_base.fvecs
+  query_path=/home/kai3/coco/data/sift10m/sift10m_query.fvecs
+  gt_path=/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs
+Exact residual oracle results:
+  queries=1000 pairs=100000 primary_top_candidates=100 recall_at=10
+  candidate_coverage@10=0.999500
+  primary_recall@10=0.853400
+  exact_residual_recall@10=0.999200
+  exact_top10_overlap_with_float_oracle=0.999800
+  primary_vs_float_l2_mae=1227.652250 rmse=1583.763720 max_abs=10105.257812
+  exact_residual_vs_float_l2_mae=0.049666 rmse=0.058535 max_abs=0.234375
+  self_check_manual_primary_vs_library_mae=0.015095 max_abs=0.121435 query_rotation_mean_abs_error=0.000000 label_internal_mismatches=0
+  avg_primary_search_us=1779.607000 avg_exact_oracle_compute_us=622.617000

@@ -1,0 +1,48 @@
+Run config:
+  dataset=sift10m
+  base_count=10000000
+  query_count=1000
+  dimension=128
+  M=32 efConstruction=400
+  quantizer=4-bit ExRaBitQ centroid_count=64 random_seed=100
+  rerank_mode=primary4_plus_residual_rerank method=primary4_plus_residual_rerank rerank_candidates=100
+  build_distance=float32_l2 stored_data=4bit_rabitq_plus_disk_residual residual_bits=4 query_distance=primary4_plus_residual_rerank
+  enabled_paths=primary4_residual4,primary4_residual8 routing=primary4 rerank_distance=residual4
+  base_path=/home/kai3/coco/data/sift10m/sift10m_base.fvecs
+  query_path=/home/kai3/coco/data/sift10m/sift10m_query.fvecs
+  gt_path=/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs
+  index_path=build/sift10m_primary4_residual4_floatbuild_ef_400_M_32_C_64.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=80 (4-bit code in index; residual in mmap sidecar)
+  residual_bits=4 primary_bits=4 short_bits=1 remaining_bits=3 compact_primary_bytes_per_vector=64 residual_code_bytes_per_vector=64 residual_record_bytes_per_vector=104 primary_4bit_empirical_error_reference=0.0317646
+Loading index from build/sift10m_primary4_residual4_floatbuild_ef_400_M_32_C_64.bin:
+Index storage size: 4602.65 MB (index=3562.65 MB, auxiliary=0.001153 MB, residual=1040 MB, total_bytes=4602654805)
+Parsing gt:
+1000
+Loaded gt
+Navigation experiment checks:
+  RaBitQSpace::query_distance=queryDistanceLong
+  queryDistanceLong=primary4_only
+  residual_refine_formula=long_distance - 2 * query_residual_inner_product
+  searchBaseLayerST_legacy_uses=query_distance_for_candidates_queues_lowerBound_admission_stop
+  searchKnnPlainThenResidualRerank=residual_only_after_base_search
+  residual_external_lookup=internal_id
+Navigation experiment table:
+mode	ef	rerank_candidates	Recall@10	CandidateCoverage@1	CandidateCoverage@10	CandidateCoverage@100	AvgLatencyUs	P50Us	P95Us	P99Us	QPS	Visited	Expanded	PrimaryComputations	ResidualComputations
+PRIMARY_ONLY	400	100	0.853400	1.000000	0.999500	0.891630	4008.428000	4019.000000	5671.000000	6177.000000	249.474358	10423.039000	400.389000	10565.100000	0.000000
+diagnostics	mode=PRIMARY_ONLY	queries=1000	residual_bytes_read_per_query=0.000000	upper_layer_residual_per_query=0.000000	base_layer_residual_per_query=0.000000	final_rerank_residual_per_query=0.000000	ordering_flips_per_query=0.000000	upper_layer_branch_flips_per_query=0.000000	upper_layer_branch_query_ratio=0.000000	base_layer_acceptance_flips_per_query=0.000000	primary_reject_refined_accept_per_query=0.000000	primary_stop_refined_continue_per_query=0.000000
+PRIMARY_NAV_RESIDUAL_RERANK	400	100	0.866900	1.000000	0.999500	0.891630	4123.168000	4133.000000	5810.000000	6359.000000	242.531956	10423.039000	400.389000	10565.100000	100.000000
+diagnostics	mode=PRIMARY_NAV_RESIDUAL_RERANK	queries=1000	residual_bytes_read_per_query=10400.000000	upper_layer_residual_per_query=0.000000	base_layer_residual_per_query=0.000000	final_rerank_residual_per_query=100.000000	ordering_flips_per_query=57.125000	upper_layer_branch_flips_per_query=0.000000	upper_layer_branch_query_ratio=0.000000	base_layer_acceptance_flips_per_query=0.000000	primary_reject_refined_accept_per_query=0.000000	primary_stop_refined_continue_per_query=0.000000
+UPPER_LAYER_RESIDUAL_NAVIGATION	400	100	0.866900	1.000000	0.999500	0.891640	4088.795000	4120.000000	5735.000000	6166.000000	244.570833	10423.308000	400.407000	10564.842000	264.206000
+diagnostics	mode=UPPER_LAYER_RESIDUAL_NAVIGATION	queries=1000	residual_bytes_read_per_query=27477.424000	upper_layer_residual_per_query=164.206000	base_layer_residual_per_query=0.000000	final_rerank_residual_per_query=100.000000	ordering_flips_per_query=57.123000	upper_layer_branch_flips_per_query=0.730000	upper_layer_branch_query_ratio=0.453000	base_layer_acceptance_flips_per_query=0.000000	primary_reject_refined_accept_per_query=0.000000	primary_stop_refined_continue_per_query=0.000000
+FULL_RESIDUAL_NAVIGATION	400	100	0.861900	0.998000	0.998300	0.917810	8995.801000	9141.000000	12714.000000	14235.000000	111.162975	10432.036000	400.405000	10573.512000	10573.512000
+diagnostics	mode=FULL_RESIDUAL_NAVIGATION	queries=1000	residual_bytes_read_per_query=1099645.248000	upper_layer_residual_per_query=164.206000	base_layer_residual_per_query=10409.306000	final_rerank_residual_per_query=0.000000	ordering_flips_per_query=50.417000	upper_layer_branch_flips_per_query=0.730000	upper_layer_branch_query_ratio=0.453000	base_layer_acceptance_flips_per_query=93.556000	primary_reject_refined_accept_per_query=43.608000	primary_stop_refined_continue_per_query=34.405000
+Residual formula and encoding validation:
+  validation_queries=50 validation_candidates_per_query=100 validation_pairs=5000 ef=400 rerank_candidates=100
+  formula_identity_mean_abs_error=0.002085 mean_decoded_norm_delta=782.407898 mean_abs_decoded_norm_delta=990.785704
+  primary_vs_float_l2_mae=54063.868048 rmse=108892.481566 max_abs=407847.500000
+  current_residual_vs_float_l2_mae=53422.040549 rmse=109087.728756 max_abs=407031.937500 better_than_primary_ratio=0.764000
+  full_decoded_4plus4_vs_float_l2_mae=54159.881899 rmse=110447.059490 max_abs=407999.375000 better_than_current_ratio=0.498600
+  candidate_top10_overlap_with_float_l2 current_residual=0.744000 full_decoded_4plus4=0.742000
+Index storage size: 4602.65 MB (index=3562.65 MB, auxiliary=0.001153 MB, residual=1040 MB, total_bytes=4602654805)
