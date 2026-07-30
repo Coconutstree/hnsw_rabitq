@@ -42,14 +42,12 @@ const char *query_mode_name(QueryMode) {
 }
 
 QueryMode parse_query_mode(const string &value) {
-    if (value == "plain" || value == "plain_residual" ||
-        value == "plain_hnsw_plus_residual_rerank" ||
-        value == "residual4" || value == "residual8" ||
+    if (value == "residual4" || value == "residual8" ||
         value == "primary4_residual4" || value == "primary4_residual8") {
         return QueryMode::ResidualRerank;
     }
     throw runtime_error(
-        "RABITQ_RERANK_MODE only supports residual4/residual8/plain_residual");
+        "RABITQ_RERANK_MODE only supports residual4/residual8");
 }
 
 QueryMode configured_query_mode() {
@@ -107,6 +105,7 @@ void print_run_config(
     size_t residual_bits,
     size_t residual_block_size,
     const char *residual_scale_mode,
+    const char *residual_scale_storage,
     QueryMode query_mode,
     const char *path_index,
     const char *path_data,
@@ -130,6 +129,7 @@ void print_run_config(
          << " residual_bits=" << residual_bits
          << " residual_block_size=" << residual_block_size
          << " residual_scale_mode=" << residual_scale_mode
+         << " residual_scale_storage=" << residual_scale_storage
          << " query_distance=" << query_mode_name(query_mode) << "\n";
     cout << "  enabled_paths=primary4_residual4,primary4_residual8"
          << " routing=primary4 rerank_distance=residual" << residual_bits << "\n";
@@ -933,14 +933,11 @@ static void test_vs_recall(
 }
 
 void sift_test1B() {
-    const int efConstruction = 400;
-    const int M = 32;
-    const int centroid_count = static_cast<int>(getenv_size_t("RABITQ_CENTROID_COUNT", 64));
+    const int efConstruction = static_cast<int>(getenv_size_t("RABITQ_EF_CONSTRUCTION", 400));
+    const int M = static_cast<int>(getenv_size_t("RABITQ_M", 32));
+    const int centroid_count = static_cast<int>(getenv_size_t("RABITQ_CENTROID_COUNT", 256));
     const size_t rerank_candidates =
         getenv_size_t("RABITQ_RERANK_CANDIDATES", 100);
-    const size_t default_centroid_train_samples = centroid_count == 1 ? 200000 : 1000000;
-    const size_t centroid_train_samples =
-        getenv_size_t("RABITQ_CENTROID_TRAIN_SAMPLES", default_centroid_train_samples);
     const int random_seed = 100;
 
     struct DatasetConfig {
@@ -953,30 +950,46 @@ void sift_test1B() {
         string index_prefix;
     };
 
+    const string dataset_name_config = getenv_string("RABITQ_DATASET", "sift10m");
     const DatasetConfig dataset{
-        "sift10m",
-        128,
-        1000,
-        "/home/kai3/coco/data/sift10m/sift10m_base.fvecs",
-        "/home/kai3/coco/data/sift10m/sift10m_query.fvecs",
-        "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs",
-        "sift10m"};
+        dataset_name_config,
+        getenv_size_t("RABITQ_DIM", 128),
+        getenv_size_t("RABITQ_GT_WIDTH", 1000),
+        getenv_string(
+            "RABITQ_BASE_PATH",
+            "/home/kai3/coco/data/sift10m/sift10m_base.fvecs"),
+        getenv_string(
+            "RABITQ_QUERY_PATH",
+            "/home/kai3/coco/data/sift10m/sift10m_query.fvecs"),
+        getenv_string(
+            "RABITQ_GT_PATH",
+            "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs"),
+        dataset_name_config};
 
     const char *dataset_name = dataset.name.c_str();
     const size_t vecdim = dataset.dim;
     const size_t gt_width = dataset.gt_width;
     const bool external_residual_storage = true;
     const QueryMode query_mode = configured_query_mode();
-    const size_t residual_bits = configured_residual_bits(8);
+    const size_t residual_bits = configured_residual_bits(4);
     if (residual_bits != 4 && residual_bits != 8) {
         throw runtime_error("Only primary4+residual4 and primary4+residual8 are supported");
     }
+    const size_t default_centroid_train_samples = vecdim == 128 && dataset.name == "sift10m"
+        ? 10000000
+        : fvec_count_from_file_size(dataset.base_path.c_str(), vecdim);
+    const size_t centroid_train_samples =
+        getenv_size_t("RABITQ_CENTROID_TRAIN_SAMPLES", default_centroid_train_samples);
     const hnswlib::RaBitQSpace::ResidualQuantizationConfig residual_config =
         [&]() {
             hnswlib::RaBitQSpace::ResidualQuantizationConfig config;
             config.bits = residual_bits == 4
                 ? hnswlib::RaBitQSpace::ResidualQuantizationBits::B4
                 : hnswlib::RaBitQSpace::ResidualQuantizationBits::B8;
+            config.block_size = getenv_size_t("RABITQ_RESIDUAL_BLOCK_SIZE", 16);
+            if (config.block_size == 0) {
+                throw runtime_error("RABITQ_RESIDUAL_BLOCK_SIZE must be a positive integer");
+            }
             if (const char *value = std::getenv("RABITQ_RESIDUAL_BLOCK_SIZE")) {
                 char *end = nullptr;
                 const unsigned long parsed = std::strtoul(value, &end, 10);
@@ -985,6 +998,8 @@ void sift_test1B() {
                 }
                 config.block_size = static_cast<size_t>(parsed);
             }
+            config.mse_optimal_scale = residual_bits == 4;
+            config.scale_fp16 = residual_bits == 4;
             if (const char *value = std::getenv("RABITQ_RESIDUAL_SCALE_MODE")) {
                 if (std::strcmp(value, "max_abs") == 0) {
                     config.mse_optimal_scale = false;
@@ -994,10 +1009,21 @@ void sift_test1B() {
                     throw runtime_error("RABITQ_RESIDUAL_SCALE_MODE must be max_abs or mse");
                 }
             }
+            if (const char *value = std::getenv("RABITQ_RESIDUAL_SCALE_STORAGE")) {
+                if (std::strcmp(value, "fp16") == 0) {
+                    config.scale_fp16 = true;
+                } else if (std::strcmp(value, "fp32") == 0) {
+                    config.scale_fp16 = false;
+                } else {
+                    throw runtime_error("RABITQ_RESIDUAL_SCALE_STORAGE must be fp16 or fp32");
+                }
+            }
             return config;
         }();
     const char *residual_scale_mode =
         residual_config.mse_optimal_scale ? "mse" : "max_abs";
+    const char *residual_scale_storage =
+        residual_config.scale_fp16 ? "fp16" : "fp32";
 
     char index_name[1024];
     const char *path_q = dataset.query_path.c_str();
@@ -1005,26 +1031,23 @@ void sift_test1B() {
     const char *path_gt = dataset.gt_path.c_str();
     const size_t vecsize = fvec_count_from_file_size(path_data, vecdim);
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
-    if (centroid_count == 64 && residual_bits == 4) {
-        snprintf(
-            index_name,
-            sizeof(index_name),
-            "%s_primary4_residual4_trueK64_floatbuild_ef_%d_M_%d.bin",
-            dataset.index_prefix.c_str(),
-            efConstruction,
-            M);
-    } else {
-        snprintf(
-            index_name,
-            sizeof(index_name),
-            "%s_primary4_residual%zu_trueK%d_floatbuild_ef_%d_M_%d.bin",
-            dataset.index_prefix.c_str(),
-            residual_bits,
-            centroid_count,
-            efConstruction,
-            M);
-    }
-    const string index_dir = getenv_string("RABITQ_INDEX_DIR", "build");
+    const char *scale_name = residual_config.mse_optimal_scale ? "mse" : "maxabs";
+    const char *scale_storage_name = residual_config.scale_fp16 ? "fp16" : "fp32";
+    snprintf(
+        index_name,
+        sizeof(index_name),
+        "%s_primary4_residual%zu_trueK%d_%s_%s_floatbuild_ef_%d_M_%d.bin",
+        dataset.index_prefix.c_str(),
+        residual_bits,
+        centroid_count,
+        scale_name,
+        scale_storage_name,
+        efConstruction,
+        M);
+    const string default_index_dir = residual_bits == 8
+        ? "build/trueK256_train10m_residual8"
+        : "build/trueK256_train10m";
+    const string index_dir = getenv_string("RABITQ_INDEX_DIR", default_index_dir);
     ensure_directory_exists(index_dir);
     const string path_index_string = join_path(index_dir, index_name);
     const char *path_index = path_index_string.c_str();
@@ -1042,6 +1065,7 @@ void sift_test1B() {
         residual_bits,
         residual_config.block_size,
         residual_scale_mode,
+        residual_scale_storage,
         query_mode,
         path_index,
         path_data,

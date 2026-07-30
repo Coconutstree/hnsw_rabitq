@@ -54,6 +54,7 @@ class RaBitQSpace : public SpaceInterface<float> {
         bool enabled = true;
         bool enable_block_scaling = true;
         bool mse_optimal_scale = false;
+        bool scale_fp16 = false;
     };
 
     struct RaBitQConfig {
@@ -294,6 +295,110 @@ class RaBitQSpace : public SpaceInterface<float> {
         }
     }
 
+    static uint16_t floatToHalfScalar(float value) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        const uint32_t sign = (bits >> 16U) & 0x8000U;
+        uint32_t mantissa = bits & 0x007FFFFFU;
+        int32_t exponent = static_cast<int32_t>((bits >> 23U) & 0xFFU) - 127 + 15;
+        if (exponent <= 0) {
+            if (exponent < -10) {
+                return static_cast<uint16_t>(sign);
+            }
+            mantissa = (mantissa | 0x00800000U) >> static_cast<uint32_t>(1 - exponent);
+            return static_cast<uint16_t>(sign | ((mantissa + 0x00001000U) >> 13U));
+        }
+        if (exponent >= 31) {
+            return static_cast<uint16_t>(sign | 0x7C00U);
+        }
+        return static_cast<uint16_t>(
+            sign | (static_cast<uint32_t>(exponent) << 10U) |
+            ((mantissa + 0x00001000U) >> 13U));
+    }
+
+    static float halfToFloatScalar(uint16_t value) {
+        const uint32_t sign = static_cast<uint32_t>(value & 0x8000U) << 16U;
+        uint32_t exponent = (value >> 10U) & 0x1FU;
+        uint32_t mantissa = value & 0x03FFU;
+        uint32_t bits = 0;
+        if (exponent == 0) {
+            if (mantissa == 0) {
+                bits = sign;
+            } else {
+                exponent = 1;
+                while ((mantissa & 0x0400U) == 0) {
+                    mantissa <<= 1U;
+                    --exponent;
+                }
+                mantissa &= 0x03FFU;
+                bits = sign | ((exponent + 127 - 15) << 23U) | (mantissa << 13U);
+            }
+        } else if (exponent == 31) {
+            bits = sign | 0x7F800000U | (mantissa << 13U);
+        } else {
+            bits = sign | ((exponent + 127 - 15) << 23U) | (mantissa << 13U);
+        }
+        float result = 0.0f;
+        std::memcpy(&result, &bits, sizeof(result));
+        return result;
+    }
+
+    size_t residualScaleElementBytes() const {
+        return residual_config_.scale_fp16 ? sizeof(uint16_t) : sizeof(float);
+    }
+
+    const void *residualScaleBytes(const void *encoded) const {
+        return residualScales(encoded);
+    }
+
+    void *residualScaleBytes(void *encoded) const {
+        return residualScales(encoded);
+    }
+
+    void storeResidualScale(void *scale_storage, size_t block, float scale) const {
+        if (residual_config_.scale_fp16) {
+            uint16_t half = floatToHalfScalar(scale);
+            std::memcpy(
+                static_cast<char *>(scale_storage) + block * sizeof(uint16_t),
+                &half,
+                sizeof(half));
+        } else {
+            std::memcpy(
+                static_cast<char *>(scale_storage) + block * sizeof(float),
+                &scale,
+                sizeof(scale));
+        }
+    }
+
+    float loadResidualScale(const void *scale_storage, size_t block) const {
+        if (residual_config_.scale_fp16) {
+            uint16_t half = 0;
+            std::memcpy(
+                &half,
+                static_cast<const char *>(scale_storage) + block * sizeof(uint16_t),
+                sizeof(half));
+            return halfToFloatScalar(half);
+        }
+        float scale = 0.0f;
+        std::memcpy(
+            &scale,
+            static_cast<const char *>(scale_storage) + block * sizeof(float),
+            sizeof(scale));
+        return scale;
+    }
+
+    const float *decodeResidualScales(const void *scale_storage) const {
+        thread_local std::vector<float> decoded_scales;
+        if (!residual_config_.scale_fp16) {
+            return reinterpret_cast<const float *>(scale_storage);
+        }
+        decoded_scales.assign(residual_block_count_, 0.0f);
+        for (size_t block = 0; block < residual_block_count_; ++block) {
+            decoded_scales[block] = loadResidualScale(scale_storage, block);
+        }
+        return decoded_scales.data();
+    }
+
  public:
     static bool is_supported_residual_bits(size_t bits) {
         return bits == 1 || bits == 2 || bits == 4 || bits == 8 || bits == 16;
@@ -499,6 +604,15 @@ class RaBitQSpace : public SpaceInterface<float> {
                 config.mse_optimal_scale = true;
             } else {
                 throw std::invalid_argument("RABITQ_RESIDUAL_SCALE_MODE must be max_abs or mse");
+            }
+        }
+        if (const char *value = std::getenv("RABITQ_RESIDUAL_SCALE_STORAGE")) {
+            if (std::strcmp(value, "fp32") == 0) {
+                config.scale_fp16 = false;
+            } else if (std::strcmp(value, "fp16") == 0) {
+                config.scale_fp16 = true;
+            } else {
+                throw std::invalid_argument("RABITQ_RESIDUAL_SCALE_STORAGE must be fp32 or fp16");
             }
         }
         return config;
@@ -1294,11 +1408,12 @@ class RaBitQSpace : public SpaceInterface<float> {
             throw std::runtime_error("single residual distance cannot use external residual storage");
         }
         const ResidualCodeFactors factors = *residualFactors(encoded);
+        const float *residual_scales = decodeResidualScales(residualScaleBytes(encoded));
         const float q_residual_ip =
-            residualIp(query, residualCodeBytes(encoded), residualScales(encoded));
+            residualIp(query, residualCodeBytes(encoded), residual_scales);
         (void) factors;
         const float distance = long_distance - 2.0f * q_residual_ip;
-        const float err = residualDistanceErrorBound(query, residualScales(encoded));
+        const float err = residualDistanceErrorBound(query, residual_scales);
         return DistanceInterval{distance, distance - err, distance + err};
     }
 
@@ -1307,11 +1422,12 @@ class RaBitQSpace : public SpaceInterface<float> {
         const void *record,
         float long_distance) const {
         const ResidualCodeFactors factors = *residualFactorsFromRecord(record);
+        const float *residual_scales = decodeResidualScales(residualScalesFromRecord(record));
         const float q_residual_ip =
-            residualIp(query, residualCodeBytesFromRecord(record), residualScalesFromRecord(record));
+            residualIp(query, residualCodeBytesFromRecord(record), residual_scales);
         (void) factors;
         const float distance = long_distance - 2.0f * q_residual_ip;
-        const float err = residualDistanceErrorBound(query, residualScalesFromRecord(record));
+        const float err = residualDistanceErrorBound(query, residual_scales);
         return DistanceInterval{distance, distance - err, distance + err};
     }
 
@@ -1320,8 +1436,9 @@ class RaBitQSpace : public SpaceInterface<float> {
         const void *encoded,
         const uint8_t *residual_code,
         float long_distance) const {
+        const float *residual_scales = decodeResidualScales(residualScaleBytes(encoded));
         const float q_residual_ip =
-            residualIp(query, residual_code, residualScales(encoded));
+            residualIp(query, residual_code, residual_scales);
         const ShortCodeFactors correction = *shortFactors(encoded);
         return long_distance - 2.0f * q_residual_ip +
                2.0f * correction.error_scale + correction.short_scale;
@@ -2028,7 +2145,9 @@ class RaBitQSpace : public SpaceInterface<float> {
           residual_factor_bytes_(sizeof(ResidualCodeFactors)),
           residual_block_size_(validateResidualConfig(residual_config).block_size),
           residual_block_count_((code_dim_ + residual_block_size_ - 1U) / residual_block_size_),
-          residual_scale_bytes_(residual_block_count_ * sizeof(float)),
+          residual_scale_bytes_(
+              residual_block_count_ *
+              (validateResidualConfig(residual_config).scale_fp16 ? sizeof(uint16_t) : sizeof(float))),
           residual_bits_(static_cast<size_t>(validateResidualConfig(residual_config).bits)),
           residual_code_bytes_(residual_packed_code_size_bytes(code_dim_, residual_bits_)),
           centroid_count_(centroid_count),
@@ -2213,7 +2332,9 @@ class RaBitQSpace : public SpaceInterface<float> {
         const uint64_t centroid_count = static_cast<uint64_t>(centroid_count_);
         const uint32_t flags =
             (residual_config_.enabled ? 1U : 0U) |
-            (residual_config_.enable_block_scaling ? 2U : 0U);
+            (residual_config_.enable_block_scaling ? 2U : 0U) |
+            (residual_config_.mse_optimal_scale ? 4U : 0U) |
+            (residual_config_.scale_fp16 ? 8U : 0U);
         output.write(reinterpret_cast<const char *>(&dim), sizeof(dim));
         output.write(reinterpret_cast<const char *>(&code_dim), sizeof(code_dim));
         output.write(reinterpret_cast<const char *>(&total_bits), sizeof(total_bits));
@@ -2343,6 +2464,10 @@ class RaBitQSpace : public SpaceInterface<float> {
             stored_residual_block_size != residual_block_size_ ||
             stored_centroid_count != centroid_count_ ||
             ((new_format || nested4x4_format || multi_centroid_format) && ((stored_flags & 1U) == 0U)) ||
+            ((new_format || nested4x4_format || multi_centroid_format) &&
+             (((stored_flags & 4U) != 0U) != residual_config_.mse_optimal_scale)) ||
+            ((new_format || nested4x4_format || multi_centroid_format) &&
+             (((stored_flags & 8U) != 0U) != residual_config_.scale_fp16)) ||
             (stored_external_residual_storage != 0) != external_residual_storage_) {
             throw std::runtime_error("Old or incompatible RaBitQ index format. Please rebuild the index.");
         }
@@ -2637,14 +2762,14 @@ class RaBitQSpace : public SpaceInterface<float> {
         EncodedHeader header{0.0f, 0.0f};
         uint8_t *code = codeBytesFull(encoded_out);
         uint8_t *residual_code = residualCodeBytes(encoded_out);
-        float *residual_scales = residualScales(encoded_out);
+        void *residual_scale_storage = residualScaleBytes(encoded_out);
         ShortCodeFactors *factors = shortFactors(encoded_out);
         ResidualCodeFactors *residual_factors = residualFactors(encoded_out);
         *centroidIdFull(encoded_out) = centroid_id;
         header.norm_sqr = residual_norm * residual_norm;
         std::memset(code, 0, compact_code_bytes_);
         std::memset(residual_code, 0, residual_code_bytes_);
-        std::memset(residual_scales, 0, residual_scale_bytes_);
+        std::memset(residual_scale_storage, 0, residual_scale_bytes_);
         *factors = ShortCodeFactors{0.0f, 0.0f};
         *residual_factors = ResidualCodeFactors{0.0f, 0.0f};
 
@@ -2703,6 +2828,8 @@ class RaBitQSpace : public SpaceInterface<float> {
         double x4_residual_ip = 0.0;
         thread_local std::vector<int32_t> residual_codes;
         residual_codes.assign(code_dim_, residual_bits_ == 1 ? -1 : 0);
+        thread_local std::vector<float> residual_scale_values;
+        residual_scale_values.assign(residual_block_count_, 0.0f);
         const int32_t residual_qmax = residual_quantized_max(residual_bits_);
         const int32_t residual_qmin = -residual_qmax;
         for (size_t block = 0; block < residual_block_count_; ++block) {
@@ -2722,8 +2849,10 @@ class RaBitQSpace : public SpaceInterface<float> {
                     end,
                     residual_bits_,
                     residual_qmax);
-            residual_scales[block] = residual_scale;
-            if (residual_scale == 0.0f || !std::isfinite(residual_scale)) {
+            storeResidualScale(residual_scale_storage, block, residual_scale);
+            const float stored_residual_scale = loadResidualScale(residual_scale_storage, block);
+            residual_scale_values[block] = stored_residual_scale;
+            if (stored_residual_scale == 0.0f || !std::isfinite(stored_residual_scale)) {
                 continue;
             }
             for (size_t i = begin; i < end; ++i) {
@@ -2735,10 +2864,10 @@ class RaBitQSpace : public SpaceInterface<float> {
                             residual_qmax,
                             static_cast<int32_t>(std::round(
                                 static_cast<double>(quantization_error[i]) /
-                                static_cast<double>(residual_scale)))));
+                                static_cast<double>(stored_residual_scale)))));
                 residual_codes[i] = clipped;
                 const double decoded_residual =
-                    static_cast<double>(residual_scale) * static_cast<double>(clipped);
+                    static_cast<double>(stored_residual_scale) * static_cast<double>(clipped);
                 const double x4_value = 0.5 * static_cast<double>(header.long_scale) *
                                         (static_cast<double>(codeValue(code, i)) -
                                          static_cast<double>(kUnsignedOffset));

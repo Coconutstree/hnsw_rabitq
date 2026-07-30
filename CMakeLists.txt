@@ -106,9 +106,6 @@ if(HNSWLIB_EXAMPLES)
     add_executable(rabitq_distance_accuracy tests/cpp/rabitq_distance_accuracy.cpp)
     target_link_libraries(rabitq_distance_accuracy hnswlib)
 
-    add_executable(exact_residual_oracle "tests/cpp/Exact residual oracle.cpp")
-    target_link_libraries(exact_residual_oracle hnswlib)
-
     add_executable(main tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
     target_link_libraries(main hnswlib)
 

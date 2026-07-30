@@ -1,0 +1,293 @@
+画Run config:
+  dataset=sift10m
+  base_count=10000000
+  query_count=1000
+  dimension=128
+  M=32 efConstruction=400
+  quantizer=4-bit ExRaBitQ centroid_count=256 random_seed=100
+  rerank_mode=primary4_plus_residual_rerank method=primary4_plus_residual_rerank rerank_candidates=100
+  build_distance=float32_l2 stored_data=4bit_rabitq_plus_disk_residual residual_bits=4 residual_block_size=16 residual_scale_mode=max_abs query_distance=primary4_plus_residual_rerank
+  enabled_paths=primary4_residual4,primary4_residual8 routing=primary4 rerank_distance=residual4
+  base_path=/home/kai3/coco/data/sift10m/sift10m_base.fvecs
+  query_path=/home/kai3/coco/data/sift10m/sift10m_query.fvecs
+  gt_path=/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs
+  index_path=build/trueK256/sift10m_primary4_residual4_trueK256_floatbuild_ef_400_M_32.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=81 (4-bit code in index; residual in mmap sidecar)
+  residual_bits=4 residual_block_size=16 residual_scale_mode=max_abs primary_bits=4 short_bits=1 remaining_bits=3 compact_primary_bytes_per_vector=64 residual_code_bytes_per_vector=64 residual_record_bytes_per_vector=104 primary_4bit_empirical_error_reference=0.0317646
+Building index:
+Training 256 ExRaBitQ centroid(s) from 1000000 base vectors
+kmeans_iter=0 objective=1.19602e+11 movement=3182.72 empty_clusters=0
+kmeans_iter=1 objective=8.08562e+10 movement=625.258 empty_clusters=0
+kmeans_iter=2 objective=7.85943e+10 movement=379.931 empty_clusters=0
+kmeans_iter=3 objective=7.76854e+10 movement=280.021 empty_clusters=0
+kmeans_iter=4 objective=7.7167e+10 movement=228.975 empty_clusters=0
+kmeans_iter=5 objective=7.68087e+10 movement=195.001 empty_clusters=0
+kmeans_iter=6 objective=7.65485e+10 movement=167.717 empty_clusters=0
+kmeans_iter=7 objective=7.63564e+10 movement=147.509 empty_clusters=0
+kmeans_iter=8 objective=7.62087e+10 movement=131.3 empty_clusters=0
+kmeans_iter=9 objective=7.60921e+10 movement=116.808 empty_clusters=0
+kmeans_iter=10 objective=7.59994e+10 movement=106.626 empty_clusters=0
+kmeans_iter=11 objective=7.59225e+10 movement=97.9203 empty_clusters=0
+kmeans_iter=12 objective=7.58578e+10 movement=90.3404 empty_clusters=0
+kmeans_iter=13 objective=7.58026e+10 movement=84.5376 empty_clusters=0
+kmeans_iter=14 objective=7.57542e+10 movement=79.551 empty_clusters=0
+kmeans_iter=15 objective=7.57115e+10 movement=75.0108 empty_clusters=0
+kmeans_iter=16 objective=7.56734e+10 movement=70.354 empty_clusters=0
+kmeans_iter=17 objective=7.56397e+10 movement=65.7278 empty_clusters=0
+kmeans_iter=18 objective=7.56098e+10 movement=63.5674 empty_clusters=0
+kmeans_iter=19 objective=7.55821e+10 movement=60.449 empty_clusters=0
+build_stage=train_center us=5.77554e+06
+payload_mode=disk_file payload_record_bytes=185 payload_bytes=1850000000 payload_path=build/trueK256/sift10m_primary4_residual4_trueK256_floatbuild_ef_400_M_32.bin.payload.tmp
+Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ
+1 %, 60.481 kips  Mem: 4178 Mb 
+2 %, 48.4849 kips  Mem: 4262 Mb 
+3 %, 41.2314 kips  Mem: 4345 Mb 
+4 %, 35.4233 kips  Mem: 4433 Mb 
+5 %, 33.1777 kips  Mem: 4515 Mb 
+6 %, 31.8767 kips  Mem: 4598 Mb 
+7 %, 30.6571 kips  Mem: 4681 Mb 
+8 %, 29.133 kips  Mem: 4776 Mb 
+9 %, 27.7228 kips  Mem: 4858 Mb 
+10 %, 28.0722 kips  Mem: 4939 Mb 
+11 %, 28.1265 kips  Mem: 5021 Mb 
+12 %, 28.3057 kips  Mem: 5104 Mb 
+13 %, 27.0846 kips  Mem: 5187 Mb 
+14 %, 27.3035 kips  Mem: 5269 Mb 
+15 %, 25.4062 kips  Mem: 5363 Mb 
+16 %, 25.6809 kips  Mem: 5445 Mb 
+17 %, 25.9475 kips  Mem: 5528 Mb 
+18 %, 25.1261 kips  Mem: 5611 Mb 
+19 %, 25.0756 kips  Mem: 5693 Mb 
+20 %, 24.877 kips  Mem: 5776 Mb 
+21 %, 25.1572 kips  Mem: 5857 Mb 
+22 %, 24.9558 kips  Mem: 5949 Mb 
+23 %, 24.1832 kips  Mem: 6027 Mb 
+24 %, 24.6106 kips  Mem: 6106 Mb 
+25 %, 24.1659 kips  Mem: 6186 Mb 
+26 %, 23.7993 kips  Mem: 6269 Mb 
+27 %, 23.9143 kips  Mem: 6351 Mb 
+28 %, 23.112 kips  Mem: 6434 Mb 
+29 %, 23.2521 kips  Mem: 6515 Mb 
+30 %, 21.5829 kips  Mem: 6622 Mb 
+31 %, 24.4834 kips  Mem: 6706 Mb 
+32 %, 23.4577 kips  Mem: 6788 Mb 
+33 %, 23.7037 kips  Mem: 6870 Mb 
+34 %, 22.709 kips  Mem: 6953 Mb 
+35 %, 23.1572 kips  Mem: 7034 Mb 
+36 %, 22.9012 kips  Mem: 7117 Mb 
+37 %, 22.8728 kips  Mem: 7200 Mb 
+38 %, 22.8549 kips  Mem: 7282 Mb 
+39 %, 23.2701 kips  Mem: 7366 Mb 
+40 %, 22.6808 kips  Mem: 7447 Mb 
+41 %, 23.8918 kips  Mem: 7530 Mb 
+42 %, 22.0766 kips  Mem: 7614 Mb 
+43 %, 21.8654 kips  Mem: 7696 Mb 
+44 %, 21.4978 kips  Mem: 7778 Mb 
+45 %, 21.6368 kips  Mem: 7859 Mb 
+46 %, 22.0899 kips  Mem: 7944 Mb 
+47 %, 22.0821 kips  Mem: 8026 Mb 
+48 %, 21.401 kips  Mem: 8109 Mb 
+49 %, 21.4116 kips  Mem: 8188 Mb 
+50 %, 21.0681 kips  Mem: 8272 Mb 
+51 %, 21.5437 kips  Mem: 8355 Mb 
+52 %, 21.9043 kips  Mem: 8439 Mb 
+53 %, 21.5922 kips  Mem: 8521 Mb 
+54 %, 21.2828 kips  Mem: 8604 Mb 
+55 %, 21.4929 kips  Mem: 8686 Mb 
+56 %, 21.6672 kips  Mem: 8768 Mb 
+57 %, 21.1959 kips  Mem: 8850 Mb 
+58 %, 21.237 kips  Mem: 8933 Mb 
+59 %, 21.0873 kips  Mem: 9015 Mb 
+60 %, 18.486 kips  Mem: 9143 Mb 
+61 %, 20.673 kips  Mem: 9227 Mb 
+62 %, 21.4826 kips  Mem: 9309 Mb 
+63 %, 20.9369 kips  Mem: 9391 Mb 
+64 %, 21.0991 kips  Mem: 9472 Mb 
+65 %, 21.3407 kips  Mem: 9555 Mb 
+66 %, 20.3888 kips  Mem: 9638 Mb 
+67 %, 20.831 kips  Mem: 9721 Mb 
+68 %, 21.1205 kips  Mem: 9802 Mb 
+69 %, 20.783 kips  Mem: 9885 Mb 
+70 %, 20.7087 kips  Mem: 9967 Mb 
+71 %, 21.1056 kips  Mem: 10051 Mb 
+72 %, 20.9244 kips  Mem: 10133 Mb 
+73 %, 20.8222 kips  Mem: 10215 Mb 
+74 %, 20.6385 kips  Mem: 10297 Mb 
+75 %, 20.5305 kips  Mem: 10380 Mb 
+76 %, 20.6368 kips  Mem: 10462 Mb 
+77 %, 21.0229 kips  Mem: 10544 Mb 
+78 %, 20.7169 kips  Mem: 10627 Mb 
+79 %, 20.1784 kips  Mem: 10709 Mb 
+80 %, 20.3075 kips  Mem: 10799 Mb 
+81 %, 20.2468 kips  Mem: 10879 Mb 
+82 %, 20.7482 kips  Mem: 10957 Mb 
+83 %, 20.8908 kips  Mem: 11040 Mb 
+84 %, 20.7001 kips  Mem: 11121 Mb 
+85 %, 20.0544 kips  Mem: 11211 Mb 
+86 %, 20.4177 kips  Mem: 11294 Mb 
+87 %, 20.5458 kips  Mem: 11368 Mb 
+88 %, 20.0149 kips  Mem: 11453 Mb 
+89 %, 20.3156 kips  Mem: 11538 Mb 
+90 %, 20.7448 kips  Mem: 11616 Mb 
+91 %, 19.7479 kips  Mem: 11698 Mb 
+92 %, 20.2564 kips  Mem: 11781 Mb 
+93 %, 20.0005 kips  Mem: 11863 Mb 
+94 %, 20.2995 kips  Mem: 11946 Mb 
+95 %, 20.3165 kips  Mem: 12028 Mb 
+96 %, 20.2522 kips  Mem: 12109 Mb 
+97 %, 19.8907 kips  Mem: 12193 Mb 
+98 %, 20.2927 kips  Mem: 12277 Mb 
+99 %, 20.1619 kips  Mem: 12362 Mb 
+Float graph build time:441.709 seconds; importing graph and writing 4-bit payloads
+build_stage=float_graph_build us=4.41709e+08 kips=22.6393
+build_stage=payload_encode cpu_us=1.25216e+09 wall_us=4.41467e+08 count=10000000 record_bytes=185 total_bytes=1850000000 cpu_kips=7.98622 wall_kips=22.6517 cpu_MBps=1.47745 wall_MBps=4.19057
+centroid_assignment_stats count=256 min=25345 max=116761 p50=36722 p95=57060 empty=0
+Graph/payload import 1 %, 320.79 kips
+Graph/payload import 2 %, 327.778 kips
+Graph/payload import 3 %, 330.797 kips
+Graph/payload import 4 %, 330.696 kips
+Graph/payload import 5 %, 331.938 kips
+Graph/payload import 6 %, 332.725 kips
+Graph/payload import 7 %, 333.559 kips
+Graph/payload import 8 %, 332.638 kips
+Graph/payload import 9 %, 331.312 kips
+Graph/payload import 10 %, 327.722 kips
+Graph/payload import 11 %, 324.935 kips
+Graph/payload import 12 %, 322.678 kips
+Graph/payload import 13 %, 320.776 kips
+Graph/payload import 14 %, 319.085 kips
+Graph/payload import 15 %, 315.964 kips
+Graph/payload import 16 %, 315.014 kips
+Graph/payload import 17 %, 313.678 kips
+Graph/payload import 18 %, 312.919 kips
+Graph/payload import 19 %, 311.907 kips
+Graph/payload import 20 %, 310.995 kips
+Graph/payload import 21 %, 310.276 kips
+Graph/payload import 22 %, 309.622 kips
+Graph/payload import 23 %, 309.041 kips
+Graph/payload import 24 %, 308.491 kips
+Graph/payload import 25 %, 307.836 kips
+Graph/payload import 26 %, 307.29 kips
+Graph/payload import 27 %, 306.896 kips
+Graph/payload import 28 %, 306.515 kips
+Graph/payload import 29 %, 305.926 kips
+Graph/payload import 30 %, 303.883 kips
+Graph/payload import 31 %, 303.595 kips
+Graph/payload import 32 %, 303.331 kips
+Graph/payload import 33 %, 302.99 kips
+Graph/payload import 34 %, 302.921 kips
+Graph/payload import 35 %, 302.856 kips
+Graph/payload import 36 %, 302.776 kips
+Graph/payload import 37 %, 302.679 kips
+Graph/payload import 38 %, 302.589 kips
+Graph/payload import 39 %, 302.428 kips
+Graph/payload import 40 %, 302.273 kips
+Graph/payload import 41 %, 302.169 kips
+Graph/payload import 42 %, 302.026 kips
+Graph/payload import 43 %, 301.919 kips
+Graph/payload import 44 %, 301.82 kips
+Graph/payload import 45 %, 301.716 kips
+Graph/payload import 46 %, 301.645 kips
+Graph/payload import 47 %, 301.557 kips
+Graph/payload import 48 %, 301.451 kips
+Graph/payload import 49 %, 301.396 kips
+Graph/payload import 50 %, 301.198 kips
+Graph/payload import 51 %, 301.149 kips
+Graph/payload import 52 %, 301.106 kips
+Graph/payload import 53 %, 301.069 kips
+Graph/payload import 54 %, 300.946 kips
+Graph/payload import 55 %, 300.88 kips
+Graph/payload import 56 %, 300.874 kips
+Graph/payload import 57 %, 300.839 kips
+Graph/payload import 58 %, 300.84 kips
+Graph/payload import 59 %, 300.862 kips
+Graph/payload import 60 %, 299.162 kips
+Graph/payload import 61 %, 299.167 kips
+Graph/payload import 62 %, 299.144 kips
+Graph/payload import 63 %, 299.129 kips
+Graph/payload import 64 %, 299.13 kips
+Graph/payload import 65 %, 299.086 kips
+Graph/payload import 66 %, 298.958 kips
+Graph/payload import 67 %, 298.946 kips
+Graph/payload import 68 %, 298.952 kips
+Graph/payload import 69 %, 298.962 kips
+Graph/payload import 70 %, 298.963 kips
+Graph/payload import 71 %, 298.927 kips
+Graph/payload import 72 %, 298.882 kips
+Graph/payload import 73 %, 298.893 kips
+Graph/payload import 74 %, 298.934 kips
+Graph/payload import 75 %, 298.944 kips
+Graph/payload import 76 %, 298.972 kips
+Graph/payload import 77 %, 298.971 kips
+Graph/payload import 78 %, 298.979 kips
+Graph/payload import 79 %, 298.989 kips
+Graph/payload import 80 %, 299 kips
+Graph/payload import 81 %, 299.006 kips
+Graph/payload import 82 %, 298.982 kips
+Graph/payload import 83 %, 298.933 kips
+Graph/payload import 84 %, 298.976 kips
+Graph/payload import 85 %, 299.001 kips
+Graph/payload import 86 %, 299.012 kips
+Graph/payload import 87 %, 298.996 kips
+Graph/payload import 88 %, 299.011 kips
+Graph/payload import 89 %, 299.026 kips
+Graph/payload import 90 %, 299.014 kips
+Graph/payload import 91 %, 298.999 kips
+Graph/payload import 92 %, 299.003 kips
+Graph/payload import 93 %, 299.008 kips
+Graph/payload import 94 %, 299.021 kips
+Graph/payload import 95 %, 299.014 kips
+Graph/payload import 96 %, 299.001 kips
+Graph/payload import 97 %, 299.003 kips
+Graph/payload import 98 %, 298.997 kips
+Graph/payload import 99 %, 298.918 kips
+Graph/payload import 100 %, 298.89 kips
+Float graph payload import time:33.7252 seconds
+build_stage=graph_payload_import us=3.37252e+07 count=10000000 record_bytes=185 total_bytes=1850000000 kips=296.514 MBps=54.8551
+Build time:481.21  seconds
+build_stage=save_index us=2.02408e+06
+build_total_us=4.83234e+08
+Index storage size: 4612.78 MB (index=3572.65 MB, auxiliary=0.131721 MB, residual=1040 MB, total_bytes=4612784977)
+Parsing gt:
+1000
+Loaded gt
+10	0.6921	253.455 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=10	actual_search_ef=10	rerank_candidates=10	hnsw_search_us_per_query=253.455	total_us_per_query=253.455	graph_total_us_per_query=253.455	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=253.455	graph_slowest_stage=other	graph_slowest_us_per_query=253.455
+11	0.7163	208.123 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=11	actual_search_ef=11	rerank_candidates=11	hnsw_search_us_per_query=208.123	total_us_per_query=208.123	graph_total_us_per_query=208.123	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=208.123	graph_slowest_stage=other	graph_slowest_us_per_query=208.123
+12	0.7409	211.62 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=12	actual_search_ef=12	rerank_candidates=12	hnsw_search_us_per_query=211.62	total_us_per_query=211.62	graph_total_us_per_query=211.62	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=211.62	graph_slowest_stage=other	graph_slowest_us_per_query=211.62
+13	0.7573	216.273 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=13	actual_search_ef=13	rerank_candidates=13	hnsw_search_us_per_query=216.273	total_us_per_query=216.273	graph_total_us_per_query=216.273	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=216.273	graph_slowest_stage=other	graph_slowest_us_per_query=216.273
+14	0.774	221.564 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=14	actual_search_ef=14	rerank_candidates=14	hnsw_search_us_per_query=221.564	total_us_per_query=221.564	graph_total_us_per_query=221.564	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=221.564	graph_slowest_stage=other	graph_slowest_us_per_query=221.564
+15	0.7887	226.969 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=15	actual_search_ef=15	rerank_candidates=15	hnsw_search_us_per_query=226.969	total_us_per_query=226.969	graph_total_us_per_query=226.969	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=226.969	graph_slowest_stage=other	graph_slowest_us_per_query=226.969
+16	0.8001	232.26 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=16	actual_search_ef=16	rerank_candidates=16	hnsw_search_us_per_query=232.26	total_us_per_query=232.26	graph_total_us_per_query=232.26	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=232.26	graph_slowest_stage=other	graph_slowest_us_per_query=232.26
+17	0.8092	237.249 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=17	actual_search_ef=17	rerank_candidates=17	hnsw_search_us_per_query=237.249	total_us_per_query=237.249	graph_total_us_per_query=237.249	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=237.249	graph_slowest_stage=other	graph_slowest_us_per_query=237.249
+18	0.8187	242.517 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=18	actual_search_ef=18	rerank_candidates=18	hnsw_search_us_per_query=242.517	total_us_per_query=242.517	graph_total_us_per_query=242.517	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=242.517	graph_slowest_stage=other	graph_slowest_us_per_query=242.517
+19	0.8301	247.934 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=19	actual_search_ef=19	rerank_candidates=19	hnsw_search_us_per_query=247.934	total_us_per_query=247.934	graph_total_us_per_query=247.934	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=247.934	graph_slowest_stage=other	graph_slowest_us_per_query=247.934
+20	0.8379	253.252 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=20	actual_search_ef=20	rerank_candidates=20	hnsw_search_us_per_query=253.252	total_us_per_query=253.252	graph_total_us_per_query=253.252	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=253.252	graph_slowest_stage=other	graph_slowest_us_per_query=253.252
+21	0.8436	258.196 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=21	actual_search_ef=21	rerank_candidates=21	hnsw_search_us_per_query=258.196	total_us_per_query=258.196	graph_total_us_per_query=258.196	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=258.196	graph_slowest_stage=other	graph_slowest_us_per_query=258.196
+22	0.8513	264.002 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=22	actual_search_ef=22	rerank_candidates=22	hnsw_search_us_per_query=264.002	total_us_per_query=264.002	graph_total_us_per_query=264.002	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=264.002	graph_slowest_stage=other	graph_slowest_us_per_query=264.002
+23	0.8568	269.375 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=23	actual_search_ef=23	rerank_candidates=23	hnsw_search_us_per_query=269.375	total_us_per_query=269.375	graph_total_us_per_query=269.375	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=269.375	graph_slowest_stage=other	graph_slowest_us_per_query=269.375
+24	0.8627	274.797 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=24	actual_search_ef=24	rerank_candidates=24	hnsw_search_us_per_query=274.797	total_us_per_query=274.797	graph_total_us_per_query=274.797	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=274.797	graph_slowest_stage=other	graph_slowest_us_per_query=274.797
+25	0.8691	281.468 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=25	actual_search_ef=25	rerank_candidates=25	hnsw_search_us_per_query=281.468	total_us_per_query=281.468	graph_total_us_per_query=281.468	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=281.468	graph_slowest_stage=other	graph_slowest_us_per_query=281.468
+26	0.8736	286.404 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=26	actual_search_ef=26	rerank_candidates=26	hnsw_search_us_per_query=286.404	total_us_per_query=286.404	graph_total_us_per_query=286.404	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=286.404	graph_slowest_stage=other	graph_slowest_us_per_query=286.404
+27	0.877	291.049 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=27	actual_search_ef=27	rerank_candidates=27	hnsw_search_us_per_query=291.049	total_us_per_query=291.049	graph_total_us_per_query=291.049	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=291.049	graph_slowest_stage=other	graph_slowest_us_per_query=291.049
+28	0.8805	298.682 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=28	actual_search_ef=28	rerank_candidates=28	hnsw_search_us_per_query=298.682	total_us_per_query=298.682	graph_total_us_per_query=298.682	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=298.682	graph_slowest_stage=other	graph_slowest_us_per_query=298.682
+29	0.885	301.521 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=29	actual_search_ef=29	rerank_candidates=29	hnsw_search_us_per_query=301.521	total_us_per_query=301.521	graph_total_us_per_query=301.521	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=301.521	graph_slowest_stage=other	graph_slowest_us_per_query=301.521
+30	0.8874	306.138 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=30	actual_search_ef=30	rerank_candidates=30	hnsw_search_us_per_query=306.138	total_us_per_query=306.138	graph_total_us_per_query=306.138	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=306.138	graph_slowest_stage=other	graph_slowest_us_per_query=306.138
+40	0.9198	365.179 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=40	actual_search_ef=40	rerank_candidates=40	hnsw_search_us_per_query=365.179	total_us_per_query=365.179	graph_total_us_per_query=365.179	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=365.179	graph_slowest_stage=other	graph_slowest_us_per_query=365.179
+50	0.9375	414.561 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=50	actual_search_ef=50	rerank_candidates=50	hnsw_search_us_per_query=414.561	total_us_per_query=414.561	graph_total_us_per_query=414.561	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=414.561	graph_slowest_stage=other	graph_slowest_us_per_query=414.561
+60	0.9503	464.699 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=60	actual_search_ef=60	rerank_candidates=60	hnsw_search_us_per_query=464.699	total_us_per_query=464.699	graph_total_us_per_query=464.699	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=464.699	graph_slowest_stage=other	graph_slowest_us_per_query=464.699
+70	0.9582	514.697 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=70	actual_search_ef=70	rerank_candidates=70	hnsw_search_us_per_query=514.697	total_us_per_query=514.697	graph_total_us_per_query=514.697	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=514.697	graph_slowest_stage=other	graph_slowest_us_per_query=514.697
+80	0.964	565.179 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=80	actual_search_ef=80	rerank_candidates=80	hnsw_search_us_per_query=565.179	total_us_per_query=565.179	graph_total_us_per_query=565.179	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=565.179	graph_slowest_stage=other	graph_slowest_us_per_query=565.179
+90	0.9672	614.906 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=90	actual_search_ef=90	rerank_candidates=90	hnsw_search_us_per_query=614.906	total_us_per_query=614.906	graph_total_us_per_query=614.906	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=614.906	graph_slowest_stage=other	graph_slowest_us_per_query=614.906
+100	0.9698	664.782 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=100	actual_search_ef=100	rerank_candidates=100	hnsw_search_us_per_query=664.782	total_us_per_query=664.782	graph_total_us_per_query=664.782	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=664.782	graph_slowest_stage=other	graph_slowest_us_per_query=664.782
+140	0.9785	846.877 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=140	actual_search_ef=140	rerank_candidates=100	hnsw_search_us_per_query=846.877	total_us_per_query=846.877	graph_total_us_per_query=846.877	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=846.877	graph_slowest_stage=other	graph_slowest_us_per_query=846.877
+180	0.9823	1024.59 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=180	actual_search_ef=180	rerank_candidates=100	hnsw_search_us_per_query=1024.59	total_us_per_query=1024.59	graph_total_us_per_query=1024.59	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=1024.59	graph_slowest_stage=other	graph_slowest_us_per_query=1024.59
+220	0.9833	1199.34 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=220	actual_search_ef=220	rerank_candidates=100	hnsw_search_us_per_query=1199.34	total_us_per_query=1199.34	graph_total_us_per_query=1199.34	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=1199.34	graph_slowest_stage=other	graph_slowest_us_per_query=1199.34
+260	0.9842	1372.85 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=260	actual_search_ef=260	rerank_candidates=100	hnsw_search_us_per_query=1372.85	total_us_per_query=1372.85	graph_total_us_per_query=1372.85	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=1372.85	graph_slowest_stage=other	graph_slowest_us_per_query=1372.85
+300	0.9852	1544.47 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=300	actual_search_ef=300	rerank_candidates=100	hnsw_search_us_per_query=1544.47	total_us_per_query=1544.47	graph_total_us_per_query=1544.47	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=1544.47	graph_slowest_stage=other	graph_slowest_us_per_query=1544.47
+340	0.9855	1712.19 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=340	actual_search_ef=340	rerank_candidates=100	hnsw_search_us_per_query=1712.19	total_us_per_query=1712.19	graph_total_us_per_query=1712.19	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=1712.19	graph_slowest_stage=other	graph_slowest_us_per_query=1712.19
+380	0.9856	1878.59 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=380	actual_search_ef=380	rerank_candidates=100	hnsw_search_us_per_query=1878.59	total_us_per_query=1878.59	graph_total_us_per_query=1878.59	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=1878.59	graph_slowest_stage=other	graph_slowest_us_per_query=1878.59
+420	0.9856	2045.39 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=420	actual_search_ef=420	rerank_candidates=100	hnsw_search_us_per_query=2045.39	total_us_per_query=2045.39	graph_total_us_per_query=2045.39	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=2045.39	graph_slowest_stage=other	graph_slowest_us_per_query=2045.39
+460	0.9857	2210.2 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=460	actual_search_ef=460	rerank_candidates=100	hnsw_search_us_per_query=2210.2	total_us_per_query=2210.2	graph_total_us_per_query=2210.2	graph_prepare_us_per_query=0	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=0	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=0	graph_result_sort_us_per_query=0	graph_other_us_per_query=2210.2	graph_slowest_stage=other	graph_slowest_us_per_query=2210.2
+Index storage size: 4612.78 MB (index=3572.65 MB, auxiliary=0.131721 MB, residual=1040 MB, total_bytes=4612784977)
