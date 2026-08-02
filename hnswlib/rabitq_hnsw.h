@@ -329,6 +329,64 @@ class RaBitQHierarchicalNSW {
     }
 
     std::priority_queue<std::pair<float, labeltype>>
+    searchKnnPrimary1Bit(
+        const float *raw_query,
+        size_t k,
+        typename HierarchicalNSW<float>::SearchProfile *profile = nullptr,
+        BaseFilterFunctor *isIdAllowed = nullptr) const {
+        typename HierarchicalNSW<float>::SearchProfile local_profile;
+        typename HierarchicalNSW<float>::ProgressiveSearchOptions options;
+        options.disable_interval_refinement = true;
+        auto result = index_.searchKnnProgressive1Bit(
+            raw_query,
+            k,
+            profile ? *profile : local_profile,
+            options,
+            isIdAllowed);
+        return result;
+    }
+
+    std::priority_queue<std::pair<float, labeltype>>
+    searchKnnProgressive1p1Bit(
+        const float *raw_query,
+        size_t k,
+        typename HierarchicalNSW<float>::SearchProfile *profile = nullptr,
+        bool force_refine_all = false,
+        bool refine_only_final = false,
+        double primary_gap_threshold = -1.0,
+        BaseFilterFunctor *isIdAllowed = nullptr) const {
+        typename HierarchicalNSW<float>::SearchProfile local_profile;
+        typename HierarchicalNSW<float>::ProgressiveSearchOptions options;
+        options.force_refine_all = force_refine_all;
+        options.refine_only_final = refine_only_final;
+        options.primary_gap_threshold = primary_gap_threshold;
+        auto result = index_.searchKnnProgressive1Bit(
+            raw_query,
+            k,
+            profile ? *profile : local_profile,
+            options,
+            isIdAllowed);
+        return result;
+    }
+
+    std::priority_queue<std::pair<float, labeltype>>
+    searchKnnFull2BitBlockwise(
+        const float *raw_query,
+        size_t k,
+        size_t block_size,
+        typename HierarchicalNSW<float>::SearchProfile *profile = nullptr,
+        BaseFilterFunctor *isIdAllowed = nullptr) const {
+        typename HierarchicalNSW<float>::SearchProfile local_profile;
+        auto result = index_.searchKnnFull2BitBlockwise(
+            raw_query,
+            k,
+            block_size,
+            profile ? *profile : local_profile,
+            isIdAllowed);
+        return result;
+    }
+
+    std::priority_queue<std::pair<float, labeltype>>
     searchKnnPlainThenResidualRerank(
         const float *raw_query,
         size_t k,

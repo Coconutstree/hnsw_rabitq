@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -114,11 +115,149 @@ static void run_residual_bits_smoke(size_t residual_bits) {
     std::remove(tmp_external_payload.c_str());
 }
 
+static hnswlib::RaBitQSpace::ResidualQuantizationConfig full2bit_config() {
+    hnswlib::RaBitQSpace::ResidualQuantizationConfig config;
+    config.bits = hnswlib::RaBitQSpace::ResidualQuantizationBits::B1;
+    config.block_size = hnswlib::RaBitQSpace::kResidualBlockSize;
+    config.full2bit_baseline = true;
+    return config;
+}
+
+static void run_full2bit_smoke() {
+    const size_t dim = 10;
+    const size_t count = 6;
+    std::vector<float> data(count * dim, 0.0f);
+    for (size_t row = 0; row < count; ++row) {
+        for (size_t col = 0; col < dim; ++col) {
+            data[row * dim + col] =
+                static_cast<float>((row + 1) * (col + 3)) * 0.03125f;
+        }
+    }
+
+    hnswlib::RaBitQHierarchicalNSW index(
+        dim,
+        count,
+        1,
+        8,
+        32,
+        0,
+        false,
+        false,
+        full2bit_config());
+    index.space().setIdentityRotation();
+    assert(index.space().is_full2bit_baseline());
+    assert(index.space().get_full2bit_plane_bytes() == (index.space().get_code_dim() + 7U) / 8U);
+    assert(index.space().get_residual_code_bytes() == index.space().get_full2bit_plane_bytes());
+
+    std::vector<char> encoded = index.space().encodeVector(data.data());
+    for (size_t i = 0; i < index.space().get_code_dim(); ++i) {
+        const uint8_t primary = index.space().full2bit_primary_bit_for_test(encoded.data(), i);
+        const uint8_t residual = index.space().full2bit_residual_bit_for_test(encoded.data(), i);
+        const uint8_t u = index.space().full2bit_code_value_for_test(encoded.data(), i);
+        assert(primary <= 1U);
+        assert(residual <= 1U);
+        assert(u == static_cast<uint8_t>(2U * primary + residual));
+        assert(u <= 3U);
+    }
+
+    const void *query_context = index.space().prepare_query(data.data());
+    const float reference_distance =
+        index.space().query_distance_full2bit_reference_for_test(query_context, encoded.data());
+    const float optimized_distance =
+        index.space().query_distance_full2bit_optimized_for_test(query_context, encoded.data());
+    const float query_distance = index.space().query_distance(query_context, encoded.data());
+    assert(std::isfinite(reference_distance));
+    assert(std::isfinite(optimized_distance));
+    assert(std::fabs(reference_distance - optimized_distance) < 1e-4f);
+    assert(std::fabs(query_distance - optimized_distance) < 1e-5f);
+    const float primary_distance =
+        index.space().query_distance_full2bit_primary_for_test(query_context, encoded.data());
+    const hnswlib::DistanceInterval primary_interval =
+        index.space().primary_distance_interval(query_context, encoded.data(), primary_distance);
+    if (!(primary_interval.lower_bound <= query_distance + 1e-3f) ||
+        !(primary_interval.upper_bound + 1e-3f >= query_distance)) {
+        std::cerr << "full2bit interval failure primary=" << primary_distance
+                  << " exact=" << query_distance
+                  << " lower=" << primary_interval.lower_bound
+                  << " upper=" << primary_interval.upper_bound << "\n";
+    }
+    assert(primary_interval.lower_bound <= query_distance + 1e-3f);
+    assert(primary_interval.upper_bound + 1e-3f >= query_distance);
+    index.space().release_query(query_context);
+
+    std::vector<std::vector<char>> encoded_points;
+    std::vector<const void *> point_ptrs;
+    encoded_points.reserve(count);
+    point_ptrs.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        encoded_points.push_back(index.space().encodeVector(data.data() + i * dim));
+        point_ptrs.push_back(encoded_points.back().data());
+    }
+    query_context = index.space().prepare_query(data.data());
+    for (const void *point : point_ptrs) {
+        const float single = index.space().query_distance(query_context, point);
+        const float ref = index.space().query_distance_full2bit_reference_for_test(query_context, point);
+        const hnswlib::BlockwiseDistanceResult blockwise =
+            index.space().blockwise_query_distance_until(
+                query_context,
+                point,
+                std::numeric_limits<float>::infinity(),
+                4);
+        assert(std::isfinite(single));
+        assert(std::fabs(single - ref) < 1e-4f);
+        assert(blockwise.full_distance_computed);
+        assert(!blockwise.early_terminated);
+        assert(std::fabs(single - blockwise.distance) < 1e-4f);
+    }
+    index.space().release_query(query_context);
+
+    for (size_t i = 0; i < count; ++i) {
+        index.addPoint(data.data() + i * dim, i);
+    }
+    auto result = index.searchKnn(data.data(), 3);
+    assert(!result.empty());
+    assert(std::isfinite(result.top().first));
+    hnswlib::HierarchicalNSW<float>::SearchProfile progressive_profile;
+    auto progressive_result =
+        index.searchKnnProgressive1p1Bit(data.data(), 3, &progressive_profile, true);
+    assert(!progressive_result.empty());
+    assert(result.top().second == progressive_result.top().second);
+    assert(progressive_profile.full_2bit_distance_computations > 0);
+    hnswlib::HierarchicalNSW<float>::SearchProfile blockwise_profile;
+    auto blockwise_result =
+        index.searchKnnFull2BitBlockwise(data.data(), 3, 4, &blockwise_profile);
+    assert(!blockwise_result.empty());
+    assert(result.top().second == blockwise_result.top().second);
+
+    const char *tmp_index = "/tmp/rabitq_hnsw_smoke_full2bit.index";
+    const char *tmp_state = "/tmp/rabitq_hnsw_smoke_full2bit.index.rabitq";
+    std::remove(tmp_index);
+    std::remove(tmp_state);
+    index.saveIndex(tmp_index);
+    hnswlib::RaBitQHierarchicalNSW loaded(
+        dim,
+        count,
+        1,
+        8,
+        32,
+        0,
+        false,
+        false,
+        full2bit_config());
+    loaded.loadIndex(tmp_index, count);
+    auto loaded_result = loaded.searchKnn(data.data(), 3);
+    assert(!loaded_result.empty());
+    assert(result.top().second == loaded_result.top().second);
+    std::remove(tmp_index);
+    std::remove(tmp_state);
+}
+
 int main() {
     test_residual_pack_roundtrip();
     for (size_t bits : {size_t(4), size_t(8)}) {
         run_residual_bits_smoke(bits);
     }
+    run_full2bit_smoke();
     const size_t dim = 4;
     const std::vector<float> data = {
         1.0f, 0.0f, 0.0f, 0.0f,
@@ -134,7 +273,10 @@ int main() {
                                       sizeof(hnswlib::RaBitQSpace::ResidualCodeFactors) +
                                       ((index.space().get_code_dim() +
                                         hnswlib::RaBitQSpace::kResidualBlockSize - 1U) /
-                                      hnswlib::RaBitQSpace::kResidualBlockSize) * sizeof(float) +
+                                      hnswlib::RaBitQSpace::kResidualBlockSize) *
+                                          (index.space().get_residual_config().scale_fp16
+                                               ? sizeof(uint16_t)
+                                               : sizeof(float)) +
                                       index.space().get_compact_code_bytes() +
                                       sizeof(uint8_t) +
                                       index.space().get_residual_code_bytes();

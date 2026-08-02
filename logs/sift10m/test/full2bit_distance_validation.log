@@ -1,0 +1,15 @@
+Full2Bit experiment=distance_validation
+dataset=sift10m base_count=10000000 query_count=1000 dim=128 K=256 M=32 efConstruction=400
+index_path=build/trueK256_train10m_full2bit/sift10m_full2bit_trueK256_floatbuild_ef_400_M_32.bin
+base_path=/home/kai3/coco/data/sift10m/sift10m_base.fvecs
+query_path=/home/kai3/coco/data/sift10m/sift10m_query.fvecs
+gt_path=/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs
+full2bit_plane_bytes=16 expected_code_plane_bytes_per_distance=32 hnsw_payload_bytes=49
+pairs=5000 queries=50 candidates_per_query=100
+u_equals_2p_plus_r_mismatches=0
+direct_vs_split_mae=0.007944531 max_abs=0.062500000
+direct_vs_optimized_mae=0.006958594 max_abs=0.062500000
+split_vs_optimized_mae=0.005326562
+optimized_exact_order_match=1.000000000
+optimized_top10_overlap_with_direct=1.000000000
+optimized_top100_overlap_with_direct=1.000000000

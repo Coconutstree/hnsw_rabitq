@@ -106,6 +106,18 @@ if(HNSWLIB_EXAMPLES)
     add_executable(rabitq_distance_accuracy tests/cpp/rabitq_distance_accuracy.cpp)
     target_link_libraries(rabitq_distance_accuracy hnswlib)
 
+    add_executable(full2bit_distance_validation tests/cpp/full2bit_distance_validation.cpp)
+    target_link_libraries(full2bit_distance_validation hnswlib)
+
+    add_executable(full2bit_navigation_oracle tests/cpp/full2bit_navigation_oracle.cpp)
+    target_link_libraries(full2bit_navigation_oracle hnswlib)
+
+    add_executable(full2bit_search_profile tests/cpp/full2bit_search_profile.cpp)
+    target_link_libraries(full2bit_search_profile hnswlib)
+
+    add_executable(full2bit_primary_oracle tests/cpp/full2bit_primary_oracle.cpp)
+    target_link_libraries(full2bit_primary_oracle hnswlib)
+
     add_executable(main tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
     target_link_libraries(main hnswlib)
 

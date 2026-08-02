@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <cmath>
+#include <chrono>
 
 //hnsw索引算法本体 
 namespace hnswlib {
@@ -25,6 +26,40 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
  public:
     static const tableint MAX_LABEL_OPERATION_LOCKS = 65536;
     static const unsigned char DELETE_MARK = 0x01;
+    struct SearchProfile {
+        size_t visited_nodes = 0;
+        size_t expanded_nodes = 0;
+        size_t distance_computations = 0;
+        size_t primary_distance_computations = 0;
+        size_t full_2bit_distance_computations = 0;
+        size_t secondary_code_reads = 0;
+        size_t heap_pushes = 0;
+        size_t heap_pops = 0;
+        size_t payload_bytes_read = 0;
+        size_t primary_payload_bytes_read = 0;
+        size_t secondary_payload_bytes_read = 0;
+        size_t full2bit_blocks_processed = 0;
+        size_t full2bit_dimensions_processed = 0;
+        size_t blockwise_candidates = 0;
+        size_t blockwise_early_terminated = 0;
+        size_t safe_insert_accept_count = 0;
+        size_t safe_insert_reject_count = 0;
+        size_t insert_refine_count = 0;
+        size_t expansion_order_refine_count = 0;
+        size_t stop_refine_count = 0;
+        size_t result_eviction_refine_count = 0;
+        size_t final_rerank_refine_count = 0;
+        size_t stop_safe_count = 0;
+        size_t continue_safe_count = 0;
+        bool external_random_reads = false;
+        double prepare_us = 0.0;
+        double entry_us = 0.0;
+        double base_us = 0.0;
+        double distance_us = 0.0;
+        double heap_us = 0.0;
+        double result_sort_us = 0.0;
+        double total_us = 0.0;
+    };
     //max_elements是索引最大容量
     size_t max_elements_{0};
     mutable std::atomic<size_t> cur_element_count{0};  // 当前索引中元素的数量
@@ -296,6 +331,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     inline char *getDataByInternalId(tableint internal_id) const {
         return (data_level0_memory_ + internal_id * size_data_per_element_ + offsetData_);
+    }
+
+    inline bool getInternalIdByLabelForTest(labeltype label, tableint *internal_id) const {
+        std::unique_lock<std::mutex> lock_table(label_lookup_lock);
+        auto search = label_lookup_.find(label);
+        if (search == label_lookup_.end() || isMarkedDeleted(search->second)) {
+            return false;
+        }
+        *internal_id = search->second;
+        return true;
     }
 
 
@@ -1420,6 +1465,698 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 top_candidates.pop();
             }
             while (top_candidates.size() > 0) {
+                std::pair<dist_t, tableint> rez = top_candidates.top();
+                result.push(std::pair<dist_t, labeltype>(rez.first, getExternalLabel(rez.second)));
+                top_candidates.pop();
+            }
+        } catch (...) {
+            space_->release_query(query_context);
+            throw;
+        }
+        space_->release_query(query_context);
+        return result;
+    }
+
+    std::priority_queue<std::pair<dist_t, labeltype >>
+    searchKnnProfiled(
+        const void *query_data,
+        size_t k,
+        SearchProfile &profile,
+        BaseFilterFunctor* isIdAllowed = nullptr) const {
+        using Clock = std::chrono::steady_clock;
+        auto elapsed_us = [](Clock::time_point begin, Clock::time_point end) {
+            return std::chrono::duration<double, std::micro>(end - begin).count();
+        };
+        auto total_begin = Clock::now();
+        profile = SearchProfile{};
+        profile.external_random_reads = space_->profile_uses_external_random_reads();
+
+        std::priority_queue<std::pair<dist_t, labeltype >> result;
+        if (cur_element_count == 0) return result;
+
+        auto prepare_begin = Clock::now();
+        const void *query_context = space_->prepare_query(query_data);
+        profile.prepare_us += elapsed_us(prepare_begin, Clock::now());
+
+        auto profiled_distance = [&](tableint id) {
+            char *data = getDataByInternalId(id);
+            auto begin = Clock::now();
+            dist_t distance = space_->query_distance(query_context, data);
+            profile.distance_us += elapsed_us(begin, Clock::now());
+            profile.distance_computations++;
+            profile.payload_bytes_read += space_->profile_payload_bytes_per_distance();
+            return distance;
+        };
+
+        try {
+            tableint currObj = enterpoint_node_;
+            dist_t curdist = profiled_distance(enterpoint_node_);
+
+            auto entry_begin = Clock::now();
+            for (int level = maxlevel_; level > 0; level--) {
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    unsigned int *data = (unsigned int *) get_linklist(currObj, level);
+                    int size = getListCount(data);
+                    tableint *datal = (tableint *) (data + 1);
+                    for (int i = 0; i < size; i++) {
+                        tableint cand = datal[i];
+                        if (cand < 0 || cand > max_elements_)
+                            throw std::runtime_error("cand error");
+                        dist_t d = profiled_distance(cand);
+                        if (d < curdist) {
+                            curdist = d;
+                            currObj = cand;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            profile.entry_us += elapsed_us(entry_begin, Clock::now());
+
+            const size_t ef = std::max(ef_, k);
+            VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+            vl_type *visited_array = vl->mass;
+            vl_type visited_array_tag = vl->curV;
+
+            std::priority_queue<
+                std::pair<dist_t, tableint>,
+                std::vector<std::pair<dist_t, tableint>>,
+                CompareByFirst> top_candidates;
+            std::priority_queue<
+                std::pair<dist_t, tableint>,
+                std::vector<std::pair<dist_t, tableint>>,
+                CompareByFirst> candidate_set;
+
+            auto base_begin = Clock::now();
+            dist_t lowerBound;
+            bool bare_bone_search = !num_deleted_ && !isIdAllowed;
+            if (bare_bone_search ||
+                (!isMarkedDeleted(currObj) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(currObj))))) {
+                lowerBound = curdist;
+                auto heap_begin = Clock::now();
+                top_candidates.emplace(curdist, currObj);
+                candidate_set.emplace(-curdist, currObj);
+                profile.heap_pushes += 2;
+                profile.heap_us += elapsed_us(heap_begin, Clock::now());
+            } else {
+                lowerBound = std::numeric_limits<dist_t>::max();
+                auto heap_begin = Clock::now();
+                candidate_set.emplace(-lowerBound, currObj);
+                profile.heap_pushes++;
+                profile.heap_us += elapsed_us(heap_begin, Clock::now());
+            }
+            visited_array[currObj] = visited_array_tag;
+            profile.visited_nodes++;
+
+            while (!candidate_set.empty()) {
+                std::pair<dist_t, tableint> current_node_pair = candidate_set.top();
+                dist_t candidate_dist = -current_node_pair.first;
+                if (candidate_dist > lowerBound) {
+                    break;
+                }
+                auto heap_begin = Clock::now();
+                candidate_set.pop();
+                profile.heap_pops++;
+                profile.heap_us += elapsed_us(heap_begin, Clock::now());
+
+                tableint current_node_id = current_node_pair.second;
+                profile.expanded_nodes++;
+                int *data = (int *) get_linklist0(current_node_id);
+                size_t size = getListCount((linklistsizeint*)data);
+
+                for (size_t j = 1; j <= size; j++) {
+                    int candidate_id = *(data + j);
+                    if (visited_array[candidate_id] == visited_array_tag) {
+                        continue;
+                    }
+                    visited_array[candidate_id] = visited_array_tag;
+                    profile.visited_nodes++;
+
+                    char *currObj1 = getDataByInternalId(candidate_id);
+                    dist_t dist = profiled_distance(candidate_id);
+                    const bool consider = top_candidates.size() < ef || lowerBound > dist;
+                    if (!consider) {
+                        continue;
+                    }
+
+                    heap_begin = Clock::now();
+                    candidate_set.emplace(-dist, candidate_id);
+                    profile.heap_pushes++;
+                    if (bare_bone_search ||
+                        (!isMarkedDeleted(candidate_id) &&
+                         ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id))))) {
+                        top_candidates.emplace(dist, candidate_id);
+                        profile.heap_pushes++;
+                    }
+                    while (top_candidates.size() > ef) {
+                        top_candidates.pop();
+                        profile.heap_pops++;
+                    }
+                    if (!top_candidates.empty()) {
+                        lowerBound = top_candidates.top().first;
+                    }
+                    profile.heap_us += elapsed_us(heap_begin, Clock::now());
+                    (void) currObj1;
+                }
+            }
+            profile.base_us += elapsed_us(base_begin, Clock::now());
+            visited_list_pool_->releaseVisitedList(vl);
+
+            auto result_begin = Clock::now();
+            while (top_candidates.size() > k) {
+                top_candidates.pop();
+            }
+            while (!top_candidates.empty()) {
+                std::pair<dist_t, tableint> rez = top_candidates.top();
+                result.push(std::pair<dist_t, labeltype>(rez.first, getExternalLabel(rez.second)));
+                top_candidates.pop();
+            }
+            profile.result_sort_us += elapsed_us(result_begin, Clock::now());
+        } catch (...) {
+            space_->release_query(query_context);
+            throw;
+        }
+
+        space_->release_query(query_context);
+        profile.total_us += elapsed_us(total_begin, Clock::now());
+        return result;
+    }
+
+    struct ProgressiveSearchOptions {
+        bool force_refine_all = false;
+        bool disable_interval_refinement = false;
+        bool refine_only_final = false;
+        double primary_gap_threshold = -1.0;
+    };
+
+    std::priority_queue<std::pair<dist_t, labeltype >>
+    searchKnnProgressive1Bit(
+        const void *query_data,
+        size_t k,
+        SearchProfile &profile,
+        const ProgressiveSearchOptions &options,
+        BaseFilterFunctor* isIdAllowed = nullptr) const {
+        struct State {
+            tableint id = 0;
+            dist_t primary_distance = 0;
+            dist_t lower_bound = 0;
+            dist_t upper_bound = 0;
+            dist_t refined_distance = 0;
+            bool is_refined = false;
+            bool in_candidate_queue = false;
+            bool in_result_queue = false;
+            bool expanded = false;
+            size_t version = 0;
+        };
+        struct CandidateEntry {
+            dist_t key;
+            size_t state_index;
+            size_t version;
+        };
+        struct CandidateCompare {
+            bool operator()(const CandidateEntry &a, const CandidateEntry &b) const {
+                return a.key > b.key;
+            }
+        };
+        struct ResultCompare {
+            bool operator()(const CandidateEntry &a, const CandidateEntry &b) const {
+                return a.key < b.key;
+            }
+        };
+
+        std::priority_queue<std::pair<dist_t, labeltype >> result;
+        profile = SearchProfile{};
+        profile.external_random_reads = space_->profile_uses_external_random_reads();
+        if (cur_element_count == 0) return result;
+
+        const void *query_context = space_->prepare_query(query_data);
+        std::vector<State> states;
+        states.reserve(std::max(ef_, k) * 4U + 64U);
+        std::priority_queue<CandidateEntry, std::vector<CandidateEntry>, CandidateCompare> candidate_set;
+        std::priority_queue<CandidateEntry, std::vector<CandidateEntry>, ResultCompare> top_candidates;
+
+        auto compute_primary = [&](tableint id) {
+            char *data = getDataByInternalId(id);
+            const dist_t primary = options.force_refine_all
+                ? space_->query_distance(query_context, data)
+                : space_->primary_query_distance(query_context, data);
+            profile.distance_computations++;
+            if (options.force_refine_all) {
+                profile.full_2bit_distance_computations++;
+                profile.secondary_code_reads++;
+                profile.secondary_payload_bytes_read += space_->secondary_payload_bytes_per_refine();
+            } else {
+                profile.primary_distance_computations++;
+                profile.primary_payload_bytes_read += space_->profile_payload_bytes_per_distance() -
+                    space_->secondary_payload_bytes_per_refine();
+            }
+            return primary;
+        };
+
+        auto make_state = [&](tableint id) {
+            State state;
+            state.id = id;
+            state.primary_distance = compute_primary(id);
+            if (options.force_refine_all) {
+                state.lower_bound = state.primary_distance;
+                state.upper_bound = state.primary_distance;
+                state.refined_distance = state.primary_distance;
+                state.is_refined = true;
+            } else {
+                DistanceInterval interval = options.disable_interval_refinement
+                    ? DistanceInterval{
+                        static_cast<float>(state.primary_distance),
+                        static_cast<float>(state.primary_distance),
+                        static_cast<float>(state.primary_distance)}
+                    : space_->primary_distance_interval(
+                        query_context,
+                        getDataByInternalId(id),
+                        state.primary_distance);
+                state.lower_bound = static_cast<dist_t>(interval.lower_bound);
+                state.upper_bound = static_cast<dist_t>(interval.upper_bound);
+            }
+            states.push_back(state);
+            return states.size() - 1U;
+        };
+
+        auto push_candidate = [&](size_t state_index) {
+            State &state = states[state_index];
+            if (state.expanded) {
+                return;
+            }
+            state.in_candidate_queue = true;
+            candidate_set.push(CandidateEntry{state.lower_bound, state_index, state.version});
+            profile.heap_pushes++;
+        };
+        auto push_result = [&](size_t state_index) {
+            State &state = states[state_index];
+            state.in_result_queue = true;
+            top_candidates.push(CandidateEntry{state.upper_bound, state_index, state.version});
+            profile.heap_pushes++;
+        };
+        auto clean_candidate = [&]() {
+            while (!candidate_set.empty()) {
+                const CandidateEntry entry = candidate_set.top();
+                const State &state = states[entry.state_index];
+                if (entry.version == state.version && state.in_candidate_queue && !state.expanded) {
+                    break;
+                }
+                candidate_set.pop();
+                profile.heap_pops++;
+            }
+        };
+        auto clean_top = [&]() {
+            while (!top_candidates.empty()) {
+                const CandidateEntry entry = top_candidates.top();
+                const State &state = states[entry.state_index];
+                if (entry.version == state.version && state.in_result_queue) {
+                    break;
+                }
+                top_candidates.pop();
+                profile.heap_pops++;
+            }
+        };
+        auto refine_state = [&](size_t state_index, int reason) {
+            State &state = states[state_index];
+            if (state.is_refined || options.disable_interval_refinement) {
+                return;
+            }
+            const dist_t exact = space_->query_distance(query_context, getDataByInternalId(state.id));
+            state.refined_distance = exact;
+            state.lower_bound = exact;
+            state.upper_bound = exact;
+            state.is_refined = true;
+            state.version++;
+            profile.distance_computations++;
+            profile.full_2bit_distance_computations++;
+            profile.secondary_code_reads++;
+            profile.secondary_payload_bytes_read += space_->secondary_payload_bytes_per_refine();
+            if (reason == 1) profile.insert_refine_count++;
+            if (reason == 2) profile.expansion_order_refine_count++;
+            if (reason == 3) profile.stop_refine_count++;
+            if (reason == 4) profile.result_eviction_refine_count++;
+            if (reason == 5) profile.final_rerank_refine_count++;
+            if (state.in_candidate_queue && !state.expanded) push_candidate(state_index);
+            if (state.in_result_queue) push_result(state_index);
+        };
+        auto should_refine_primary_gap = [&](const State &lhs, const State &rhs) {
+            if (options.primary_gap_threshold < 0.0 || options.disable_interval_refinement) {
+                return false;
+            }
+            const double gap = std::abs(static_cast<double>(lhs.primary_distance) -
+                                        static_cast<double>(rhs.primary_distance));
+            const double scale = 1.0 +
+                std::abs(static_cast<double>(lhs.primary_distance)) +
+                std::abs(static_cast<double>(rhs.primary_distance));
+            return gap / scale <= options.primary_gap_threshold;
+        };
+        auto ensure_exact_worst_result = [&]() {
+            clean_top();
+            while (!top_candidates.empty() && !states[top_candidates.top().state_index].is_refined &&
+                   !options.disable_interval_refinement) {
+                refine_state(top_candidates.top().state_index, 4);
+                clean_top();
+            }
+            clean_top();
+        };
+        auto evict_extra = [&]() {
+            while (top_candidates.size() > std::max(ef_, k)) {
+                ensure_exact_worst_result();
+                if (top_candidates.empty()) break;
+                State &worst = states[top_candidates.top().state_index];
+                worst.in_result_queue = false;
+                top_candidates.pop();
+                profile.heap_pops++;
+                clean_top();
+            }
+        };
+        auto accept_state = [&](size_t state_index) {
+            push_candidate(state_index);
+            push_result(state_index);
+            evict_extra();
+        };
+
+        try {
+            tableint currObj = enterpoint_node_;
+            dist_t curdist = options.force_refine_all
+                ? space_->query_distance(query_context, getDataByInternalId(enterpoint_node_))
+                : space_->primary_query_distance(query_context, getDataByInternalId(enterpoint_node_));
+            if (options.force_refine_all) {
+                profile.full_2bit_distance_computations++;
+            } else {
+                profile.primary_distance_computations++;
+            }
+            for (int level = maxlevel_; level > 0; level--) {
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    unsigned int *data = (unsigned int *) get_linklist(currObj, level);
+                    int size = getListCount(data);
+                    tableint *datal = (tableint *) (data + 1);
+                    for (int i = 0; i < size; i++) {
+                        tableint cand = datal[i];
+                        if (cand < 0 || cand > max_elements_)
+                            throw std::runtime_error("cand error");
+                        dist_t d = options.force_refine_all
+                            ? space_->query_distance(query_context, getDataByInternalId(cand))
+                            : space_->primary_query_distance(query_context, getDataByInternalId(cand));
+                        if (options.force_refine_all) {
+                            profile.full_2bit_distance_computations++;
+                        } else {
+                            profile.primary_distance_computations++;
+                        }
+                        if (d < curdist) {
+                            curdist = d;
+                            currObj = cand;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+            vl_type *visited_array = vl->mass;
+            vl_type visited_array_tag = vl->curV;
+            visited_array[currObj] = visited_array_tag;
+            profile.visited_nodes++;
+            const size_t entry_state = make_state(currObj);
+            accept_state(entry_state);
+
+            const size_t ef = std::max(ef_, k);
+            while (true) {
+                clean_candidate();
+                clean_top();
+                if (candidate_set.empty()) {
+                    break;
+                }
+                if (top_candidates.size() >= ef && !options.disable_interval_refinement) {
+                    ensure_exact_worst_result();
+                    clean_candidate();
+                    if (candidate_set.empty() || top_candidates.empty()) break;
+                    State &cand_state = states[candidate_set.top().state_index];
+                    State &worst_state = states[top_candidates.top().state_index];
+                    if (should_refine_primary_gap(cand_state, worst_state) && !cand_state.is_refined) {
+                        refine_state(candidate_set.top().state_index, 3);
+                        clean_candidate();
+                        continue;
+                    }
+                    const dist_t worst = worst_state.upper_bound;
+                    if (cand_state.lower_bound > worst) {
+                        profile.stop_safe_count++;
+                        break;
+                    }
+                    if (cand_state.upper_bound > worst && !cand_state.is_refined) {
+                        refine_state(candidate_set.top().state_index, 3);
+                        clean_candidate();
+                        continue;
+                    }
+                    profile.continue_safe_count++;
+                }
+
+                CandidateEntry current = candidate_set.top();
+                candidate_set.pop();
+                profile.heap_pops++;
+                if (current.version != states[current.state_index].version ||
+                    !states[current.state_index].in_candidate_queue ||
+                    states[current.state_index].expanded) {
+                    continue;
+                }
+                State &current_state = states[current.state_index];
+                current_state.expanded = true;
+                current_state.in_candidate_queue = false;
+                profile.expanded_nodes++;
+
+                int *data = (int *) get_linklist0(current_state.id);
+                size_t size = getListCount((linklistsizeint*)data);
+                for (size_t j = 1; j <= size; j++) {
+                    int candidate_id = *(data + j);
+                    if (visited_array[candidate_id] == visited_array_tag) {
+                        continue;
+                    }
+                    visited_array[candidate_id] = visited_array_tag;
+                    profile.visited_nodes++;
+                    if (!(!num_deleted_ && !isIdAllowed) &&
+                        (isMarkedDeleted(candidate_id) ||
+                         (isIdAllowed && !(*isIdAllowed)(getExternalLabel(candidate_id))))) {
+                        continue;
+                    }
+                    const size_t new_state_index = make_state(static_cast<tableint>(candidate_id));
+                    State &new_state = states[new_state_index];
+                    if (top_candidates.size() < ef) {
+                        accept_state(new_state_index);
+                        continue;
+                    }
+                    if (options.disable_interval_refinement) {
+                        clean_top();
+                        if (top_candidates.empty() || new_state.primary_distance < states[top_candidates.top().state_index].upper_bound) {
+                            accept_state(new_state_index);
+                        }
+                        continue;
+                    }
+                    ensure_exact_worst_result();
+                    clean_top();
+                    if (top_candidates.empty()) {
+                        accept_state(new_state_index);
+                        continue;
+                    }
+                    State &worst_state = states[top_candidates.top().state_index];
+                    if (should_refine_primary_gap(new_state, worst_state) && !new_state.is_refined) {
+                        refine_state(new_state_index, 1);
+                    }
+                    const dist_t worst = worst_state.upper_bound;
+                    if (new_state.lower_bound > worst) {
+                        profile.safe_insert_reject_count++;
+                        continue;
+                    }
+                    if (new_state.upper_bound < worst) {
+                        profile.safe_insert_accept_count++;
+                        accept_state(new_state_index);
+                        continue;
+                    }
+                    refine_state(new_state_index, 1);
+                    if (new_state.lower_bound < worst) {
+                        accept_state(new_state_index);
+                    }
+                }
+            }
+            visited_list_pool_->releaseVisitedList(vl);
+
+            std::vector<size_t> final_states;
+            while (!top_candidates.empty()) {
+                clean_top();
+                if (top_candidates.empty()) break;
+                final_states.push_back(top_candidates.top().state_index);
+                top_candidates.pop();
+            }
+            for (size_t state_index : final_states) {
+                if (!options.disable_interval_refinement) {
+                    refine_state(state_index, 5);
+                }
+            }
+            std::sort(final_states.begin(), final_states.end(), [&](size_t lhs, size_t rhs) {
+                const State &a = states[lhs];
+                const State &b = states[rhs];
+                if (a.lower_bound != b.lower_bound) return a.lower_bound < b.lower_bound;
+                return a.id < b.id;
+            });
+            for (size_t i = 0; i < std::min(k, final_states.size()); ++i) {
+                const State &state = states[final_states[i]];
+                result.emplace(state.lower_bound, getExternalLabel(state.id));
+            }
+        } catch (...) {
+            space_->release_query(query_context);
+            throw;
+        }
+        space_->release_query(query_context);
+        return result;
+    }
+
+    std::priority_queue<std::pair<dist_t, labeltype >>
+    searchKnnFull2BitBlockwise(
+        const void *query_data,
+        size_t k,
+        size_t block_size,
+        SearchProfile &profile,
+        BaseFilterFunctor* isIdAllowed = nullptr) const {
+        std::priority_queue<std::pair<dist_t, labeltype >> result;
+        profile = SearchProfile{};
+        if (cur_element_count == 0) return result;
+
+        const void *query_context = space_->prepare_query(query_data);
+        auto full_distance = [&](tableint id) {
+            profile.full_2bit_distance_computations++;
+            profile.distance_computations++;
+            profile.payload_bytes_read += space_->profile_payload_bytes_per_distance();
+            return space_->query_distance(query_context, getDataByInternalId(id));
+        };
+        auto blockwise_distance = [&](tableint id, dist_t threshold) {
+            BlockwiseDistanceResult bw = space_->blockwise_query_distance_until(
+                query_context,
+                getDataByInternalId(id),
+                threshold,
+                block_size);
+            profile.blockwise_candidates++;
+            profile.full2bit_blocks_processed += bw.processed_blocks;
+            profile.full2bit_dimensions_processed += bw.processed_dimensions;
+            if (bw.early_terminated) {
+                profile.blockwise_early_terminated++;
+            }
+            if (bw.full_distance_computed) {
+                profile.full_2bit_distance_computations++;
+                profile.distance_computations++;
+            }
+            const size_t dims_per_byte = 8U;
+            const size_t primary_bytes =
+                (bw.processed_dimensions + dims_per_byte - 1U) / dims_per_byte;
+            profile.payload_bytes_read += 2U * primary_bytes;
+            return bw;
+        };
+
+        try {
+            tableint currObj = enterpoint_node_;
+            dist_t curdist = full_distance(enterpoint_node_);
+            for (int level = maxlevel_; level > 0; level--) {
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    unsigned int *data = (unsigned int *) get_linklist(currObj, level);
+                    int size = getListCount(data);
+                    tableint *datal = (tableint *) (data + 1);
+                    for (int i = 0; i < size; i++) {
+                        tableint cand = datal[i];
+                        if (cand < 0 || cand > max_elements_)
+                            throw std::runtime_error("cand error");
+                        dist_t d = full_distance(cand);
+                        if (d < curdist) {
+                            curdist = d;
+                            currObj = cand;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+            vl_type *visited_array = vl->mass;
+            vl_type visited_array_tag = vl->curV;
+            std::priority_queue<
+                std::pair<dist_t, tableint>,
+                std::vector<std::pair<dist_t, tableint>>,
+                CompareByFirst> top_candidates;
+            std::priority_queue<
+                std::pair<dist_t, tableint>,
+                std::vector<std::pair<dist_t, tableint>>,
+                CompareByFirst> candidate_set;
+
+            const size_t ef = std::max(ef_, k);
+            dist_t lowerBound = curdist;
+            top_candidates.emplace(curdist, currObj);
+            candidate_set.emplace(-curdist, currObj);
+            visited_array[currObj] = visited_array_tag;
+            profile.visited_nodes++;
+            profile.heap_pushes += 2;
+
+            while (!candidate_set.empty()) {
+                std::pair<dist_t, tableint> current_node_pair = candidate_set.top();
+                dist_t candidate_dist = -current_node_pair.first;
+                if (candidate_dist > lowerBound) {
+                    break;
+                }
+                candidate_set.pop();
+                profile.heap_pops++;
+                tableint current_node_id = current_node_pair.second;
+                profile.expanded_nodes++;
+                int *data = (int *) get_linklist0(current_node_id);
+                size_t size = getListCount((linklistsizeint*)data);
+                for (size_t j = 1; j <= size; j++) {
+                    int candidate_id = *(data + j);
+                    if (visited_array[candidate_id] == visited_array_tag) {
+                        continue;
+                    }
+                    visited_array[candidate_id] = visited_array_tag;
+                    profile.visited_nodes++;
+                    if (!(!num_deleted_ && !isIdAllowed) &&
+                        (isMarkedDeleted(candidate_id) ||
+                         (isIdAllowed && !(*isIdAllowed)(getExternalLabel(candidate_id))))) {
+                        continue;
+                    }
+
+                    dist_t dist;
+                    bool rejected_by_blockwise = false;
+                    if (top_candidates.size() >= ef) {
+                        BlockwiseDistanceResult bw = blockwise_distance(
+                            static_cast<tableint>(candidate_id),
+                            lowerBound);
+                        rejected_by_blockwise = bw.early_terminated;
+                        dist = static_cast<dist_t>(bw.distance);
+                    } else {
+                        dist = full_distance(static_cast<tableint>(candidate_id));
+                    }
+                    if (rejected_by_blockwise) {
+                        continue;
+                    }
+                    if (top_candidates.size() < ef || lowerBound > dist) {
+                        candidate_set.emplace(-dist, candidate_id);
+                        top_candidates.emplace(dist, candidate_id);
+                        profile.heap_pushes += 2;
+                        while (top_candidates.size() > ef) {
+                            top_candidates.pop();
+                            profile.heap_pops++;
+                        }
+                        if (!top_candidates.empty()) {
+                            lowerBound = top_candidates.top().first;
+                        }
+                    }
+                }
+            }
+            visited_list_pool_->releaseVisitedList(vl);
+
+            while (top_candidates.size() > k) {
+                top_candidates.pop();
+            }
+            while (!top_candidates.empty()) {
                 std::pair<dist_t, tableint> rez = top_candidates.top();
                 result.push(std::pair<dist_t, labeltype>(rez.first, getExternalLabel(rez.second)));
                 top_candidates.pop();

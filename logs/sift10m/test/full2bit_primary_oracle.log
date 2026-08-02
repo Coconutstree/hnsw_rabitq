@@ -1,0 +1,66 @@
+Full2Bit experiment=primary_oracle
+dataset=sift10m base_count=10000000 query_count=1000 dim=128 K=256 M=32 efConstruction=400
+index_path=build/trueK256_train10m_full2bit/sift10m_full2bit_trueK256_floatbuild_ef_400_M_32.bin
+base_path=/home/kai3/coco/data/sift10m/sift10m_base.fvecs
+query_path=/home/kai3/coco/data/sift10m/sift10m_query.fvecs
+gt_path=/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs
+oracle_queries=100 ef=460 candidate_pool=500 boundary_k=100 scored_candidates=50000 skipped_missing_labels=0
+threshold	comparison_type	comparisons	flip_rate	estimated_refinement_rate	critical_decision_agreement	flip_miss_rate	false_refinement_rate
+0.000000000	candidate_queue_adjacent_order	49900	0.498056112	0.000100200	0.501963928	0.498036072	0.000080160
+0.001000000	candidate_queue_adjacent_order	49900	0.498056112	0.066573146	0.535330661	0.464669339	0.033186373
+0.002000000	candidate_queue_adjacent_order	49900	0.498056112	0.125891784	0.564589178	0.435410822	0.063246493
+0.005000000	candidate_queue_adjacent_order	49900	0.498056112	0.269218437	0.636573146	0.363426854	0.134589178
+0.010000000	candidate_queue_adjacent_order	49900	0.498056112	0.426432866	0.715090180	0.284909820	0.213286573
+0.020000000	candidate_queue_adjacent_order	49900	0.498056112	0.593226453	0.798336673	0.201663327	0.296833667
+0.050000000	candidate_queue_adjacent_order	49900	0.498056112	0.779458918	0.890220441	0.109779559	0.391182365
+0.100000000	candidate_queue_adjacent_order	49900	0.498056112	0.873607214	0.938176353	0.061823647	0.437374749
+0.200000000	candidate_queue_adjacent_order	49900	0.498056112	0.935050100	0.967695391	0.032304609	0.469298597
+0.500000000	candidate_queue_adjacent_order	49900	0.498056112	0.980340681	0.990360721	0.009639279	0.491923848
+1.000000000	candidate_queue_adjacent_order	49900	0.498056112	1.000000000	1.000000000	0.000000000	0.501943888
+0.000000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.000000000	0.729900000	0.270100000	0.000000000
+0.001000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.000525000	0.730125000	0.269875000	0.000300000
+0.002000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.001025000	0.730475000	0.269525000	0.000450000
+0.005000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.002250000	0.731200000	0.268800000	0.000950000
+0.010000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.004150000	0.732100000	0.267900000	0.001950000
+0.020000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.007925000	0.734100000	0.265900000	0.003725000
+0.050000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.021700000	0.740875000	0.259125000	0.010725000
+0.100000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.044725000	0.751875000	0.248125000	0.022750000
+0.200000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.098950000	0.774275000	0.225725000	0.054575000
+0.500000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	0.383800000	0.864200000	0.135800000	0.249500000
+1.000000000	new_neighbor_vs_full_topk_worst	40000	0.270100000	1.000000000	1.000000000	0.000000000	0.729900000
+0.000000000	primary_boundary_stop_proxy	100	0.450000000	0.000000000	0.550000000	0.450000000	0.000000000
+0.001000000	primary_boundary_stop_proxy	100	0.450000000	0.070000000	0.580000000	0.420000000	0.040000000
+0.002000000	primary_boundary_stop_proxy	100	0.450000000	0.130000000	0.630000000	0.370000000	0.050000000
+0.005000000	primary_boundary_stop_proxy	100	0.450000000	0.250000000	0.710000000	0.290000000	0.090000000
+0.010000000	primary_boundary_stop_proxy	100	0.450000000	0.500000000	0.790000000	0.210000000	0.260000000
+0.020000000	primary_boundary_stop_proxy	100	0.450000000	0.660000000	0.860000000	0.140000000	0.350000000
+0.050000000	primary_boundary_stop_proxy	100	0.450000000	0.830000000	0.910000000	0.090000000	0.470000000
+0.100000000	primary_boundary_stop_proxy	100	0.450000000	0.910000000	0.940000000	0.060000000	0.520000000
+0.200000000	primary_boundary_stop_proxy	100	0.450000000	0.970000000	0.980000000	0.020000000	0.540000000
+0.500000000	primary_boundary_stop_proxy	100	0.450000000	1.000000000	1.000000000	0.000000000	0.550000000
+1.000000000	primary_boundary_stop_proxy	100	0.450000000	1.000000000	1.000000000	0.000000000	0.550000000
+histogram	comparison_type	gap_bin	comparisons	flip_rate
+histogram	candidate_queue_adjacent_order	[0,0.01)	21279	0.499835519
+histogram	candidate_queue_adjacent_order	[0.01,0.02)	8323	0.499098883
+histogram	candidate_queue_adjacent_order	[0.02,0.05)	9293	0.493382116
+histogram	candidate_queue_adjacent_order	[0.05,0.1)	4698	0.509365688
+histogram	candidate_queue_adjacent_order	[0.1,0.2)	3066	0.480430528
+histogram	candidate_queue_adjacent_order	[0.2,0.5)	2260	0.500442478
+histogram	candidate_queue_adjacent_order	[0.5,1.0)	981	0.490316004
+histogram	candidate_queue_adjacent_order	[1.0,inf)	0	0.000000000
+histogram	new_neighbor_vs_full_topk_worst	[0,0.01)	166	0.530120482
+histogram	new_neighbor_vs_full_topk_worst	[0.01,0.02)	151	0.529801325
+histogram	new_neighbor_vs_full_topk_worst	[0.02,0.05)	551	0.491833031
+histogram	new_neighbor_vs_full_topk_worst	[0.05,0.1)	921	0.477741585
+histogram	new_neighbor_vs_full_topk_worst	[0.1,0.2)	2169	0.413093592
+histogram	new_neighbor_vs_full_topk_worst	[0.2,0.5)	11394	0.315692470
+histogram	new_neighbor_vs_full_topk_worst	[0.5,1.0)	24648	0.220382993
+histogram	new_neighbor_vs_full_topk_worst	[1.0,inf)	0	0.000000000
+histogram	primary_boundary_stop_proxy	[0,0.01)	50	0.480000000
+histogram	primary_boundary_stop_proxy	[0.01,0.02)	16	0.437500000
+histogram	primary_boundary_stop_proxy	[0.02,0.05)	17	0.294117647
+histogram	primary_boundary_stop_proxy	[0.05,0.1)	8	0.375000000
+histogram	primary_boundary_stop_proxy	[0.1,0.2)	6	0.666666667
+histogram	primary_boundary_stop_proxy	[0.2,0.5)	3	0.666666667
+histogram	primary_boundary_stop_proxy	[0.5,1.0)	0	0.000000000
+histogram	primary_boundary_stop_proxy	[1.0,inf)	0	0.000000000

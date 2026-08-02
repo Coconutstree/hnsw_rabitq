@@ -186,6 +186,14 @@ struct DistanceInterval {
     float upper_bound;
 };
 
+struct BlockwiseDistanceResult {
+    float distance;
+    size_t processed_blocks;
+    size_t processed_dimensions;
+    bool early_terminated;
+    bool full_distance_computed;
+};
+
 template<typename MTYPE>
 //距离空间接口
 class SpaceInterface {
@@ -210,6 +218,38 @@ class SpaceInterface {
         return get_dist_func()(prepared_query, data_point, get_dist_func_param());
     }
 
+    virtual MTYPE primary_query_distance(const void *prepared_query, const void *data_point) {
+        return query_distance(prepared_query, data_point);
+    }
+
+    virtual DistanceInterval primary_distance_interval(
+        const void *prepared_query,
+        const void *data_point,
+        MTYPE primary_distance) {
+        (void) prepared_query;
+        (void) data_point;
+        const float distance = static_cast<float>(primary_distance);
+        return DistanceInterval{distance, distance, distance};
+    }
+
+    virtual size_t secondary_payload_bytes_per_refine() {
+        return 0;
+    }
+
+    virtual BlockwiseDistanceResult blockwise_query_distance_until(
+        const void *prepared_query,
+        const void *data_point,
+        MTYPE threshold,
+        size_t block_size) {
+        (void) block_size;
+        return BlockwiseDistanceResult{
+            static_cast<float>(query_distance(prepared_query, data_point)),
+            1,
+            0,
+            false,
+            true};
+    }
+
     virtual MTYPE result_distance(const void *prepared_query, const void *data_point) {
         return query_distance(prepared_query, data_point);
     }
@@ -217,6 +257,14 @@ class SpaceInterface {
     virtual MTYPE result_distance_by_id(const void *prepared_query, size_t internal_id, const void *data_point) {
         (void) internal_id;
         return result_distance(prepared_query, data_point);
+    }
+
+    virtual size_t profile_payload_bytes_per_distance() {
+        return get_data_size();
+    }
+
+    virtual bool profile_uses_external_random_reads() {
+        return false;
     }
 
     virtual DistanceInterval compute_short_distance_interval(

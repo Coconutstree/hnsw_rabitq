@@ -35,19 +35,49 @@ namespace {
 
 enum class QueryMode {
     ResidualRerank,
+    Full2Bit,
+    Primary1Bit,
+    Progressive1p1Bit,
+    Full2BitBlockwise,
 };
 
-const char *query_mode_name(QueryMode) {
+const char *query_mode_name(QueryMode mode) {
+    if (mode == QueryMode::Full2Bit) {
+        return "full2bit";
+    }
+    if (mode == QueryMode::Primary1Bit) {
+        return "primary1bit";
+    }
+    if (mode == QueryMode::Progressive1p1Bit) {
+        return "progressive1p1bit";
+    }
+    if (mode == QueryMode::Full2BitBlockwise) {
+        return "full2bit_blockwise";
+    }
     return "primary4_plus_residual_rerank";
 }
 
 QueryMode parse_query_mode(const string &value) {
+    if (value == "full2bit" || value == "full_2bit" || value == "1plus1bit") {
+        return QueryMode::Full2Bit;
+    }
+    if (value == "primary1bit" || value == "primary_1bit" || value == "PRIMARY_1BIT") {
+        return QueryMode::Primary1Bit;
+    }
+    if (value == "progressive1p1bit" || value == "progressive_1p1bit" ||
+        value == "PROGRESSIVE_1P1BIT" || value == "progressive") {
+        return QueryMode::Progressive1p1Bit;
+    }
+    if (value == "full2bit_blockwise" || value == "FULL_2BIT_BLOCKWISE" ||
+        value == "blockwise_full2bit") {
+        return QueryMode::Full2BitBlockwise;
+    }
     if (value == "residual4" || value == "residual8" ||
         value == "primary4_residual4" || value == "primary4_residual8") {
         return QueryMode::ResidualRerank;
     }
     throw runtime_error(
-        "RABITQ_RERANK_MODE only supports residual4/residual8");
+        "RABITQ_RERANK_MODE only supports full2bit/primary1bit/progressive1p1bit/full2bit_blockwise/residual4/residual8");
 }
 
 QueryMode configured_query_mode() {
@@ -70,6 +100,13 @@ size_t configured_residual_bits(size_t default_value) {
     }
     if (mode != nullptr) {
         const string value(mode);
+        if (value == "full2bit" || value == "full_2bit" || value == "1plus1bit" ||
+            value == "primary1bit" || value == "primary_1bit" ||
+            value == "progressive1p1bit" || value == "progressive_1p1bit" ||
+            value == "progressive" || value == "full2bit_blockwise" ||
+            value == "blockwise_full2bit") {
+            return 1;
+        }
         if (value == "residual4" || value == "primary4_residual4") {
             return 4;
         }
@@ -118,21 +155,38 @@ void print_run_config(
     cout << "  query_count=" << qsize << "\n";
     cout << "  dimension=" << vecdim << "\n";
     cout << "  M=" << M << " efConstruction=" << efConstruction << "\n";
-    cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
+    const bool split_1p1bit_mode =
+        query_mode == QueryMode::Full2Bit ||
+        query_mode == QueryMode::Primary1Bit ||
+        query_mode == QueryMode::Progressive1p1Bit ||
+        query_mode == QueryMode::Full2BitBlockwise;
+    cout << "  quantizer="
+         << (split_1p1bit_mode
+                ? "split 1+1-bit full 2-bit ExRaBitQ"
+                : "4-bit ExRaBitQ")
+         << " centroid_count=" << centroid_count
          << " random_seed=" << random_seed << "\n";
     cout << "  rerank_mode=" << query_mode_name(query_mode)
          << " method=" << query_mode_name(query_mode)
          << " rerank_candidates=" << rerank_candidates << "\n";
     cout << "  build_distance=float32_l2"
          << " stored_data="
-         << (external_residual_storage ? "4bit_rabitq_plus_disk_residual" : "4bit_rabitq_plus_residual")
+         << (split_1p1bit_mode
+                ? "split_1plus1bit_full2bit"
+                : (external_residual_storage ? "4bit_rabitq_plus_disk_residual" : "4bit_rabitq_plus_residual"))
          << " residual_bits=" << residual_bits
          << " residual_block_size=" << residual_block_size
          << " residual_scale_mode=" << residual_scale_mode
          << " residual_scale_storage=" << residual_scale_storage
          << " query_distance=" << query_mode_name(query_mode) << "\n";
-    cout << "  enabled_paths=primary4_residual4,primary4_residual8"
-         << " routing=primary4 rerank_distance=residual" << residual_bits << "\n";
+    cout << "  enabled_paths=full2bit,primary4_residual4,primary4_residual8"
+         << " routing="
+         << (split_1p1bit_mode ? query_mode_name(query_mode) : "primary4")
+         << " rerank_distance="
+         << (split_1p1bit_mode
+                ? "none"
+                : ("residual" + to_string(residual_bits)))
+         << "\n";
     cout << "  base_path=" << path_data << "\n";
     cout << "  query_path=" << path_q << "\n";
     cout << "  gt_path=" << path_gt << "\n";
@@ -172,6 +226,19 @@ bool getenv_bool01_strict(const char *name, bool default_value) {
         return true;
     }
     throw runtime_error(string(name) + " must be 0 or 1");
+}
+
+double getenv_double(const char *name, double default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    char *end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    if (end == value || *end != '\0') {
+        throw runtime_error(string(name) + " must be a floating point number");
+    }
+    return parsed;
 }
 
 float getenv_float(const char *name, float default_value) {
@@ -317,12 +384,17 @@ double mbps_from_bytes_us(size_t bytes, double us) {
 }
 
 void print_index_file_size(const string &index_path, QueryMode query_mode = QueryMode::ResidualRerank) {
-    (void) query_mode;
     const string state_path = quantizer_state_path(index_path);
     const string residual_path = residual_state_path(index_path, query_mode);
     const size_t index_bytes = file_size_bytes(index_path);
     const size_t auxiliary_bytes = file_size_bytes(state_path);
-    const size_t residual_bytes = file_size_bytes(residual_path);
+    const bool split_1p1bit_mode =
+        query_mode == QueryMode::Full2Bit ||
+        query_mode == QueryMode::Primary1Bit ||
+        query_mode == QueryMode::Progressive1p1Bit ||
+        query_mode == QueryMode::Full2BitBlockwise;
+    const size_t residual_bytes =
+        split_1p1bit_mode ? 0 : file_size_bytes(residual_path);
     const size_t total_bytes = index_bytes + auxiliary_bytes + residual_bytes;
     const double mb = 1000000.0;
     cout << "Index storage size: " << total_bytes / mb << " MB"
@@ -765,6 +837,34 @@ struct SearchReport {
     double graph_other_us_per_query{0.0};
     size_t actual_search_ef{0};
     size_t rerank_candidates{0};
+    double visited_nodes_per_query{0.0};
+    double primary_distance_computations_per_query{0.0};
+    double full_2bit_distance_computations_per_query{0.0};
+    double secondary_code_reads_per_query{0.0};
+    double secondary_read_ratio{0.0};
+    double secondary_node_refine_rate{0.0};
+    double secondary_byte_fraction{0.0};
+    double double_compute_rate{0.0};
+    double primary_bytes_read_per_query{0.0};
+    double secondary_bytes_read_per_query{0.0};
+    double total_code_bytes_read_per_query{0.0};
+    double avg_bits_read_per_visited_node{0.0};
+    double avg_bits_read_per_distance_candidate{0.0};
+    double safe_insert_accept_per_query{0.0};
+    double safe_insert_reject_per_query{0.0};
+    double insert_refine_per_query{0.0};
+    double stop_refine_per_query{0.0};
+    double result_eviction_refine_per_query{0.0};
+    double final_rerank_refine_per_query{0.0};
+    double stop_safe_per_query{0.0};
+    double continue_safe_per_query{0.0};
+    double full2bit_blocks_processed_per_query{0.0};
+    double full2bit_dimensions_processed_per_query{0.0};
+    double blockwise_candidates_per_query{0.0};
+    double blockwise_early_terminated_per_query{0.0};
+    double blockwise_early_termination_rate{0.0};
+    double avg_processed_blocks_per_blockwise_candidate{0.0};
+    double avg_processed_dimensions_per_blockwise_candidate{0.0};
 };
 
 static SearchReport test_approx(
@@ -782,15 +882,105 @@ static SearchReport test_approx(
     size_t correct = 0;
     size_t total = 0;
     double hnsw_us = 0.0;
+    hnswlib::HierarchicalNSW<float>::SearchProfile profile_sum;
 
     for (size_t i = 0; i < qsize; i++) {
         StopW hnsw_timer;
         vector<pair<float, labeltype>> results;
         try {
-            results = appr_alg.searchKnnPlainThenResidualRerankCloserFirst(
-                massQ + vecdim * i,
-                k,
-                rerank_candidates);
+            if (query_mode == QueryMode::Full2Bit) {
+                auto queue = appr_alg.searchKnn(massQ + vecdim * i, k);
+                results.reserve(queue.size());
+                while (!queue.empty()) {
+                    results.push_back(queue.top());
+                    queue.pop();
+                }
+                std::reverse(results.begin(), results.end());
+            } else if (query_mode == QueryMode::Primary1Bit) {
+                hnswlib::HierarchicalNSW<float>::SearchProfile profile;
+                auto queue = appr_alg.searchKnnPrimary1Bit(massQ + vecdim * i, k, &profile);
+                profile_sum.visited_nodes += profile.visited_nodes;
+                profile_sum.primary_distance_computations += profile.primary_distance_computations;
+                profile_sum.full_2bit_distance_computations += profile.full_2bit_distance_computations;
+                profile_sum.secondary_code_reads += profile.secondary_code_reads;
+                profile_sum.primary_payload_bytes_read += profile.primary_payload_bytes_read;
+                profile_sum.secondary_payload_bytes_read += profile.secondary_payload_bytes_read;
+                results.reserve(queue.size());
+                while (!queue.empty()) {
+                    results.push_back(queue.top());
+                    queue.pop();
+                }
+                std::reverse(results.begin(), results.end());
+            } else if (query_mode == QueryMode::Progressive1p1Bit) {
+                hnswlib::HierarchicalNSW<float>::SearchProfile profile;
+                const bool force_refine_all = []() {
+                    const char *value = std::getenv("RABITQ_PROGRESSIVE_FORCE_REFINE_ALL");
+                    return value != nullptr && std::strcmp(value, "1") == 0;
+                }();
+                const bool refine_only_final = []() {
+                    const char *value = std::getenv("RABITQ_PROGRESSIVE_REFINE_ONLY_FINAL");
+                    return value != nullptr && std::strcmp(value, "1") == 0;
+                }();
+                const double progressive_gap_threshold =
+                    getenv_double("PROGRESSIVE_GAP_THRESHOLD", -1.0);
+                auto queue = appr_alg.searchKnnProgressive1p1Bit(
+                    massQ + vecdim * i,
+                    k,
+                    &profile,
+                    force_refine_all,
+                    refine_only_final,
+                    progressive_gap_threshold);
+                profile_sum.visited_nodes += profile.visited_nodes;
+                profile_sum.primary_distance_computations += profile.primary_distance_computations;
+                profile_sum.full_2bit_distance_computations += profile.full_2bit_distance_computations;
+                profile_sum.secondary_code_reads += profile.secondary_code_reads;
+                profile_sum.primary_payload_bytes_read += profile.primary_payload_bytes_read;
+                profile_sum.secondary_payload_bytes_read += profile.secondary_payload_bytes_read;
+                profile_sum.safe_insert_accept_count += profile.safe_insert_accept_count;
+                profile_sum.safe_insert_reject_count += profile.safe_insert_reject_count;
+                profile_sum.insert_refine_count += profile.insert_refine_count;
+                profile_sum.stop_refine_count += profile.stop_refine_count;
+                profile_sum.result_eviction_refine_count += profile.result_eviction_refine_count;
+                profile_sum.final_rerank_refine_count += profile.final_rerank_refine_count;
+                profile_sum.stop_safe_count += profile.stop_safe_count;
+                profile_sum.continue_safe_count += profile.continue_safe_count;
+                results.reserve(queue.size());
+                while (!queue.empty()) {
+                    results.push_back(queue.top());
+                    queue.pop();
+                }
+                std::reverse(results.begin(), results.end());
+            } else if (query_mode == QueryMode::Full2BitBlockwise) {
+                hnswlib::HierarchicalNSW<float>::SearchProfile profile;
+                const size_t block_size = getenv_size_t("RABITQ_FULL2BIT_BLOCK_SIZE", 128);
+                auto queue = appr_alg.searchKnnFull2BitBlockwise(
+                    massQ + vecdim * i,
+                    k,
+                    block_size,
+                    &profile);
+                profile_sum.visited_nodes += profile.visited_nodes;
+                profile_sum.expanded_nodes += profile.expanded_nodes;
+                profile_sum.distance_computations += profile.distance_computations;
+                profile_sum.full_2bit_distance_computations += profile.full_2bit_distance_computations;
+                profile_sum.payload_bytes_read += profile.payload_bytes_read;
+                profile_sum.full2bit_blocks_processed += profile.full2bit_blocks_processed;
+                profile_sum.full2bit_dimensions_processed += profile.full2bit_dimensions_processed;
+                profile_sum.blockwise_candidates += profile.blockwise_candidates;
+                profile_sum.blockwise_early_terminated += profile.blockwise_early_terminated;
+                profile_sum.heap_pushes += profile.heap_pushes;
+                profile_sum.heap_pops += profile.heap_pops;
+                results.reserve(queue.size());
+                while (!queue.empty()) {
+                    results.push_back(queue.top());
+                    queue.pop();
+                }
+                std::reverse(results.begin(), results.end());
+            } else {
+                results = appr_alg.searchKnnPlainThenResidualRerankCloserFirst(
+                    massQ + vecdim * i,
+                    k,
+                    rerank_candidates);
+            }
         } catch (const std::exception &error) {
             cerr << query_mode_name(query_mode) << "_query_failed"
                  << " query=" << i
@@ -841,6 +1031,87 @@ static SearchReport test_approx(
         std::max(0.0, report.graph_total_us_per_query - measured_graph_parts);
     report.actual_search_ef = actual_search_ef;
     report.rerank_candidates = rerank_candidates;
+    if (query_mode == QueryMode::Primary1Bit ||
+        query_mode == QueryMode::Progressive1p1Bit ||
+        query_mode == QueryMode::Full2BitBlockwise) {
+        const double queries = static_cast<double>(qsize);
+        report.visited_nodes_per_query = static_cast<double>(profile_sum.visited_nodes) / queries;
+        report.primary_distance_computations_per_query =
+            static_cast<double>(profile_sum.primary_distance_computations) / queries;
+        report.full_2bit_distance_computations_per_query =
+            static_cast<double>(profile_sum.full_2bit_distance_computations) / queries;
+        report.secondary_code_reads_per_query =
+            static_cast<double>(profile_sum.secondary_code_reads) / queries;
+        report.secondary_node_refine_rate = profile_sum.primary_distance_computations == 0
+            ? 0.0
+            : static_cast<double>(profile_sum.secondary_code_reads) /
+                  static_cast<double>(profile_sum.primary_distance_computations);
+        report.double_compute_rate = profile_sum.primary_distance_computations == 0
+            ? 0.0
+            : static_cast<double>(profile_sum.full_2bit_distance_computations) /
+                  static_cast<double>(profile_sum.primary_distance_computations);
+        report.primary_bytes_read_per_query =
+            static_cast<double>(profile_sum.primary_payload_bytes_read) / queries;
+        report.secondary_bytes_read_per_query =
+            static_cast<double>(profile_sum.secondary_payload_bytes_read) / queries;
+        const double total_code_bytes =
+            static_cast<double>(profile_sum.primary_payload_bytes_read + profile_sum.secondary_payload_bytes_read);
+        report.total_code_bytes_read_per_query = total_code_bytes / queries;
+        report.secondary_byte_fraction = total_code_bytes == 0.0
+            ? 0.0
+            : static_cast<double>(profile_sum.secondary_payload_bytes_read) / total_code_bytes;
+        report.secondary_read_ratio = report.secondary_byte_fraction;
+        report.safe_insert_accept_per_query =
+            static_cast<double>(profile_sum.safe_insert_accept_count) / queries;
+        report.safe_insert_reject_per_query =
+            static_cast<double>(profile_sum.safe_insert_reject_count) / queries;
+        report.insert_refine_per_query =
+            static_cast<double>(profile_sum.insert_refine_count) / queries;
+        report.stop_refine_per_query =
+            static_cast<double>(profile_sum.stop_refine_count) / queries;
+        report.result_eviction_refine_per_query =
+            static_cast<double>(profile_sum.result_eviction_refine_count) / queries;
+        report.final_rerank_refine_per_query =
+            static_cast<double>(profile_sum.final_rerank_refine_count) / queries;
+        report.stop_safe_per_query =
+            static_cast<double>(profile_sum.stop_safe_count) / queries;
+        report.continue_safe_per_query =
+            static_cast<double>(profile_sum.continue_safe_count) / queries;
+        if (query_mode == QueryMode::Full2BitBlockwise) {
+            report.full_2bit_distance_computations_per_query =
+                static_cast<double>(profile_sum.full_2bit_distance_computations) / queries;
+            report.total_code_bytes_read_per_query =
+                static_cast<double>(profile_sum.payload_bytes_read) / queries;
+            report.full2bit_blocks_processed_per_query =
+                static_cast<double>(profile_sum.full2bit_blocks_processed) / queries;
+            report.full2bit_dimensions_processed_per_query =
+                static_cast<double>(profile_sum.full2bit_dimensions_processed) / queries;
+            report.blockwise_candidates_per_query =
+                static_cast<double>(profile_sum.blockwise_candidates) / queries;
+            report.blockwise_early_terminated_per_query =
+                static_cast<double>(profile_sum.blockwise_early_terminated) / queries;
+            report.blockwise_early_termination_rate = profile_sum.blockwise_candidates == 0
+                ? 0.0
+                : static_cast<double>(profile_sum.blockwise_early_terminated) /
+                      static_cast<double>(profile_sum.blockwise_candidates);
+            report.avg_processed_blocks_per_blockwise_candidate = profile_sum.blockwise_candidates == 0
+                ? 0.0
+                : static_cast<double>(profile_sum.full2bit_blocks_processed) /
+                      static_cast<double>(profile_sum.blockwise_candidates);
+            report.avg_processed_dimensions_per_blockwise_candidate = profile_sum.blockwise_candidates == 0
+                ? 0.0
+                : static_cast<double>(profile_sum.full2bit_dimensions_processed) /
+                      static_cast<double>(profile_sum.blockwise_candidates);
+        }
+        report.avg_bits_read_per_visited_node = profile_sum.visited_nodes == 0
+            ? 0.0
+            : 8.0 * report.total_code_bytes_read_per_query * queries /
+                  static_cast<double>(profile_sum.visited_nodes);
+        report.avg_bits_read_per_distance_candidate = profile_sum.distance_computations == 0
+            ? 0.0
+            : 8.0 * report.total_code_bytes_read_per_query * queries /
+                  static_cast<double>(profile_sum.distance_computations);
+    }
     return report;
 }
 
@@ -923,8 +1194,54 @@ static void test_vs_recall(
              << "\t" << "graph_result_sort_us_per_query=" << report.graph_result_sort_us_per_query
              << "\t" << "graph_other_us_per_query=" << report.graph_other_us_per_query
              << "\t" << "graph_slowest_stage=" << slowest_stage
-             << "\t" << "graph_slowest_us_per_query=" << slowest_us
-             << "\n";
+             << "\t" << "graph_slowest_us_per_query=" << slowest_us;
+        if (query_mode == QueryMode::Primary1Bit ||
+            query_mode == QueryMode::Progressive1p1Bit ||
+            query_mode == QueryMode::Full2BitBlockwise) {
+            cout << "\t" << "visited_nodes_per_query=" << report.visited_nodes_per_query
+                 << "\t" << "primary_distance_computations_per_query="
+                 << report.primary_distance_computations_per_query
+                 << "\t" << "full_2bit_distance_computations_per_query="
+                 << report.full_2bit_distance_computations_per_query
+                 << "\t" << "secondary_code_reads_per_query=" << report.secondary_code_reads_per_query
+                 << "\t" << "secondary_node_refine_rate=" << report.secondary_node_refine_rate
+                 << "\t" << "secondary_byte_fraction=" << report.secondary_byte_fraction
+                 << "\t" << "double_compute_rate=" << report.double_compute_rate
+                 << "\t" << "secondary_read_ratio=" << report.secondary_read_ratio
+                 << "\t" << "estimated_primary_bytes_per_query=" << report.primary_bytes_read_per_query
+                 << "\t" << "estimated_secondary_bytes_per_query=" << report.secondary_bytes_read_per_query
+                 << "\t" << "estimated_total_code_bytes_per_query="
+                 << report.total_code_bytes_read_per_query
+                 << "\t" << "avg_bits_read_per_visited_node="
+                 << report.avg_bits_read_per_visited_node
+                 << "\t" << "avg_bits_read_per_distance_candidate="
+                 << report.avg_bits_read_per_distance_candidate
+                 << "\t" << "safe_insert_accept_per_query=" << report.safe_insert_accept_per_query
+                 << "\t" << "safe_insert_reject_per_query=" << report.safe_insert_reject_per_query
+                 << "\t" << "insert_refine_per_query=" << report.insert_refine_per_query
+                 << "\t" << "stop_refine_per_query=" << report.stop_refine_per_query
+                 << "\t" << "result_eviction_refine_per_query="
+                 << report.result_eviction_refine_per_query
+                 << "\t" << "final_rerank_refine_per_query="
+                 << report.final_rerank_refine_per_query
+                 << "\t" << "stop_safe_per_query=" << report.stop_safe_per_query
+                 << "\t" << "continue_safe_per_query=" << report.continue_safe_per_query
+                 << "\t" << "full2bit_blocks_processed_per_query="
+                 << report.full2bit_blocks_processed_per_query
+                 << "\t" << "full2bit_dimensions_processed_per_query="
+                 << report.full2bit_dimensions_processed_per_query
+                 << "\t" << "blockwise_candidates_per_query="
+                 << report.blockwise_candidates_per_query
+                 << "\t" << "blockwise_early_terminated_per_query="
+                 << report.blockwise_early_terminated_per_query
+                 << "\t" << "blockwise_early_termination_rate="
+                 << report.blockwise_early_termination_rate
+                 << "\t" << "avg_processed_blocks_per_blockwise_candidate="
+                 << report.avg_processed_blocks_per_blockwise_candidate
+                 << "\t" << "avg_processed_dimensions_per_blockwise_candidate="
+                 << report.avg_processed_dimensions_per_blockwise_candidate;
+        }
+        cout << "\n";
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
             break;
@@ -969,11 +1286,20 @@ void sift_test1B() {
     const char *dataset_name = dataset.name.c_str();
     const size_t vecdim = dataset.dim;
     const size_t gt_width = dataset.gt_width;
-    const bool external_residual_storage = true;
     const QueryMode query_mode = configured_query_mode();
+    const bool split_1p1bit_mode =
+        query_mode == QueryMode::Full2Bit ||
+        query_mode == QueryMode::Primary1Bit ||
+        query_mode == QueryMode::Progressive1p1Bit ||
+        query_mode == QueryMode::Full2BitBlockwise;
+    const bool external_residual_storage = !split_1p1bit_mode;
     const size_t residual_bits = configured_residual_bits(4);
-    if (residual_bits != 4 && residual_bits != 8) {
-        throw runtime_error("Only primary4+residual4 and primary4+residual8 are supported");
+    if (split_1p1bit_mode) {
+        if (residual_bits != 1) {
+            throw runtime_error("1+1-bit modes use split 1-bit primary + 1-bit residual");
+        }
+    } else if (residual_bits != 4 && residual_bits != 8) {
+        throw runtime_error("Only full2bit, primary1bit, progressive1p1bit, primary4+residual4 and primary4+residual8 are supported");
     }
     const size_t default_centroid_train_samples = vecdim == 128 && dataset.name == "sift10m"
         ? 10000000
@@ -983,9 +1309,12 @@ void sift_test1B() {
     const hnswlib::RaBitQSpace::ResidualQuantizationConfig residual_config =
         [&]() {
             hnswlib::RaBitQSpace::ResidualQuantizationConfig config;
-            config.bits = residual_bits == 4
+            config.full2bit_baseline = split_1p1bit_mode;
+            config.bits = split_1p1bit_mode
+                ? hnswlib::RaBitQSpace::ResidualQuantizationBits::B1
+                : (residual_bits == 4
                 ? hnswlib::RaBitQSpace::ResidualQuantizationBits::B4
-                : hnswlib::RaBitQSpace::ResidualQuantizationBits::B8;
+                : hnswlib::RaBitQSpace::ResidualQuantizationBits::B8);
             config.block_size = getenv_size_t("RABITQ_RESIDUAL_BLOCK_SIZE", 16);
             if (config.block_size == 0) {
                 throw runtime_error("RABITQ_RESIDUAL_BLOCK_SIZE must be a positive integer");
@@ -998,8 +1327,8 @@ void sift_test1B() {
                 }
                 config.block_size = static_cast<size_t>(parsed);
             }
-            config.mse_optimal_scale = residual_bits == 4;
-            config.scale_fp16 = residual_bits == 4;
+            config.mse_optimal_scale = !split_1p1bit_mode && residual_bits == 4;
+            config.scale_fp16 = !split_1p1bit_mode && residual_bits == 4;
             if (const char *value = std::getenv("RABITQ_RESIDUAL_SCALE_MODE")) {
                 if (std::strcmp(value, "max_abs") == 0) {
                     config.mse_optimal_scale = false;
@@ -1033,20 +1362,33 @@ void sift_test1B() {
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     const char *scale_name = residual_config.mse_optimal_scale ? "mse" : "maxabs";
     const char *scale_storage_name = residual_config.scale_fp16 ? "fp16" : "fp32";
-    snprintf(
-        index_name,
-        sizeof(index_name),
-        "%s_primary4_residual%zu_trueK%d_%s_%s_floatbuild_ef_%d_M_%d.bin",
-        dataset.index_prefix.c_str(),
-        residual_bits,
-        centroid_count,
-        scale_name,
-        scale_storage_name,
-        efConstruction,
-        M);
-    const string default_index_dir = residual_bits == 8
+    if (split_1p1bit_mode) {
+        snprintf(
+            index_name,
+            sizeof(index_name),
+            "%s_full2bit_trueK%d_floatbuild_ef_%d_M_%d.bin",
+            dataset.index_prefix.c_str(),
+            centroid_count,
+            efConstruction,
+            M);
+    } else {
+        snprintf(
+            index_name,
+            sizeof(index_name),
+            "%s_primary4_residual%zu_trueK%d_%s_%s_floatbuild_ef_%d_M_%d.bin",
+            dataset.index_prefix.c_str(),
+            residual_bits,
+            centroid_count,
+            scale_name,
+            scale_storage_name,
+            efConstruction,
+            M);
+    }
+    const string default_index_dir = split_1p1bit_mode
+        ? "build/trueK256_train10m_full2bit"
+        : (residual_bits == 8
         ? "build/trueK256_train10m_residual8"
-        : "build/trueK256_train10m";
+        : "build/trueK256_train10m");
     const string index_dir = getenv_string("RABITQ_INDEX_DIR", default_index_dir);
     ensure_directory_exists(index_dir);
     const string path_index_string = join_path(index_dir, index_name);
@@ -1122,17 +1464,20 @@ void sift_test1B() {
         external_residual_storage,
         residual_config);
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-         << (external_residual_storage
+         << (split_1p1bit_mode
+                ? " (split 1+1-bit planes in index)\n"
+                : (external_residual_storage
                 ? " (4-bit code in index; residual in mmap sidecar)\n"
-                : " (4-bit code + residual code)\n");
+                : " (4-bit code + residual code)\n"));
     cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
          << " residual_block_size=" << appr_alg->space().get_residual_block_size()
          << " residual_scale_mode="
          << (appr_alg->space().get_residual_mse_optimal_scale() ? "mse" : "max_abs")
-         << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
+         << " primary_bits=" << (split_1p1bit_mode ? 1 : hnswlib::RaBitQSpace::kTotalBits)
          << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
-         << " remaining_bits=" << hnswlib::RaBitQSpace::kRemainingBits
+         << " remaining_bits=" << (split_1p1bit_mode ? 1 : hnswlib::RaBitQSpace::kRemainingBits)
          << " compact_primary_bytes_per_vector=" << appr_alg->space().get_compact_code_bytes()
+         << " full2bit_plane_bytes_per_vector=" << appr_alg->space().get_full2bit_plane_bytes()
          << " residual_code_bytes_per_vector=" << appr_alg->space().get_residual_code_bytes()
          << " residual_record_bytes_per_vector=" << appr_alg->space().get_residual_disk_record_bytes()
          << " primary_4bit_empirical_error_reference="
@@ -1164,17 +1509,20 @@ void sift_test1B() {
                     external_residual_storage,
                     residual_config);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
-                     << (external_residual_storage
+                     << (split_1p1bit_mode
+                            ? " (split 1+1-bit planes in index)\n"
+                            : (external_residual_storage
                             ? " (4-bit code in index; residual in mmap sidecar)\n"
-                            : " (4-bit code + residual code)\n");
+                            : " (4-bit code + residual code)\n"));
                 cout << "  residual_bits=" << appr_alg->space().get_residual_bits()
                      << " residual_block_size=" << appr_alg->space().get_residual_block_size()
                      << " residual_scale_mode="
                      << (appr_alg->space().get_residual_mse_optimal_scale() ? "mse" : "max_abs")
-                     << " primary_bits=" << hnswlib::RaBitQSpace::kTotalBits
+                     << " primary_bits=" << (split_1p1bit_mode ? 1 : hnswlib::RaBitQSpace::kTotalBits)
                      << " short_bits=" << hnswlib::RaBitQSpace::kShortBits
-                     << " remaining_bits=" << hnswlib::RaBitQSpace::kRemainingBits
+                     << " remaining_bits=" << (split_1p1bit_mode ? 1 : hnswlib::RaBitQSpace::kRemainingBits)
                      << " compact_primary_bytes_per_vector=" << appr_alg->space().get_compact_code_bytes()
+                     << " full2bit_plane_bytes_per_vector=" << appr_alg->space().get_full2bit_plane_bytes()
                      << " residual_code_bytes_per_vector=" << appr_alg->space().get_residual_code_bytes()
                      << " residual_record_bytes_per_vector=" << appr_alg->space().get_residual_disk_record_bytes()
                      << " primary_4bit_empirical_error_reference="
@@ -1243,7 +1591,8 @@ void sift_test1B() {
         }
         cout << "\n";
 
-        cout << "Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ\n";
+        cout << "Building HNSW graph with float32 L2 distances, then encoding payloads to "
+             << (split_1p1bit_mode ? "split 1+1-bit full 2-bit RaBitQ\n" : "4-bit RaBitQ\n");
         L2Space float_space(vecdim);
         HierarchicalNSW<float> float_index(
             &float_space,
