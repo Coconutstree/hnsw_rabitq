@@ -4,6 +4,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "hnswlib.h"
+#include "rabitq_hnsw.h"
 #include <thread>
 #include <atomic>
 #include <stdlib.h>
@@ -1032,5 +1033,150 @@ PYBIND11_PLUGIN(hnswlib) {
         .def("get_max_elements", &BFIndex<float>::getMaxElements)
         .def("get_current_count", &BFIndex<float>::getCurrentCount)
         .def_readwrite("num_threads", &BFIndex<float>::num_threads_default);
+
+        py::class_<hnswlib::RaBitQHierarchicalNSW>(m, "RaBitQIndex")
+        .def(py::init([](size_t dim, size_t max_elements, size_t centroid_count,
+                         size_t M, size_t ef_construction, size_t random_seed,
+                         bool allow_replace_deleted, bool external_residual_storage,
+                         size_t residual_bits, size_t residual_block_size,
+                         bool residual_mse_optimal_scale, bool residual_scale_fp16) {
+            if (residual_bits == 0) {
+                return new hnswlib::RaBitQHierarchicalNSW(
+                    dim, max_elements, centroid_count, M, ef_construction, random_seed,
+                    allow_replace_deleted, external_residual_storage, residual_bits);
+            }
+            hnswlib::RaBitQSpace::ResidualQuantizationConfig config;
+            config.bits = static_cast<hnswlib::RaBitQSpace::ResidualQuantizationBits>(residual_bits);
+            config.block_size = residual_block_size;
+            config.enabled = true;
+            config.enable_block_scaling = true;
+            config.mse_optimal_scale = residual_mse_optimal_scale;
+            config.scale_fp16 = residual_scale_fp16;
+            return new hnswlib::RaBitQHierarchicalNSW(
+                dim, max_elements, centroid_count, M, ef_construction, random_seed,
+                allow_replace_deleted, external_residual_storage, config);
+        }),
+             py::arg("dim"), py::arg("max_elements"), py::arg("centroid_count") = 1,
+             py::arg("M") = 16, py::arg("ef_construction") = 200,
+             py::arg("random_seed") = 100, py::arg("allow_replace_deleted") = false,
+             py::arg("external_residual_storage") = false, py::arg("residual_bits") = 0,
+             py::arg("residual_block_size") = 16,
+             py::arg("residual_mse_optimal_scale") = false,
+             py::arg("residual_scale_fp16") = false)
+        .def("add_items", [](hnswlib::RaBitQHierarchicalNSW &index,
+                              py::array_t<float, py::array::c_style | py::array::forcecast> values,
+                              py::object labels) {
+            const py::buffer_info info = values.request();
+            size_t rows = 0, features = 0;
+            get_input_array_shapes(info, &rows, &features);
+            if (features != index.space().get_dim()) throw std::invalid_argument("dimension mismatch");
+            std::vector<size_t> ids = get_input_ids_and_check_shapes(labels, rows);
+            if (ids.empty()) { ids.resize(rows); for (size_t i = 0; i < rows; ++i) ids[i] = i; }
+            const float *data = static_cast<const float *>(info.ptr);
+            for (size_t i = 0; i < rows; ++i)
+                index.addPoint(data + i * features, ids[i]);
+        }, py::arg("data"), py::arg("ids") = py::none())
+        .def("build_route_codes", [](hnswlib::RaBitQHierarchicalNSW &index,
+                                      py::array_t<float, py::array::c_style | py::array::forcecast> values,
+                                      const std::string &strategy, uint32_t bits) {
+            const py::buffer_info info = values.request();
+            if (info.ndim != 2 || static_cast<size_t>(info.shape[1]) != index.space().get_dim())
+                throw std::invalid_argument("route base vectors must be a 2-D internal-id ordered array");
+            hnswlib::RouteCodeStrategy parsed;
+            if (strategy == "equal_interval") parsed = hnswlib::RouteCodeStrategy::EqualInterval;
+            else if (strategy == "high_variance") parsed = hnswlib::RouteCodeStrategy::HighVariance;
+            else if (strategy == "short_code_selected") parsed = hnswlib::RouteCodeStrategy::ShortCodeSelected;
+            else throw std::invalid_argument("unknown route strategy");
+            index.buildRouteCodes(static_cast<const float *>(info.ptr), info.shape[0], parsed, bits);
+        }, py::arg("base_vectors_by_internal_id"), py::arg("strategy") = "equal_interval",
+           py::arg("route_bits") = 8)
+        .def("set_route_oracle", [](hnswlib::RaBitQHierarchicalNSW &index,
+                                     py::array_t<float, py::array::c_style | py::array::forcecast> values) {
+            const py::buffer_info info = values.request();
+            if (info.ndim != 2 || static_cast<size_t>(info.shape[1]) != index.space().get_dim())
+                throw std::invalid_argument("route oracle must be a 2-D internal-id ordered array");
+            index.setRouteOracle(static_cast<const float *>(info.ptr), info.shape[0]);
+        }, py::arg("base_vectors_by_internal_id"), py::keep_alive<1, 2>())
+        .def("set_graph_turbo", [](hnswlib::RaBitQHierarchicalNSW &index,
+                                    const std::string &mode, uint32_t top_p,
+                                    uint32_t prefetch_distance, bool remaining_in_route_order,
+                                    uint32_t statistics_sample_rate, bool short_shadow,
+                                    bool two_bit_shadow) {
+            hnswlib::GraphTurboConfig config = index.getGraphTurboConfig();
+            if (mode == "baseline") config.mode = hnswlib::GraphTurboMode::Baseline;
+            else if (mode == "batch_prefetch") config.mode = hnswlib::GraphTurboMode::BatchPrefetch;
+            else if (mode == "route_priority") config.mode = hnswlib::GraphTurboMode::RoutePriority;
+            else throw std::invalid_argument("unknown Graph-Turbo mode");
+            config.top_p = top_p;
+            config.prefetch_distance = prefetch_distance;
+            config.remaining_in_route_order = remaining_in_route_order;
+            config.statistics_sample_rate = statistics_sample_rate;
+            config.short_shadow = short_shadow;
+            config.two_bit_shadow = two_bit_shadow;
+            index.setGraphTurboConfig(config);
+        }, py::arg("mode"), py::arg("top_p") = 4, py::arg("prefetch_distance") = 8,
+           py::arg("remaining_in_route_order") = false,
+           py::arg("statistics_sample_rate") = 0,
+           py::arg("short_shadow") = false,
+           py::arg("two_bit_shadow") = false)
+        .def("knn_query_with_metrics", [](const hnswlib::RaBitQHierarchicalNSW &index,
+                                           py::array_t<float, py::array::c_style | py::array::forcecast> query,
+                                           size_t k,
+                                           size_t rerank_candidates) {
+            const py::buffer_info info = query.request();
+            if (info.ndim != 1 || static_cast<size_t>(info.shape[0]) != index.space().get_dim())
+                throw std::invalid_argument("query must be one vector");
+            if (rerank_candidates < k)
+                throw std::invalid_argument("rerank_candidates must be at least k");
+            hnswlib::RaBitQSearchMetrics metrics;
+            auto result = index.searchKnnPlainThenResidualRerankCloserFirst(
+                static_cast<const float *>(info.ptr), k, rerank_candidates, nullptr, &metrics);
+            py::dict out;
+            out["results"] = result;
+            out["visited_nodes"] = metrics.visited_nodes;
+            out["distance_computations"] = metrics.distance_computations;
+            out["neighbors_seen"] = metrics.neighbors_seen;
+            out["neighbors_unvisited"] = metrics.neighbors_unvisited;
+            out["route_scored"] = metrics.route_scored;
+            out["priority_full_count"] = metrics.priority_full_distance_count;
+            out["remaining_full_count"] = metrics.remaining_full_distance_count;
+            out["route_score_us"] = metrics.route_score_us;
+            out["top_p_select_us"] = metrics.top_p_select_us;
+            out["full_distance_us"] = metrics.full_distance_us;
+            out["queue_update_us"] = metrics.queue_update_us;
+            out["traversal_us"] = metrics.traversal_us;
+            out["route_oracle_samples"] = metrics.route_oracle_samples;
+            out["route_top1_matches_float_top1"] = metrics.route_top1_matches_float_top1;
+            out["route_top4_contains_float_top1"] = metrics.route_top4_contains_float_top1;
+            out["route_top8_float_top4_hits"] = metrics.route_top8_float_top4_hits;
+            out["route_top8_float_top4_total"] = metrics.route_top8_float_top4_total;
+            out["prefetch_issued"] = metrics.prefetch_issued;
+            out["short_checked"] = metrics.short_checked;
+            out["short_would_reject"] = metrics.short_would_reject;
+            out["short_ambiguous"] = metrics.short_ambiguous;
+            out["unsafe_reject"] = metrics.unsafe_reject;
+            out["short_bound_violation"] = metrics.short_bound_violation;
+            out["full_distance_count"] = metrics.full_distance_count;
+            out["short_time_us"] = metrics.short_time_us;
+            out["full_distance_time_us"] = metrics.full_distance_time_us;
+            out["two_bit_checked"] = metrics.two_bit_checked;
+            out["two_bit_would_reject"] = metrics.two_bit_would_reject;
+            out["two_bit_ambiguous"] = metrics.two_bit_ambiguous;
+            out["two_bit_unsafe_reject"] = metrics.two_bit_unsafe_reject;
+            out["two_bit_bound_violation"] = metrics.two_bit_bound_violation;
+            out["two_bit_time_us"] = metrics.two_bit_time_us;
+            return out;
+        }, py::arg("query"), py::arg("k") = 1, py::arg("rerank_candidates") = 100)
+        .def("set_ef", &hnswlib::RaBitQHierarchicalNSW::setEf)
+        .def("save_index", &hnswlib::RaBitQHierarchicalNSW::saveIndex)
+        .def("load_index", &hnswlib::RaBitQHierarchicalNSW::loadIndex,
+             py::arg("path"), py::arg("max_elements") = 0)
+        .def("save_route_codes", &hnswlib::RaBitQHierarchicalNSW::saveRouteCodes)
+        .def("load_route_codes", &hnswlib::RaBitQHierarchicalNSW::loadRouteCodes,
+             py::arg("path"), py::arg("required") = false)
+        .def("freeze_topology", &hnswlib::RaBitQHierarchicalNSW::freezeGraphTurboTopology,
+             py::arg("frozen") = true)
+        .def("graph_fingerprint", &hnswlib::RaBitQHierarchicalNSW::graphFingerprint)
+        .def("route_fingerprint", &hnswlib::RaBitQHierarchicalNSW::routeCodeFingerprint);
         return m.ptr();
 }

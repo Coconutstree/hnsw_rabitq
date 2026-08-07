@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -25,6 +27,35 @@ namespace hnswlib {
 //输入原始向量，内部自动编码，再交给HNSW插入或搜索
 class RaBitQHierarchicalNSW {
  private:
+    struct RouteSidecarHeader {
+        char magic[8];
+        uint32_t version;
+        uint32_t route_bits;
+        uint32_t strategy;
+        uint32_t zero_sign_rule;
+        uint64_t element_count;
+        uint64_t graph_fingerprint;
+        uint64_t route_fingerprint;
+        uint64_t dimension_count;
+    };
+
+    static std::string routeStatePath(const std::string &location) { return location + ".route"; }
+
+    static uint64_t routeFingerprint(
+        const std::vector<uint32_t> &dims,
+        const std::vector<uint32_t> &codes) {
+        uint64_t hash = 1469598103934665603ULL;
+        const auto mix = [&hash](uint32_t value) {
+            for (size_t i = 0; i < sizeof(value); ++i) {
+                hash ^= static_cast<uint8_t>(value >> (i * 8));
+                hash *= 1099511628211ULL;
+            }
+        };
+        for (uint32_t dim : dims) mix(dim);
+        for (uint32_t code : codes) mix(code);
+        return hash;
+    }
+
     static std::string quantizerStatePath(const std::string &location) {
         return location + ".rabitq";
     }
@@ -62,6 +93,10 @@ class RaBitQHierarchicalNSW {
               external_residual_storage,
               residual_bits),
           index_(&space_, max_elements, M, ef_construction, random_seed, allow_replace_deleted) {
+        GraphTurboConfig config;
+        config.mode = GraphTurboMode::BatchPrefetch;
+        config.prefetch_distance = 2;
+        index_.setGraphTurboConfig(config);
     }
 
     RaBitQHierarchicalNSW(
@@ -81,6 +116,10 @@ class RaBitQHierarchicalNSW {
               external_residual_storage,
               residual_config),
           index_(&space_, max_elements, M, ef_construction, random_seed, allow_replace_deleted) {
+        GraphTurboConfig config;
+        config.mode = GraphTurboMode::BatchPrefetch;
+        config.prefetch_distance = 2;
+        index_.setGraphTurboConfig(config);
     }
 //访问space_的接口，外部可以通过它改space_的参数或者调用space_的方法
     RaBitQSpace &space() {
@@ -102,6 +141,239 @@ class RaBitQHierarchicalNSW {
     void setEf(size_t ef) {
         index_.setEf(ef);
     }
+
+    void setGraphTurboConfig(const GraphTurboConfig &config) { index_.setGraphTurboConfig(config); }
+    const GraphTurboConfig &getGraphTurboConfig() const { return index_.getGraphTurboConfig(); }
+    void freezeGraphTurboTopology(bool frozen = true) { index_.freezeGraphTurboTopology(frozen); }
+    bool graphTurboTopologyFrozen() const { return index_.graphTurboTopologyFrozen(); }
+    void setRouteOracle(const float *base_vectors_by_internal_id, size_t count) {
+        index_.setRouteOracle(base_vectors_by_internal_id, count, space_.get_dim());
+    }
+
+    void buildRouteCodes(
+        const float *base_vectors_by_internal_id,
+        size_t count,
+        RouteCodeStrategy strategy,
+        uint32_t route_bits) {
+        if (base_vectors_by_internal_id == nullptr || count != index_.cur_element_count)
+            throw std::invalid_argument("route base vectors must match internal-id count");
+        if (space_.get_centroid_count() != 1 || route_bits < 1 || route_bits > 32 ||
+            route_bits > space_.get_code_dim())
+            throw std::invalid_argument("route codes require K=1 and valid route_bits");
+        std::vector<uint32_t> dims(route_bits);
+        const size_t code_dim = space_.get_code_dim();
+        if (strategy == RouteCodeStrategy::HighVariance) {
+            std::vector<double> sum(code_dim, 0.0), sum_squares(code_dim, 0.0);
+            std::vector<float> residual;
+            for (size_t id = 0; id < count; ++id) {
+                space_.compute_rotated_residual_k1(
+                    base_vectors_by_internal_id + id * space_.get_dim(), residual);
+                for (size_t d = 0; d < code_dim; ++d) {
+                    sum[d] += residual[d];
+                    sum_squares[d] += static_cast<double>(residual[d]) * residual[d];
+                }
+            }
+            std::vector<std::pair<double, uint32_t>> ranked;
+            ranked.reserve(code_dim);
+            for (size_t d = 0; d < code_dim; ++d) {
+                const double mean = sum[d] / static_cast<double>(count);
+                ranked.emplace_back(sum_squares[d] / static_cast<double>(count) - mean * mean,
+                                    static_cast<uint32_t>(d));
+            }
+            std::partial_sort(ranked.begin(), ranked.begin() + route_bits, ranked.end(),
+                [](const std::pair<double, uint32_t> &a,
+                   const std::pair<double, uint32_t> &b) {
+                    return a.first != b.first ? a.first > b.first : a.second < b.second;
+                });
+            for (size_t i = 0; i < route_bits; ++i) dims[i] = ranked[i].second;
+        } else {
+            for (size_t i = 0; i < route_bits; ++i) {
+                dims[i] = strategy == RouteCodeStrategy::EqualInterval
+                    ? static_cast<uint32_t>(((2 * i + 1) * code_dim) / (2 * route_bits))
+                    : static_cast<uint32_t>((i * code_dim) / route_bits);
+            }
+        }
+        std::vector<uint32_t> codes(count);
+        for (size_t id = 0; id < count; ++id) {
+            codes[id] = space_.compute_database_route_code(
+                base_vectors_by_internal_id + id * space_.get_dim(), dims);
+        }
+        index_.setRouteCodeStorage(
+            std::make_shared<ContiguousRouteCodeStorage>(std::move(codes)), std::move(dims));
+        GraphTurboConfig config = index_.getGraphTurboConfig();
+        config.route_strategy = strategy;
+        config.route_bits = route_bits;
+        index_.setGraphTurboConfig(config);
+        index_.freezeGraphTurboTopology(true);
+    }
+
+    uint64_t routeCodeFingerprint() const {
+        const auto storage = std::dynamic_pointer_cast<const ContiguousRouteCodeStorage>(
+            index_.routeCodeStorage());
+        if (!storage) return 0;
+        return routeFingerprint(index_.routeDimensions(), storage->codes());
+    }
+
+    void saveRouteCodes(const std::string &location) const {
+        const auto storage = std::dynamic_pointer_cast<const ContiguousRouteCodeStorage>(
+            index_.routeCodeStorage());
+        if (!storage) {
+            std::remove(routeStatePath(location).c_str());
+            return;
+        }
+        std::ofstream output(routeStatePath(location), std::ios::binary);
+        if (!output) throw std::runtime_error("failed to open Graph-Turbo route sidecar");
+        RouteSidecarHeader header{};
+        std::memcpy(header.magic, "GTRTQ01", 8);
+        header.version = 1;
+        header.route_bits = static_cast<uint32_t>(index_.routeDimensions().size());
+        header.strategy = static_cast<uint32_t>(index_.getGraphTurboConfig().route_strategy);
+        header.zero_sign_rule = 1;
+        header.element_count = index_.cur_element_count;
+        header.graph_fingerprint = index_.graphFingerprint();
+        header.route_fingerprint = routeFingerprint(index_.routeDimensions(), storage->codes());
+        header.dimension_count = index_.routeDimensions().size();
+        output.write(reinterpret_cast<const char *>(&header), sizeof(header));
+        output.write(reinterpret_cast<const char *>(index_.routeDimensions().data()),
+                     index_.routeDimensions().size() * sizeof(uint32_t));
+        output.write(reinterpret_cast<const char *>(storage->codes().data()),
+                     storage->codes().size() * sizeof(uint32_t));
+        if (!output.good()) throw std::runtime_error("failed to write Graph-Turbo route sidecar");
+    }
+
+    bool loadRouteCodes(const std::string &location, bool required = false) {
+        std::ifstream input(routeStatePath(location), std::ios::binary);
+        if (!input) {
+            if (required) throw std::runtime_error("missing Graph-Turbo route sidecar");
+            index_.clearRouteCodeStorage();
+            index_.freezeGraphTurboTopology(false);
+            return false;
+        }
+        RouteSidecarHeader header{};
+        input.read(reinterpret_cast<char *>(&header), sizeof(header));
+        if (!input.good() || std::memcmp(header.magic, "GTRTQ01", 8) != 0 ||
+            header.version != 1 || header.zero_sign_rule != 1 ||
+            header.element_count != index_.cur_element_count ||
+            header.graph_fingerprint != index_.graphFingerprint() ||
+            header.route_bits < 1 || header.route_bits > 32 ||
+            header.strategy > static_cast<uint32_t>(RouteCodeStrategy::ShortCodeSelected) ||
+            header.dimension_count != header.route_bits)
+            throw std::runtime_error("invalid or mismatched Graph-Turbo route sidecar");
+        std::vector<uint32_t> dims(header.dimension_count), codes(header.element_count);
+        input.read(reinterpret_cast<char *>(dims.data()), dims.size() * sizeof(uint32_t));
+        input.read(reinterpret_cast<char *>(codes.data()), codes.size() * sizeof(uint32_t));
+        if (!input.good() || input.peek() != std::ifstream::traits_type::eof() ||
+            routeFingerprint(dims, codes) != header.route_fingerprint)
+            throw std::runtime_error("corrupt Graph-Turbo route sidecar");
+        index_.setRouteCodeStorage(
+            std::make_shared<ContiguousRouteCodeStorage>(std::move(codes)), std::move(dims));
+        GraphTurboConfig config = index_.getGraphTurboConfig();
+        config.route_bits = header.route_bits;
+        config.route_strategy = static_cast<RouteCodeStrategy>(header.strategy);
+        index_.setGraphTurboConfig(config);
+        index_.freezeGraphTurboTopology(true);
+        return true;
+    }
+
+    uint64_t graphFingerprint() const {
+        return index_.graphFingerprint();
+    }
+
+    uint64_t labelGraphFingerprint() const { return index_.labelGraphFingerprint(); }
+    double averageLevel0NeighborIdDistance() const {
+        return index_.averageLevel0NeighborIdDistance();
+    }
+
+    uint64_t payloadFingerprintByLabel() const {
+        uint64_t hash = 1469598103934665603ULL;
+        std::vector<std::pair<labeltype, tableint>> nodes;
+        nodes.reserve(index_.cur_element_count);
+        for (tableint id = 0; id < index_.cur_element_count; ++id)
+            nodes.emplace_back(index_.getExternalLabel(id), id);
+        std::sort(nodes.begin(), nodes.end());
+        for (const auto &node : nodes) {
+            const uint8_t *bytes = reinterpret_cast<const uint8_t *>(
+                index_.getDataByInternalId(node.second));
+            for (size_t i = 0; i < index_.data_size_; ++i) {
+                hash ^= bytes[i];
+                hash *= 1099511628211ULL;
+            }
+        }
+        return hash;
+    }
+
+    uint64_t residualFingerprintByLabel() const {
+        if (!space_.external_residual_storage_enabled()) return 0;
+        uint64_t hash = 1469598103934665603ULL;
+        std::vector<std::pair<labeltype, tableint>> nodes;
+        nodes.reserve(index_.cur_element_count);
+        for (tableint id = 0; id < index_.cur_element_count; ++id)
+            nodes.emplace_back(index_.getExternalLabel(id), id);
+        std::sort(nodes.begin(), nodes.end());
+        std::vector<char> record(space_.get_residual_disk_record_bytes());
+        for (const auto &node : nodes) {
+            space_.copyExternalResidualRecord(node.second, record.data());
+            for (uint8_t byte : record) {
+                hash ^= byte;
+                hash *= 1099511628211ULL;
+            }
+        }
+        return hash;
+    }
+
+    void importBfsReorderedFrom(
+        const RaBitQHierarchicalNSW &source,
+        const std::string &target_residual_path = std::string()) {
+        if (index_.max_elements_ < source.index_.cur_element_count)
+            throw std::runtime_error("BFS reorder target capacity is too small");
+        std::stringstream quantizer_state(std::ios::in | std::ios::out | std::ios::binary);
+        source.space_.saveState(quantizer_state);
+        quantizer_state.seekg(0);
+        space_.loadState(quantizer_state);
+        const std::vector<tableint> new_to_old = source.index_.bfsOrderLevel0();
+        index_.importGraphAndCopyDataFromReordered(
+            source.index_, new_to_old,
+            [&source](tableint old_id, tableint, void *target_data) {
+                std::memcpy(target_data, source.index_.getDataByInternalId(old_id),
+                            source.index_.data_size_);
+            });
+        GraphTurboConfig config = source.index_.getGraphTurboConfig();
+        config.mode = GraphTurboMode::BatchPrefetch;
+        config.prefetch_distance = 2;
+        index_.setGraphTurboConfig(config);
+        if (source.space_.external_residual_storage_enabled()) {
+            if (target_residual_path.empty())
+                throw std::invalid_argument("BFS reorder requires a target residual path");
+            const size_t record_size = source.space_.get_residual_disk_record_bytes();
+            const int fd = ::open(target_residual_path.c_str(), O_CREAT | O_TRUNC | O_RDWR, 0644);
+            if (fd < 0) throw std::runtime_error("cannot create BFS residual sidecar");
+            const size_t total_bytes = new_to_old.size() * record_size;
+            if (::ftruncate(fd, static_cast<off_t>(total_bytes)) != 0) {
+                ::close(fd);
+                throw std::runtime_error("cannot resize BFS residual sidecar");
+            }
+            std::vector<char> record(record_size);
+            for (tableint new_id = 0; new_id < new_to_old.size(); ++new_id) {
+                source.space_.copyExternalResidualRecord(new_to_old[new_id], record.data());
+                size_t written = 0;
+                while (written < record_size) {
+                    const ssize_t rc = ::pwrite(fd, record.data() + written, record_size - written,
+                        static_cast<off_t>(static_cast<size_t>(new_id) * record_size + written));
+                    if (rc <= 0) {
+                        ::close(fd);
+                        throw std::runtime_error("failed writing BFS residual sidecar");
+                    }
+                    written += static_cast<size_t>(rc);
+                }
+            }
+            ::close(fd);
+            space_.openExternalResidualStorage(target_residual_path, new_to_old.size());
+        }
+        if (labelGraphFingerprint() != source.labelGraphFingerprint() ||
+            payloadFingerprintByLabel() != source.payloadFingerprintByLabel() ||
+            residualFingerprintByLabel() != source.residualFingerprintByLabel())
+            throw std::runtime_error("BFS reorder integrity verification failed");
+    }
 //保存索引到文件，直接调用index_的saveIndex方法
     void saveIndex(const std::string &location) {
         //这里保存的是hnsw索引里的编码数据，而不是原始的float向量
@@ -113,9 +385,11 @@ class RaBitQHierarchicalNSW {
         quantizer_output.close();
 
         index_.saveIndex(location);
+        saveRouteCodes(location);
     }
 //加载索引
     void loadIndex(const std::string &location, size_t max_elements = 0) {
+        index_.setRouteOracle(nullptr, 0, 0);
         std::ifstream quantizer_input(quantizerStatePath(location), std::ios::binary);
         if (!quantizer_input.is_open()) {
             throw std::runtime_error(
@@ -124,6 +398,7 @@ class RaBitQHierarchicalNSW {
         space_.loadState(quantizer_input);
         quantizer_input.close();
         index_.loadIndex(location, &space_, max_elements);
+        loadRouteCodes(location, false);
         space_.openExternalResidualStorage(residualPathForIndex(location), index_.cur_element_count);
     }
 //添加数据点，首先将原始向量编码成RaBitQ编码，然后调用index_的addPoint方法插入编码后的向量
@@ -333,8 +608,20 @@ class RaBitQHierarchicalNSW {
         const float *raw_query,
         size_t k,
         size_t rerank_candidates,
-        BaseFilterFunctor *isIdAllowed = nullptr) const {
-        return index_.searchKnnPlainThenResidualRerank(raw_query, k, rerank_candidates, isIdAllowed);
+        BaseFilterFunctor *isIdAllowed = nullptr,
+        RaBitQSearchMetrics *metrics = nullptr) const {
+        return index_.searchKnnPlainThenResidualRerank(
+            raw_query, k, rerank_candidates, isIdAllowed, metrics);
+    }
+
+    std::priority_queue<std::pair<float, labeltype>>
+    searchKnnPrimaryOnly(
+        const float *raw_query,
+        size_t k,
+        BaseFilterFunctor *isIdAllowed = nullptr,
+        RaBitQSearchMetrics *metrics = nullptr) const {
+        return index_.searchKnnPlainThenResidualRerank(
+            raw_query, k, k, isIdAllowed, metrics, false);
     }
 
     std::priority_queue<std::pair<float, labeltype>>
@@ -363,8 +650,10 @@ class RaBitQHierarchicalNSW {
         const float *raw_query,
         size_t k,
         size_t rerank_candidates,
-        BaseFilterFunctor *isIdAllowed = nullptr) const {
-        auto result = searchKnnPlainThenResidualRerank(raw_query, k, rerank_candidates, isIdAllowed);
+        BaseFilterFunctor *isIdAllowed = nullptr,
+        RaBitQSearchMetrics *metrics = nullptr) const {
+        auto result = searchKnnPlainThenResidualRerank(
+            raw_query, k, rerank_candidates, isIdAllowed, metrics);
         std::vector<std::pair<float, labeltype>> sorted;
         sorted.reserve(result.size());
         while (!result.empty()) {

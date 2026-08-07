@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <cmath>
+#include <chrono>
 
 //hnsw索引算法本体 
 namespace hnswlib {
@@ -73,6 +74,17 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     mutable std::atomic<long> metric_distance_computations{0};
     mutable std::atomic<long> metric_hops{0};
     bool allow_replace_deleted_ = false;  // flag to replace deleted elements (marked as deleted) during insertions
+
+    GraphTurboConfig graph_turbo_config_{};
+    std::shared_ptr<const RouteCodeStorage> route_code_storage_;
+    std::vector<uint32_t> route_dims_;
+    bool graph_turbo_topology_frozen_{false};
+    const float *route_oracle_vectors_{nullptr};
+    size_t route_oracle_count_{0};
+    size_t route_oracle_dim_{0};
+    std::vector<uint8_t> paper_msb_codes_;
+    std::vector<PaperPruneFactors<dist_t>> paper_prune_factors_;
+    size_t paper_msb_stride_{0};
 
     std::mutex deleted_elements_lock;  // lock for deleted_elements
     std::unordered_set<tableint> deleted_elements;  // contains internal ids of deleted elements
@@ -202,6 +214,14 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         ef_ = ef;
     }
 
+    static bool baselineWouldAccept(
+        dist_t full_distance,
+        dist_t saved_lower_bound,
+        size_t queue_size,
+        size_t ef) {
+        return queue_size < ef || saved_lower_bound > full_distance;
+    }
+
     void importGraphAndCopyDataFrom(
         const HierarchicalNSW<dist_t> &source,
         const std::function<void(tableint source_internal_id, void *target_data)> &copy_data) {
@@ -269,6 +289,116 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         }
     }
 
+    std::vector<tableint> bfsOrderLevel0() const {
+        const size_t count = cur_element_count;
+        std::vector<tableint> order;
+        order.reserve(count);
+        if (count == 0) return order;
+        std::vector<uint8_t> seen(count, 0);
+        std::queue<tableint> pending;
+        const tableint start = enterpoint_node_ < count ? enterpoint_node_ : 0;
+        seen[start] = 1;
+        pending.push(start);
+        while (!pending.empty()) {
+            const tableint current = pending.front();
+            pending.pop();
+            order.push_back(current);
+            linklistsizeint *links = get_linklist0(current);
+            const unsigned short degree = getListCount(links);
+            const tableint *neighbors = reinterpret_cast<const tableint *>(links + 1);
+            for (size_t j = 0; j < degree; ++j) {
+                const tableint neighbor = neighbors[j];
+                if (neighbor >= count)
+                    throw std::runtime_error("level-0 neighbor is outside the graph");
+                if (!seen[neighbor]) {
+                    seen[neighbor] = 1;
+                    pending.push(neighbor);
+                }
+            }
+        }
+        for (tableint id = 0; id < count; ++id) {
+            if (!seen[id]) order.push_back(id);
+        }
+        return order;
+    }
+
+    void importGraphAndCopyDataFromReordered(
+        const HierarchicalNSW<dist_t> &source,
+        const std::vector<tableint> &new_to_old,
+        const std::function<void(tableint source_internal_id, tableint target_internal_id,
+                                 void *target_data)> &copy_data) {
+        const size_t count = source.cur_element_count;
+        if (new_to_old.size() != count)
+            throw std::invalid_argument("reorder permutation size does not match graph");
+        std::vector<tableint> old_to_new(count);
+        std::vector<uint8_t> seen(count, 0);
+        for (tableint new_id = 0; new_id < count; ++new_id) {
+            const tableint old_id = new_to_old[new_id];
+            if (old_id >= count || seen[old_id])
+                throw std::invalid_argument("reorder mapping is not a permutation");
+            seen[old_id] = 1;
+            old_to_new[old_id] = new_id;
+        }
+        if (source.maxM_ != maxM_ || source.maxM0_ != maxM0_ || source.M_ != M_ ||
+            source.size_links_level0_ != size_links_level0_ ||
+            source.size_links_per_element_ != size_links_per_element_)
+            throw std::runtime_error("Cannot reorder HNSW graph with different M/link layout");
+        for (tableint i = 0; i < cur_element_count; ++i) {
+            if (element_levels_[i] > 0 && linkLists_[i]) free(linkLists_[i]);
+            linkLists_[i] = nullptr;
+        }
+        cur_element_count = count;
+        maxlevel_ = source.maxlevel_;
+        enterpoint_node_ = count ? old_to_new[source.enterpoint_node_] : static_cast<tableint>(-1);
+        ef_construction_ = source.ef_construction_;
+        ef_ = source.ef_;
+        mult_ = source.mult_;
+        revSize_ = source.revSize_;
+        num_deleted_ = 0;
+        label_lookup_.clear();
+        deleted_elements.clear();
+        element_levels_.assign(max_elements_, 0);
+
+        const auto remap_links = [&](linklistsizeint *links) {
+            const unsigned short degree = getListCount(links);
+            tableint *neighbors = reinterpret_cast<tableint *>(links + 1);
+            for (size_t j = 0; j < degree; ++j) {
+                if (neighbors[j] >= count)
+                    throw std::runtime_error("neighbor is outside the graph during reorder");
+                neighbors[j] = old_to_new[neighbors[j]];
+            }
+        };
+        for (tableint new_id = 0; new_id < count; ++new_id) {
+            const tableint old_id = new_to_old[new_id];
+            element_levels_[new_id] = source.element_levels_[old_id];
+            char *target_record = data_level0_memory_ + new_id * size_data_per_element_;
+            memset(target_record, 0, size_data_per_element_);
+            memcpy(get_linklist0(new_id), source.get_linklist0(old_id), size_links_level0_);
+            remap_links(get_linklist0(new_id));
+            copy_data(old_id, new_id, getDataByInternalId(new_id));
+            space_->commit_data_for_add(new_id, getDataByInternalId(new_id));
+            const labeltype label = source.getExternalLabel(old_id);
+            setExternalLabel(new_id, label);
+            label_lookup_[label] = new_id;
+            if (element_levels_[new_id] > 0) {
+                const size_t bytes = size_links_per_element_ * element_levels_[new_id];
+                linkLists_[new_id] = static_cast<char *>(malloc(bytes + 1));
+                if (!linkLists_[new_id])
+                    throw std::runtime_error("Not enough memory while reordering HNSW linklists");
+                memset(linkLists_[new_id], 0, bytes + 1);
+                memcpy(linkLists_[new_id], source.linkLists_[old_id], bytes);
+                for (int level = 1; level <= element_levels_[new_id]; ++level)
+                    remap_links(get_linklist(new_id, level));
+            } else {
+                linkLists_[new_id] = nullptr;
+            }
+            if (isMarkedDeleted(new_id)) {
+                ++num_deleted_;
+                if (allow_replace_deleted_) deleted_elements.insert(new_id);
+            }
+        }
+    }
+
 
     inline std::mutex& getLabelOpMutex(labeltype label) const {
         // calculate hash
@@ -281,6 +411,161 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         labeltype return_label;
         memcpy(&return_label, (data_level0_memory_ + internal_id * size_data_per_element_ + label_offset_), sizeof(labeltype));
         return return_label;
+    }
+
+    uint64_t graphFingerprint() const {
+        uint64_t hash = 1469598103934665603ULL;
+        const auto mix = [&hash](const void *data, size_t size) {
+            const uint8_t *bytes = static_cast<const uint8_t *>(data);
+            for (size_t i = 0; i < size; ++i) {
+                hash ^= bytes[i];
+                hash *= 1099511628211ULL;
+            }
+        };
+        mix(&cur_element_count, sizeof(cur_element_count));
+        mix(&maxlevel_, sizeof(maxlevel_));
+        mix(&enterpoint_node_, sizeof(enterpoint_node_));
+        for (tableint id = 0; id < cur_element_count; ++id) {
+            const labeltype label = getExternalLabel(id);
+            mix(&label, sizeof(label));
+            const int levels = element_levels_[id];
+            mix(&levels, sizeof(levels));
+            for (int level = 0; level <= levels; ++level) {
+                linklistsizeint *links = level == 0
+                    ? get_linklist0(id)
+                    : get_linklist(id, level);
+                const unsigned short count = getListCount(links);
+                mix(&count, sizeof(count));
+                mix(links + 1, static_cast<size_t>(count) * sizeof(tableint));
+            }
+        }
+        return hash;
+    }
+
+    uint64_t labelGraphFingerprint() const {
+        uint64_t hash = 1469598103934665603ULL;
+        const auto mix = [&hash](const void *data, size_t size) {
+            const uint8_t *bytes = static_cast<const uint8_t *>(data);
+            for (size_t i = 0; i < size; ++i) {
+                hash ^= bytes[i];
+                hash *= 1099511628211ULL;
+            }
+        };
+        const size_t count = cur_element_count;
+        mix(&count, sizeof(count));
+        if (count == 0) return hash;
+        const labeltype entry_label = getExternalLabel(enterpoint_node_);
+        mix(&entry_label, sizeof(entry_label));
+        std::vector<std::pair<labeltype, tableint>> nodes;
+        nodes.reserve(count);
+        for (tableint id = 0; id < count; ++id)
+            nodes.emplace_back(getExternalLabel(id), id);
+        std::sort(nodes.begin(), nodes.end());
+        for (const auto &node : nodes) {
+            const labeltype label = node.first;
+            const tableint id = node.second;
+            mix(&label, sizeof(label));
+            const int levels = element_levels_[id];
+            mix(&levels, sizeof(levels));
+            for (int level = 0; level <= levels; ++level) {
+                linklistsizeint *links = level == 0 ? get_linklist0(id) : get_linklist(id, level);
+                const unsigned short degree = getListCount(links);
+                mix(&degree, sizeof(degree));
+                const tableint *neighbors = reinterpret_cast<const tableint *>(links + 1);
+                for (size_t j = 0; j < degree; ++j) {
+                    const labeltype neighbor_label = getExternalLabel(neighbors[j]);
+                    mix(&neighbor_label, sizeof(neighbor_label));
+                }
+            }
+        }
+        return hash;
+    }
+
+    double averageLevel0NeighborIdDistance() const {
+        long double sum = 0.0;
+        size_t edges = 0;
+        for (tableint id = 0; id < cur_element_count; ++id) {
+            linklistsizeint *links = get_linklist0(id);
+            const unsigned short degree = getListCount(links);
+            const tableint *neighbors = reinterpret_cast<const tableint *>(links + 1);
+            for (size_t j = 0; j < degree; ++j) {
+                sum += id > neighbors[j] ? id - neighbors[j] : neighbors[j] - id;
+                ++edges;
+            }
+        }
+        return edges ? static_cast<double>(sum / edges) : 0.0;
+    }
+
+    void setGraphTurboConfig(const GraphTurboConfig &config) {
+        if (config.route_bits < 1 || config.route_bits > 32 ||
+            config.top_p < 1 || config.top_p > maxM0_ ||
+            config.prefetch_distance == 0) {
+            throw std::invalid_argument("invalid Graph-Turbo configuration");
+        }
+        if (config.mode == GraphTurboMode::RoutePriority &&
+            (!route_code_storage_ || route_code_storage_->size() != cur_element_count ||
+             route_dims_.size() != config.route_bits)) {
+            throw std::runtime_error("route_priority requires matching route codes and dimensions");
+        }
+        if ((config.short_shadow || config.two_bit_shadow || config.paper_shadow ||
+             config.paper_active || config.paper_staged_control) &&
+            config.mode != GraphTurboMode::BatchPrefetch)
+            throw std::invalid_argument("lower-bound shadow requires batch_prefetch mode");
+        const unsigned experimental_modes = static_cast<unsigned>(config.short_shadow) +
+            static_cast<unsigned>(config.two_bit_shadow) +
+            static_cast<unsigned>(config.paper_shadow) +
+            static_cast<unsigned>(config.paper_active) +
+            static_cast<unsigned>(config.paper_staged_control);
+        if (experimental_modes > 1)
+            throw std::invalid_argument("low-bit experimental modes are mutually exclusive");
+        if (!(config.paper_epsilon0 == 1.9f || config.paper_epsilon0 == 2.2f ||
+              config.paper_epsilon0 == 2.5f))
+            throw std::invalid_argument("paper epsilon0 must be 1.9, 2.2, or 2.5");
+        if (config.paper_shadow || config.paper_active || config.paper_staged_control) {
+            const size_t stride = space_->paper_msb_code_bytes();
+            if (stride == 0) throw std::runtime_error("paper pruning sidecar is unsupported");
+            if (paper_msb_stride_ != stride || paper_prune_factors_.size() != cur_element_count) {
+                paper_msb_stride_ = stride;
+                paper_msb_codes_.assign(cur_element_count * stride, 0);
+                paper_prune_factors_.resize(cur_element_count);
+                for (tableint id = 0; id < cur_element_count; ++id) {
+                    paper_prune_factors_[id] = space_->extract_paper_prune_sidecar(
+                        getDataByInternalId(id), paper_msb_codes_.data() + id * stride);
+                }
+            }
+        }
+        graph_turbo_config_ = config;
+    }
+
+    const GraphTurboConfig &getGraphTurboConfig() const { return graph_turbo_config_; }
+
+    void setRouteCodeStorage(
+        std::shared_ptr<const RouteCodeStorage> storage,
+        std::vector<uint32_t> route_dims) {
+        if (!storage || storage->size() != cur_element_count || route_dims.empty() || route_dims.size() > 32) {
+            throw std::invalid_argument("route-code storage does not match graph");
+        }
+        route_code_storage_ = std::move(storage);
+        route_dims_ = std::move(route_dims);
+    }
+
+    void clearRouteCodeStorage() {
+        route_code_storage_.reset();
+        route_dims_.clear();
+        if (graph_turbo_config_.mode == GraphTurboMode::RoutePriority)
+            graph_turbo_config_.mode = GraphTurboMode::Baseline;
+    }
+
+    const std::vector<uint32_t> &routeDimensions() const { return route_dims_; }
+    const std::shared_ptr<const RouteCodeStorage> &routeCodeStorage() const { return route_code_storage_; }
+    void freezeGraphTurboTopology(bool frozen = true) { graph_turbo_topology_frozen_ = frozen; }
+    bool graphTurboTopologyFrozen() const { return graph_turbo_topology_frozen_; }
+    void setRouteOracle(const float *vectors, size_t count, size_t dim) {
+        if (vectors && count != cur_element_count)
+            throw std::invalid_argument("route oracle must be ordered by internal ID");
+        route_oracle_vectors_ = vectors;
+        route_oracle_count_ = vectors ? count : 0;
+        route_oracle_dim_ = vectors ? dim : 0;
     }
 
 
@@ -414,7 +699,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         const void *query_context,
         size_t ef,
         BaseFilterFunctor* isIdAllowed = nullptr,
-        BaseSearchStopCondition<dist_t>* stop_condition = nullptr) const {
+        BaseSearchStopCondition<dist_t>* stop_condition = nullptr,
+        RaBitQSearchMetrics *query_metrics = nullptr) const {
         VisitedList *vl = visited_list_pool_->getFreeVisitedList();
         vl_type *visited_array = vl->mass;
         vl_type visited_array_tag = vl->curV;
@@ -422,11 +708,42 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
 
+        struct GraphTurboScratch {
+            std::vector<tableint> ids;
+            std::vector<uint16_t> original_pos;
+            std::vector<dist_t> distances;
+            std::vector<uint8_t> scores;
+            std::vector<uint16_t> order;
+            std::vector<const void *> data_points;
+            std::vector<PaperPruneEstimate<dist_t>> paper_estimates;
+        };
+        thread_local GraphTurboScratch turbo_scratch;
+        const bool turbo_enabled = graph_turbo_config_.mode != GraphTurboMode::Baseline;
+        if (turbo_enabled) {
+            turbo_scratch.ids.resize(maxM0_);
+            turbo_scratch.original_pos.resize(maxM0_);
+            turbo_scratch.distances.resize(maxM0_);
+            turbo_scratch.scores.resize(maxM0_);
+            turbo_scratch.order.resize(maxM0_);
+            turbo_scratch.data_points.resize(maxM0_);
+            turbo_scratch.paper_estimates.resize(maxM0_);
+        }
+        uint32_t query_route_code = 0;
+        if (graph_turbo_config_.mode == GraphTurboMode::RoutePriority &&
+            !space_->compute_query_route_code(query_context, route_dims_, &query_route_code)) {
+            visited_list_pool_->releaseVisitedList(vl);
+            throw std::runtime_error("space cannot compute a K=1 route code");
+        }
+
         dist_t lowerBound;
         if (bare_bone_search || 
             (!isMarkedDeleted(ep_id) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(ep_id))))) {
             char* ep_data = getDataByInternalId(ep_id);
             dist_t dist = space_->query_distance(query_context, ep_data);
+            if (query_metrics) {
+                ++query_metrics->distance_computations;
+                ++query_metrics->visited_nodes;
+            }
             lowerBound = dist;
             top_candidates.emplace(dist, ep_id);
             if (!bare_bone_search && stop_condition) {
@@ -475,7 +792,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             _mm_prefetch((char *) (data + 2), _MM_HINT_T0);
 #endif
 
-            for (size_t j = 1; j <= size; j++) {
+            for (size_t j = 1; !turbo_enabled && j <= size; j++) {
                 int candidate_id = *(data + j);
 //                    if (candidate_id == 0) continue;
 #ifdef USE_SSE
@@ -485,9 +802,15 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 #endif
                 if (!(visited_array[candidate_id] == visited_array_tag)) {
                     visited_array[candidate_id] = visited_array_tag;
+                    if (query_metrics) {
+                        ++query_metrics->visited_nodes;
+                    }
 
                     char *currObj1 = (getDataByInternalId(candidate_id));
                     dist_t dist = space_->query_distance(query_context, currObj1);
+                    if (query_metrics) {
+                        ++query_metrics->distance_computations;
+                    }
 
                     bool flag_consider_candidate;
                     if (!bare_bone_search && stop_condition) {
@@ -531,6 +854,336 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
                         if (!top_candidates.empty())
                             lowerBound = top_candidates.top().first;
+                    }
+                }
+            }
+
+            if (turbo_enabled) {
+                size_t compact_count = 0;
+                if (query_metrics) query_metrics->neighbors_seen += size;
+                for (size_t j = 1; j <= size; ++j) {
+                    const tableint candidate_id = static_cast<tableint>(*(data + j));
+                    if (visited_array[candidate_id] == visited_array_tag) continue;
+                    visited_array[candidate_id] = visited_array_tag;
+                    turbo_scratch.ids[compact_count] = candidate_id;
+                    turbo_scratch.original_pos[compact_count] = static_cast<uint16_t>(j - 1);
+                    turbo_scratch.data_points[compact_count] = getDataByInternalId(candidate_id);
+                    turbo_scratch.order[compact_count] = static_cast<uint16_t>(compact_count);
+                    ++compact_count;
+                }
+                if (query_metrics) {
+                    query_metrics->neighbors_unvisited += compact_count;
+                    query_metrics->visited_nodes += compact_count;
+                }
+
+                const auto update_candidate = [&](size_t slot) {
+                    const tableint candidate_id = turbo_scratch.ids[slot];
+                    char *currObj1 = getDataByInternalId(candidate_id);
+                    const dist_t dist = turbo_scratch.distances[slot];
+                    const dist_t saved_lower_bound = lowerBound;
+                    const size_t saved_queue_size = top_candidates.size();
+                    bool consider;
+                    if (!bare_bone_search && stop_condition)
+                        consider = stop_condition->should_consider_candidate(dist, saved_lower_bound);
+                    else
+                        consider = baselineWouldAccept(
+                            dist, saved_lower_bound, saved_queue_size, ef);
+                    if (graph_turbo_config_.short_shadow && saved_queue_size >= ef) {
+                        const auto short_start = query_metrics
+                            ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+                        const dist_t short_lower_bound = space_->compute_short_lower_bound(
+                            query_context, currObj1);
+                        if (query_metrics) {
+                            query_metrics->short_time_us +=
+                                std::chrono::duration<double, std::micro>(
+                                    std::chrono::steady_clock::now() - short_start).count();
+                            ++query_metrics->short_checked;
+                            const bool short_rejects = short_lower_bound > saved_lower_bound;
+                            if (short_rejects) {
+                                ++query_metrics->short_would_reject;
+                                if (consider) ++query_metrics->unsafe_reject;
+                            } else {
+                                ++query_metrics->short_ambiguous;
+                            }
+                            const dist_t tolerance = static_cast<dist_t>(1e-5) *
+                                std::max<dist_t>(static_cast<dist_t>(1), std::fabs(dist));
+                            if (short_lower_bound > dist + tolerance)
+                                ++query_metrics->short_bound_violation;
+                        }
+                    }
+                    if (graph_turbo_config_.two_bit_shadow && saved_queue_size >= ef) {
+                        const auto two_bit_start = query_metrics
+                            ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+                        const dist_t two_bit_lower_bound = space_->compute_two_bit_lower_bound(
+                            query_context, currObj1);
+                        if (query_metrics) {
+                            query_metrics->two_bit_time_us +=
+                                std::chrono::duration<double, std::micro>(
+                                    std::chrono::steady_clock::now() - two_bit_start).count();
+                            ++query_metrics->two_bit_checked;
+                            const bool two_bit_rejects = two_bit_lower_bound > saved_lower_bound;
+                            if (two_bit_rejects) {
+                                ++query_metrics->two_bit_would_reject;
+                                if (consider) ++query_metrics->two_bit_unsafe_reject;
+                            } else {
+                                ++query_metrics->two_bit_ambiguous;
+                            }
+                            const dist_t tolerance = static_cast<dist_t>(1e-5) *
+                                std::max<dist_t>(static_cast<dist_t>(1), std::fabs(dist));
+                            if (two_bit_lower_bound > dist + tolerance)
+                                ++query_metrics->two_bit_bound_violation;
+                        }
+                    }
+                    if (graph_turbo_config_.paper_shadow && saved_queue_size >= ef) {
+                        const auto &paper = turbo_scratch.paper_estimates[slot];
+                        if (query_metrics) {
+                            if (paper.valid) {
+                                ++query_metrics->paper_checked;
+                                const bool rejects = paper.lower_bound > saved_lower_bound;
+                                if (rejects) {
+                                    ++query_metrics->paper_would_prune;
+                                    ++query_metrics->paper_full_saved;
+                                    if (consider) {
+                                        ++query_metrics->paper_false_prune_against_baseline;
+                                        ++query_metrics->paper_pruned_baseline_accept;
+                                    } else {
+                                        ++query_metrics->paper_pruned_baseline_reject;
+                                    }
+                                } else {
+                                    ++query_metrics->paper_not_pruned;
+                                }
+                            }
+                        }
+                    }
+                    if (!consider) return;
+                    candidate_set.emplace(-dist, candidate_id);
+                    if (bare_bone_search || (!isMarkedDeleted(candidate_id) &&
+                        ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id))))) {
+                        top_candidates.emplace(dist, candidate_id);
+                        if (!bare_bone_search && stop_condition)
+                            stop_condition->add_point_to_result(getExternalLabel(candidate_id), currObj1, dist);
+                    }
+                    bool remove_extra = !bare_bone_search && stop_condition
+                        ? stop_condition->should_remove_extra() : top_candidates.size() > ef;
+                    while (remove_extra) {
+                        const tableint id = top_candidates.top().second;
+                        top_candidates.pop();
+                        if (!bare_bone_search && stop_condition) {
+                            stop_condition->remove_point_from_result(
+                                getExternalLabel(id), getDataByInternalId(id), dist);
+                            remove_extra = stop_condition->should_remove_extra();
+                        } else remove_extra = top_candidates.size() > ef;
+                    }
+                    if (!top_candidates.empty()) lowerBound = top_candidates.top().first;
+                };
+
+                if (graph_turbo_config_.mode == GraphTurboMode::BatchPrefetch) {
+                    if (graph_turbo_config_.paper_shadow || graph_turbo_config_.paper_active ||
+                        graph_turbo_config_.paper_staged_control) {
+                        const auto paper_batch_start = query_metrics
+                            ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+                        for (size_t i = 0; i < compact_count; ++i) {
+                            const tableint id = turbo_scratch.ids[i];
+                            turbo_scratch.paper_estimates[i] =
+                                space_->compute_paper_prune_estimate_sidecar(
+                                    query_context,
+                                    paper_msb_codes_.data() + static_cast<size_t>(id) * paper_msb_stride_,
+                                    paper_prune_factors_[id],
+                                    static_cast<dist_t>(graph_turbo_config_.paper_epsilon0));
+                        }
+                        if (query_metrics) {
+                            query_metrics->paper_short_time_us +=
+                                std::chrono::duration<double, std::micro>(
+                                    std::chrono::steady_clock::now() - paper_batch_start).count();
+                            query_metrics->paper_msb_kernel_calls += compact_count;
+                        }
+                    }
+                    if (graph_turbo_config_.paper_active ||
+                        graph_turbo_config_.paper_staged_control) {
+                        const auto queue_start = query_metrics ? std::chrono::steady_clock::now()
+                                                               : std::chrono::steady_clock::time_point{};
+                        for (size_t i = 0; i < compact_count; ++i) {
+                            const size_t pf = i + graph_turbo_config_.prefetch_distance;
+                            if (pf < compact_count) {
+#if defined(__GNUC__) || defined(__clang__)
+                                __builtin_prefetch(turbo_scratch.data_points[pf], 0, 3);
+#endif
+                                if (query_metrics) ++query_metrics->prefetch_issued;
+                            }
+                            const dist_t saved_lower_bound = lowerBound;
+                            const size_t saved_queue_size = top_candidates.size();
+                            const PaperPruneEstimate<dist_t> &paper =
+                                turbo_scratch.paper_estimates[i];
+                            if (graph_turbo_config_.paper_active && saved_queue_size >= ef &&
+                                paper.valid) {
+                                if (query_metrics) ++query_metrics->paper_checked;
+                                if (paper.lower_bound > saved_lower_bound) {
+                                    if (query_metrics) {
+                                        ++query_metrics->paper_would_prune;
+                                        ++query_metrics->paper_full_saved;
+                                    }
+                                    continue;
+                                }
+                                if (query_metrics) ++query_metrics->paper_not_pruned;
+                            }
+                            const auto remaining_start = query_metrics
+                                ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
+                            turbo_scratch.distances[i] = paper.valid
+                                ? space_->query_distance_with_paper_msb(
+                                    query_context, turbo_scratch.data_points[i], paper.short_ip)
+                                : space_->query_distance(query_context, turbo_scratch.data_points[i]);
+                            if (query_metrics) {
+                                const double elapsed = std::chrono::duration<double, std::micro>(
+                                    std::chrono::steady_clock::now() - remaining_start).count();
+                                query_metrics->paper_remaining_time_us += elapsed;
+                                query_metrics->full_distance_us += elapsed;
+                                query_metrics->full_distance_time_us += elapsed;
+                                ++query_metrics->paper_remaining_kernel_calls;
+                                ++query_metrics->distance_computations;
+                                ++query_metrics->full_distance_count;
+                                ++query_metrics->remaining_full_distance_count;
+                            }
+                            update_candidate(i);
+                        }
+                        if (query_metrics) query_metrics->queue_update_us +=
+                            std::chrono::duration<double, std::micro>(
+                                std::chrono::steady_clock::now() - queue_start).count();
+                        continue;
+                    }
+                    const auto full_start = query_metrics ? std::chrono::steady_clock::now()
+                                                          : std::chrono::steady_clock::time_point{};
+                    space_->query_distance_batch_k1(
+                        query_context, turbo_scratch.data_points.data(), compact_count,
+                        turbo_scratch.distances.data(), graph_turbo_config_.prefetch_distance);
+                    if (query_metrics) {
+                        query_metrics->distance_computations += compact_count;
+                        query_metrics->full_distance_count += compact_count;
+                        query_metrics->remaining_full_distance_count += compact_count;
+                        query_metrics->prefetch_issued += compact_count > graph_turbo_config_.prefetch_distance
+                            ? compact_count - graph_turbo_config_.prefetch_distance : 0;
+                        const double elapsed_full_us = std::chrono::duration<double, std::micro>(
+                            std::chrono::steady_clock::now() - full_start).count();
+                        query_metrics->full_distance_us += elapsed_full_us;
+                        query_metrics->full_distance_time_us += elapsed_full_us;
+                    }
+                    const auto queue_start = query_metrics ? std::chrono::steady_clock::now()
+                                                           : std::chrono::steady_clock::time_point{};
+                    for (size_t i = 0; i < compact_count; ++i) update_candidate(i);
+                    if (query_metrics) query_metrics->queue_update_us += std::chrono::duration<double, std::micro>(
+                        std::chrono::steady_clock::now() - queue_start).count();
+                } else {
+                    const auto route_start = query_metrics ? std::chrono::steady_clock::now()
+                                                           : std::chrono::steady_clock::time_point{};
+                    for (size_t i = 0; i < compact_count; ++i) {
+                        const uint32_t code = route_code_storage_->code(turbo_scratch.ids[i]);
+#if defined(__GNUC__) || defined(__clang__)
+                        turbo_scratch.scores[i] = static_cast<uint8_t>(__builtin_popcount(query_route_code ^ code));
+#else
+                        uint32_t value = query_route_code ^ code; uint8_t score = 0;
+                        while (value) { value &= value - 1; ++score; }
+                        turbo_scratch.scores[i] = score;
+#endif
+                    }
+                    if (query_metrics) {
+                        query_metrics->route_scored += compact_count;
+                        query_metrics->route_score_us += std::chrono::duration<double, std::micro>(
+                            std::chrono::steady_clock::now() - route_start).count();
+                    }
+                    const auto select_start = query_metrics ? std::chrono::steady_clock::now()
+                                                            : std::chrono::steady_clock::time_point{};
+                    const size_t priority_count = std::min<size_t>(graph_turbo_config_.top_p, compact_count);
+                    for (size_t i = 1; i < compact_count; ++i) {
+                        const uint16_t value = turbo_scratch.order[i];
+                        size_t pos = i;
+                        while (pos > 0 && turbo_scratch.scores[value] <
+                               turbo_scratch.scores[turbo_scratch.order[pos - 1]]) {
+                            turbo_scratch.order[pos] = turbo_scratch.order[pos - 1];
+                            --pos;
+                        }
+                        turbo_scratch.order[pos] = value;
+                    }
+                    if (query_metrics) query_metrics->top_p_select_us += std::chrono::duration<double, std::micro>(
+                        std::chrono::steady_clock::now() - select_start).count();
+                    const bool sample_oracle = query_metrics && route_oracle_vectors_ && compact_count > 0 &&
+                        graph_turbo_config_.statistics_sample_rate > 0 &&
+                        (query_metrics->lower_bound_samples % graph_turbo_config_.statistics_sample_rate == 0);
+                    if (sample_oracle) {
+                        std::vector<std::pair<float, size_t>> float_ranked;
+                        float_ranked.reserve(compact_count);
+                        for (size_t i = 0; i < compact_count; ++i) {
+                            float distance = 0.0f;
+                            if (!space_->float32_query_distance(
+                                    query_context,
+                                    route_oracle_vectors_ + static_cast<size_t>(turbo_scratch.ids[i]) * route_oracle_dim_,
+                                    &distance)) {
+                                float_ranked.clear();
+                                break;
+                            }
+                            float_ranked.emplace_back(distance, i);
+                        }
+                        if (!float_ranked.empty()) {
+                            const size_t float_top = std::min<size_t>(4, float_ranked.size());
+                            std::partial_sort(float_ranked.begin(), float_ranked.begin() + float_top,
+                                              float_ranked.end());
+                            ++query_metrics->route_oracle_samples;
+                            if (turbo_scratch.order[0] == float_ranked[0].second)
+                                ++query_metrics->route_top1_matches_float_top1;
+                            const size_t route_top4 = std::min<size_t>(4, compact_count);
+                            for (size_t r = 0; r < route_top4; ++r) {
+                                if (turbo_scratch.order[r] == float_ranked[0].second) {
+                                    ++query_metrics->route_top4_contains_float_top1;
+                                    break;
+                                }
+                            }
+                            const size_t route_top8 = std::min<size_t>(8, compact_count);
+                            query_metrics->route_top8_float_top4_total += float_top;
+                            for (size_t f = 0; f < float_top; ++f) {
+                                for (size_t r = 0; r < route_top8; ++r) {
+                                    if (turbo_scratch.order[r] == float_ranked[f].second) {
+                                        ++query_metrics->route_top8_float_top4_hits;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (query_metrics && priority_count) {
+                        query_metrics->lower_bound_before_priority += lowerBound;
+                        ++query_metrics->lower_bound_samples;
+                    }
+                    std::vector<uint8_t> &selected = turbo_scratch.scores;
+                    for (size_t i = 0; i < compact_count; ++i) selected[i] = 0;
+                    for (size_t rank = 0; rank < priority_count; ++rank) selected[turbo_scratch.order[rank]] = 1;
+                    const auto full_start = query_metrics ? std::chrono::steady_clock::now()
+                                                          : std::chrono::steady_clock::time_point{};
+                    for (size_t rank = 0; rank < priority_count; ++rank) {
+                        const size_t slot = turbo_scratch.order[rank];
+                        turbo_scratch.distances[slot] = space_->query_distance(
+                            query_context, turbo_scratch.data_points[slot]);
+                        update_candidate(slot);
+                    }
+                    if (query_metrics && priority_count) {
+                        query_metrics->priority_full_distance_count += priority_count;
+                        query_metrics->distance_computations += priority_count;
+                        query_metrics->lower_bound_after_priority += lowerBound;
+                    }
+                    for (size_t i = 0; i < compact_count; ++i) {
+                        const size_t slot = graph_turbo_config_.remaining_in_route_order
+                            ? turbo_scratch.order[i] : i;
+                        if (selected[slot]) continue;
+                        turbo_scratch.distances[slot] = space_->query_distance(
+                            query_context, turbo_scratch.data_points[slot]);
+                        update_candidate(slot);
+                    }
+                    if (query_metrics) {
+                        query_metrics->remaining_full_distance_count += compact_count - priority_count;
+                        query_metrics->distance_computations += compact_count - priority_count;
+                        query_metrics->full_distance_us += std::chrono::duration<double, std::micro>(
+                            std::chrono::steady_clock::now() - full_start).count();
                     }
                 }
             }
@@ -732,6 +1385,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     void resizeIndex(size_t new_max_elements) {
+        if (graph_turbo_topology_frozen_)
+            throw std::runtime_error("Graph-Turbo route topology is frozen; resize is disabled");
         if (new_max_elements < cur_element_count)
             throw std::runtime_error("Cannot resize, max element is less than the current number of elements");
 
@@ -1093,6 +1748,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     void updatePoint(const void *dataPoint, tableint internalId, float updateNeighborProbability) {
+        if (graph_turbo_topology_frozen_)
+            throw std::runtime_error("Graph-Turbo route topology is frozen; updates are disabled");
         // update the feature vector associated with existing point with new vector
         memcpy(getDataByInternalId(internalId), dataPoint, data_size_);
         space_->commit_data_for_add(internalId, dataPoint);
@@ -1252,6 +1909,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     tableint addPoint(const void *data_point, labeltype label, int level) {
+        if (graph_turbo_topology_frozen_)
+            throw std::runtime_error("Graph-Turbo route topology is frozen; insertion is disabled");
         tableint cur_c = 0;
         {
             // Checking if the element with the same label already exists
@@ -1437,14 +2096,31 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         const void *query_data,
         size_t k,
         size_t rerank_candidates,
-        BaseFilterFunctor* isIdAllowed = nullptr) const {
+        BaseFilterFunctor* isIdAllowed = nullptr,
+        RaBitQSearchMetrics *query_metrics = nullptr,
+        bool enable_residual_rerank = true) const {
         std::priority_queue<std::pair<dist_t, labeltype >> result;
         if (cur_element_count == 0 || k == 0) return result;
 
+        if (query_metrics) {
+            *query_metrics = RaBitQSearchMetrics{};
+        }
+        const auto total_start = std::chrono::steady_clock::now();
+
         rerank_candidates = std::max(k, rerank_candidates);
+        const auto prepare_start = std::chrono::steady_clock::now();
         const void *query_context = space_->prepare_query(query_data);
+        const auto traversal_start = std::chrono::steady_clock::now();
+        if (query_metrics) {
+            query_metrics->prepare_query_us = std::chrono::duration_cast<
+                std::chrono::duration<double, std::micro>>(traversal_start - prepare_start).count();
+        }
         tableint currObj = enterpoint_node_;
         dist_t curdist = space_->query_distance(query_context, getDataByInternalId(enterpoint_node_));
+        if (query_metrics) {
+            ++query_metrics->distance_computations;
+            ++query_metrics->visited_nodes;
+        }
 
         try {
             for (int level = maxlevel_; level > 0; level--) {
@@ -1464,6 +2140,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                         }
                         char *cand_data = getDataByInternalId(cand);
                         dist_t d = space_->query_distance(query_context, cand_data);
+                        if (query_metrics) {
+                            ++query_metrics->distance_computations;
+                            ++query_metrics->visited_nodes;
+                        }
                         if (d < curdist) {
                             curdist = d;
                             currObj = cand;
@@ -1480,10 +2160,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             const bool bare_bone_search = !num_deleted_ && !isIdAllowed;
             if (bare_bone_search) {
                 top_candidates = searchBaseLayerST<true>(
-                    currObj, query_context, ef_, isIdAllowed);
+                    currObj, query_context, ef_, isIdAllowed, nullptr, query_metrics);
             } else {
                 top_candidates = searchBaseLayerST<false>(
-                    currObj, query_context, ef_, isIdAllowed);
+                    currObj, query_context, ef_, isIdAllowed, nullptr, query_metrics);
+            }
+
+            const auto rerank_start = std::chrono::steady_clock::now();
+            if (query_metrics) {
+                query_metrics->traversal_us = std::chrono::duration_cast<
+                    std::chrono::duration<double, std::micro>>(rerank_start - traversal_start).count();
             }
 
             while (top_candidates.size() > rerank_candidates) {
@@ -1497,13 +2183,13 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 top_candidates.pop();
             }
 
-            if (!candidates.empty()) {
+            if (enable_residual_rerank && !candidates.empty()) {
                 std::vector<size_t> residual_ids(candidates.size(), 0);
                 std::vector<const void *> residual_points(candidates.size(), nullptr);
                 std::vector<dist_t> long_distances(candidates.size(), 0);
                 std::vector<DistanceInterval> residual_intervals(candidates.size());
                 for (size_t i = 0; i < candidates.size(); ++i) {
-                    residual_ids[i] = getExternalLabel(candidates[i].second);
+                    residual_ids[i] = candidates[i].second;
                     residual_points[i] = getDataByInternalId(candidates[i].second);
                     long_distances[i] = candidates[i].first;
                 }
@@ -1523,9 +2209,20 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             for (size_t i = 0; i < k && i < candidates.size(); ++i) {
                 result.emplace(candidates[i].first, getExternalLabel(candidates[i].second));
             }
+            if (query_metrics) {
+                const auto rerank_end = std::chrono::steady_clock::now();
+                query_metrics->rerank_us = std::chrono::duration_cast<
+                    std::chrono::duration<double, std::micro>>(rerank_end - rerank_start).count();
+            }
         } catch (...) {
             space_->release_query(query_context);
             throw;
+        }
+        if (query_metrics) {
+            query_metrics->active_centroids = space_->query_active_centroids(query_context);
+            query_metrics->total_query_us = std::chrono::duration_cast<
+                std::chrono::duration<double, std::micro>>(
+                    std::chrono::steady_clock::now() - total_start).count();
         }
         space_->release_query(query_context);
         return result;

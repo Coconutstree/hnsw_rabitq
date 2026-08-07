@@ -27,8 +27,17 @@
 
 namespace hnswlib {
 
+enum class RaBitQCodeLayout : uint8_t {
+    SequentialNibble = 0,
+    Turbo128 = 1,
+};
+
 class RaBitQSpace : public SpaceInterface<float> {
  public:
+    enum class CentroidQueryMode : uint8_t {
+        Eager = 0,
+        Lazy = 1,
+    };
     static constexpr size_t kTotalBits = 4;
     static constexpr size_t kShortBits = 1;
     static constexpr size_t kRemainingBits = 3;
@@ -87,12 +96,18 @@ class RaBitQSpace : public SpaceInterface<float> {
         float query_norm_sqr = 0.0f;
         float half_sum_residual = 0.0f;
         float rotated_residual_sum = 0.0f;
+        float positive_sum_residual = 0.0f;
         mutable bool residual_nibble_lut_ready = false;
         mutable bool residual_2bit_lut_ready = false;
     };
 
     struct PreparedQuery {
         std::vector<QueryContext> centroid_queries;
+        std::vector<uint8_t> ready;
+        std::vector<float> rotated_query;
+        const float *raw_query = nullptr;
+        double raw_query_norm_sqr = 0.0;
+        size_t active_centroid_count = 0;
     };
 
     struct LongCodeIps {
@@ -125,6 +140,8 @@ class RaBitQSpace : public SpaceInterface<float> {
     mutable size_t residual_mmap_bytes_{0};
     mutable size_t residual_record_count_{0};
     bool legacy_payload_without_centroid_{false};
+    CentroidQueryMode centroid_query_mode_{CentroidQueryMode::Eager};
+    RaBitQCodeLayout code_layout_{RaBitQCodeLayout::SequentialNibble};
 
     DISTFUNC<float> fstdistfunc_{nullptr};
 
@@ -293,6 +310,21 @@ class RaBitQSpace : public SpaceInterface<float> {
         } else {
             byte = static_cast<uint8_t>((byte & 0xF0U) | value);
         }
+    }
+
+    static uint8_t turbo128CodeValue(const uint8_t *code, size_t index) {
+        const size_t block = index / 128U;
+        const size_t within = index % 128U;
+        const size_t lane = within % 16U;
+        const size_t slot = within / 16U;
+        const uint8_t byte = code[block * 64U + lane * 4U + (slot >> 1U)];
+        return static_cast<uint8_t>((slot & 1U) ? (byte >> 4U) : (byte & 0x0FU));
+    }
+
+    uint8_t primaryCodeValue(const uint8_t *code, size_t index) const {
+        return code_layout_ == RaBitQCodeLayout::Turbo128
+            ? turbo128CodeValue(code, index)
+            : codeValue(code, index);
     }
 
     static uint16_t floatToHalfScalar(float value) {
@@ -1202,7 +1234,139 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 #endif
 
+    float topTwoBitsIpScalar(const QueryContext &query, const uint8_t *code) const {
+        float sum = 0.0f;
+        const size_t pair_count = code_dim_ >> 1U;
+        for (size_t pair = 0; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            sum += static_cast<float>((packed >> 2U) & 0x03U) * query.rotated_residual_even[pair];
+            sum += static_cast<float>((packed >> 6U) & 0x03U) * query.rotated_residual_odd[pair];
+        }
+        return sum;
+    }
+
+#if defined(__AVX2__)
+    float topTwoBitsIpAvx2(const QueryContext &query, const uint8_t *code) const {
+        __m256 sum = _mm256_setzero_ps();
+        const __m128i mask = _mm_set1_epi8(0x03);
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 8 <= pair_count; pair += 8) {
+            const __m128i packed = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(code + pair));
+            const __m128i lo = _mm_and_si128(_mm_srli_epi16(packed, 2), mask);
+            const __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 6), mask);
+            sum = _mm256_add_ps(sum, _mm256_mul_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(lo)),
+                _mm256_loadu_ps(query.rotated_residual_even.data() + pair)));
+            sum = _mm256_add_ps(sum, _mm256_mul_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(hi)),
+                _mm256_loadu_ps(query.rotated_residual_odd.data() + pair)));
+        }
+        alignas(32) float lanes[8];
+        _mm256_store_ps(lanes, sum);
+        float result = 0.0f;
+        for (float lane : lanes) result += lane;
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            result += static_cast<float>((packed >> 2U) & 0x03U) * query.rotated_residual_even[pair];
+            result += static_cast<float>((packed >> 6U) & 0x03U) * query.rotated_residual_odd[pair];
+        }
+        return result;
+    }
+#endif
+
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+    float topTwoBitsIpAvx512(const QueryContext &query, const uint8_t *code) const {
+        __m512 sum = _mm512_setzero_ps();
+        const __m128i mask = _mm_set1_epi8(0x03);
+        const size_t pair_count = code_dim_ >> 1U;
+        size_t pair = 0;
+        for (; pair + 16 <= pair_count; pair += 16) {
+            const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i *>(code + pair));
+            const __m128i lo = _mm_and_si128(_mm_srli_epi16(packed, 2), mask);
+            const __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 6), mask);
+            sum = _mm512_add_ps(sum, _mm512_mul_ps(
+                _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(lo)),
+                _mm512_loadu_ps(query.rotated_residual_even.data() + pair)));
+            sum = _mm512_add_ps(sum, _mm512_mul_ps(
+                _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(hi)),
+                _mm512_loadu_ps(query.rotated_residual_odd.data() + pair)));
+        }
+        float result = _mm512_reduce_add_ps(sum);
+        for (; pair < pair_count; ++pair) {
+            const uint8_t packed = code[pair];
+            result += static_cast<float>((packed >> 2U) & 0x03U) * query.rotated_residual_even[pair];
+            result += static_cast<float>((packed >> 6U) & 0x03U) * query.rotated_residual_odd[pair];
+        }
+        return result;
+    }
+#endif
+
+    float topTwoBitsIpDispatch(const QueryContext &query, const uint8_t *code) const {
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+        return topTwoBitsIpAvx512(query, code);
+#elif defined(__AVX2__)
+        return topTwoBitsIpAvx2(query, code);
+#else
+        return topTwoBitsIpScalar(query, code);
+#endif
+    }
+
+    LongCodeIps longCodeIpsTurboScalar(const QueryContext &query, const uint8_t *code) const {
+        float selected_sum = 0.0f;
+        float remaining_ip = 0.0f;
+        for (size_t i = 0; i < code_dim_; ++i) {
+            const uint8_t value = turbo128CodeValue(code, i);
+            selected_sum += (value >> kRemainingBits) ? query.rotated_residual[i] : 0.0f;
+            remaining_ip += static_cast<float>(value & kRemainingMax) * query.rotated_residual[i];
+        }
+        return LongCodeIps{selected_sum - query.half_sum_residual, remaining_ip};
+    }
+
+#if defined(__AVX512F__)
+    LongCodeIps longCodeIpsTurboAvx512(const QueryContext &query, const uint8_t *code) const {
+        __m512 short_sum = _mm512_setzero_ps();
+        __m512 remaining_sum = _mm512_setzero_ps();
+        const __m512i nibble_mask = _mm512_set1_epi32(0x0F);
+        const __m512i remaining_mask = _mm512_set1_epi32(static_cast<int>(kRemainingMax));
+        const __m512i one_mask = _mm512_set1_epi32(1);
+        for (size_t block = 0; block < code_dim_ / 128U; ++block) {
+            const __m512i words = _mm512_loadu_si512(
+                reinterpret_cast<const void *>(code + block * 64U));
+            for (size_t slot = 0; slot < 8U; ++slot) {
+                const __m512i values = _mm512_and_si512(
+                    _mm512_srlv_epi32(words, _mm512_set1_epi32(static_cast<int>(slot * 4U))),
+                    nibble_mask);
+                const __m512 query_values = _mm512_loadu_ps(
+                    query.rotated_residual.data() + block * 128U + slot * 16U);
+                const __m512 remaining = _mm512_cvtepi32_ps(
+                    _mm512_and_si512(values, remaining_mask));
+                const __m512 short_bits = _mm512_cvtepi32_ps(
+                    _mm512_and_si512(_mm512_srli_epi32(values, kRemainingBits), one_mask));
+                remaining_sum = _mm512_add_ps(
+                    remaining_sum, _mm512_mul_ps(remaining, query_values));
+                short_sum = _mm512_add_ps(
+                    short_sum, _mm512_mul_ps(short_bits, query_values));
+            }
+        }
+        return LongCodeIps{
+            _mm512_reduce_add_ps(short_sum) - query.half_sum_residual,
+            _mm512_reduce_add_ps(remaining_sum)};
+    }
+#endif
+
+    LongCodeIps longCodeIpsTurboDispatch(const QueryContext &query, const uint8_t *code) const {
+#if defined(__AVX512F__)
+        return longCodeIpsTurboAvx512(query, code);
+#else
+        return longCodeIpsTurboScalar(query, code);
+#endif
+    }
+
     LongCodeIps longCodeIpsDispatch(const QueryContext &query, const uint8_t *code) const {
+        if (code_layout_ == RaBitQCodeLayout::Turbo128) {
+            return longCodeIpsTurboDispatch(query, code);
+        }
 #if defined(__AVX512F__) && defined(__AVX512BW__)
         return longCodeIpsAvx512(query, code);
 #elif defined(__AVX2__)
@@ -1365,6 +1529,38 @@ class RaBitQSpace : public SpaceInterface<float> {
         const ShortCodeFactors factors = *shortFactors(encoded);
         const float ip_xb_q = shortCodeIp(query, codeBytes(encoded));
         return queryDistanceLowerBoundWithShortIp(query, header, factors, ip_xb_q);
+    }
+
+    // Lower bound in the same distance system as queryDistanceLong(). The
+    // remaining three bits are bounded, not decoded.
+    float queryDistanceShortLowerBoundForLong(
+        const QueryContext &query,
+        const void *encoded) const {
+        const EncodedHeader header = loadHeader(encoded);
+        if (header.long_scale <= 0.0f || !std::isfinite(header.long_scale))
+            return header.norm_sqr + query.query_norm_sqr;
+        const float short_ip = shortCodeIp(query, codeBytes(encoded));
+        const float maximum_remaining_ip =
+            static_cast<float>(kRemainingMax) * query.positive_sum_residual;
+        const float maximum_signed_ip =
+            static_cast<float>(kMsbWeight) * short_ip + maximum_remaining_ip -
+            static_cast<float>(kRemainingMax) * query.half_sum_residual;
+        return header.norm_sqr + query.query_norm_sqr -
+            header.long_scale * maximum_signed_ip;
+    }
+
+    float queryDistanceTwoBitLowerBoundForLong(
+        const QueryContext &query,
+        const void *encoded) const {
+        const EncodedHeader header = loadHeader(encoded);
+        if (header.long_scale <= 0.0f || !std::isfinite(header.long_scale))
+            return header.norm_sqr + query.query_norm_sqr;
+        const float top_two_ip = topTwoBitsIpDispatch(query, codeBytes(encoded));
+        const float maximum_signed_ip =
+            4.0f * top_two_ip - 7.5f * query.rotated_residual_sum +
+            3.0f * query.positive_sum_residual;
+        return header.norm_sqr + query.query_norm_sqr -
+            header.long_scale * maximum_signed_ip;
     }
 
     float queryDistanceLowerBoundWithShortIp(
@@ -1592,6 +1788,9 @@ class RaBitQSpace : public SpaceInterface<float> {
     }
 
     float shortCodeIp(const QueryContext &query, const uint8_t *full_code) const {
+        if (code_layout_ == RaBitQCodeLayout::Turbo128) {
+            return longCodeIpsTurboDispatch(query, full_code).short_ip;
+        }
         return shortCodeIpFromFullCodeAvxDispatch(query, full_code);
     }
 
@@ -2104,8 +2303,8 @@ class RaBitQSpace : public SpaceInterface<float> {
 
         double code_ip = 0.0;
         for (size_t i = 0; i < code_dim_; ++i) {
-            const double lhs_y = static_cast<double>(codeValue(lhs_code, i)) - static_cast<double>(kUnsignedOffset);
-            const double rhs_y = static_cast<double>(codeValue(rhs_code, i)) - static_cast<double>(kUnsignedOffset);
+            const double lhs_y = static_cast<double>(primaryCodeValue(lhs_code, i)) - static_cast<double>(kUnsignedOffset);
+            const double rhs_y = static_cast<double>(primaryCodeValue(rhs_code, i)) - static_cast<double>(kUnsignedOffset);
             code_ip += lhs_y * rhs_y;
         }
 
@@ -2304,12 +2503,128 @@ class RaBitQSpace : public SpaceInterface<float> {
         return external_residual_storage_;
     }
 
+    void copyExternalResidualRecord(size_t internal_id, void *destination) const {
+        if (!external_residual_storage_ || residual_mmap_ == nullptr)
+            throw std::runtime_error("RaBitQ external residual storage is not open");
+        if (internal_id >= residual_record_count_)
+            throw std::out_of_range("RaBitQ residual internal ID is outside storage");
+        std::memcpy(destination,
+                    residual_mmap_ + internal_id * residual_disk_record_bytes_,
+                    residual_disk_record_bytes_);
+    }
+
     size_t get_centroid_count() const {
         return centroid_count_;
     }
 
+    static void convertSequentialToTurbo(
+        const uint8_t *sequential,
+        uint8_t *turbo,
+        size_t code_dimension) {
+        if (code_dimension == 0 || code_dimension % 128U != 0U) {
+            throw std::invalid_argument("Turbo128 code dimension must be a non-zero multiple of 128");
+        }
+        std::memset(turbo, 0, code_dimension / 2U);
+        for (size_t i = 0; i < code_dimension; ++i) {
+            const uint8_t value = codeValue(sequential, i);
+            const size_t block = i / 128U;
+            const size_t within = i % 128U;
+            const size_t lane = within % 16U;
+            const size_t slot = within / 16U;
+            uint8_t &byte = turbo[block * 64U + lane * 4U + (slot >> 1U)];
+            if (slot & 1U) byte = static_cast<uint8_t>(byte | (value << 4U));
+            else byte = static_cast<uint8_t>(byte | value);
+        }
+    }
+
+    static void unpackTurbo128(
+        const uint8_t *turbo,
+        uint8_t *values,
+        size_t code_dimension) {
+        if (code_dimension == 0 || code_dimension % 128U != 0U) {
+            throw std::invalid_argument("Turbo128 code dimension must be a non-zero multiple of 128");
+        }
+        for (size_t i = 0; i < code_dimension; ++i) {
+            values[i] = turbo128CodeValue(turbo, i);
+        }
+    }
+
+    void set_code_layout(RaBitQCodeLayout layout) {
+        if (nested4x4_layout_ && layout != RaBitQCodeLayout::SequentialNibble) {
+            throw std::invalid_argument("nested4x4 does not support Turbo128");
+        }
+        code_layout_ = layout;
+    }
+
+    RaBitQCodeLayout get_code_layout() const {
+        return code_layout_;
+    }
+
+    void saveCentroids(
+        std::ostream &output,
+        uint32_t training_seed,
+        uint64_t training_sample_count) const {
+        static const char magic[8] = {'R','B','C','E','N','T','0','1'};
+        const uint32_t version = 1;
+        const uint64_t dimension = static_cast<uint64_t>(dim_);
+        const uint64_t count = static_cast<uint64_t>(centroid_count_);
+        output.write(magic, sizeof(magic));
+        output.write(reinterpret_cast<const char *>(&version), sizeof(version));
+        output.write(reinterpret_cast<const char *>(&dimension), sizeof(dimension));
+        output.write(reinterpret_cast<const char *>(&count), sizeof(count));
+        output.write(reinterpret_cast<const char *>(&training_seed), sizeof(training_seed));
+        output.write(reinterpret_cast<const char *>(&training_sample_count), sizeof(training_sample_count));
+        output.write(
+            reinterpret_cast<const char *>(centroids_.data()),
+            static_cast<std::streamsize>(centroids_.size() * sizeof(float)));
+        if (!output.good()) {
+            throw std::runtime_error("RaBitQSpace failed to save centroid file");
+        }
+    }
+
+    void loadCentroids(
+        std::istream &input,
+        uint32_t *training_seed = nullptr,
+        uint64_t *training_sample_count = nullptr) {
+        char magic[8] = {};
+        uint32_t version = 0;
+        uint64_t dimension = 0;
+        uint64_t count = 0;
+        uint32_t seed = 0;
+        uint64_t sample_count = 0;
+        input.read(magic, sizeof(magic));
+        input.read(reinterpret_cast<char *>(&version), sizeof(version));
+        input.read(reinterpret_cast<char *>(&dimension), sizeof(dimension));
+        input.read(reinterpret_cast<char *>(&count), sizeof(count));
+        input.read(reinterpret_cast<char *>(&seed), sizeof(seed));
+        input.read(reinterpret_cast<char *>(&sample_count), sizeof(sample_count));
+        if (!input.good() || std::memcmp(magic, "RBCENT01", 8) != 0 || version != 1) {
+            throw std::runtime_error("RaBitQSpace invalid centroid file header");
+        }
+        if (dimension != dim_ || count != centroid_count_) {
+            throw std::runtime_error("RaBitQSpace centroid file dimension or count mismatch");
+        }
+        std::vector<float> loaded(centroid_count_ * dim_, 0.0f);
+        input.read(
+            reinterpret_cast<char *>(loaded.data()),
+            static_cast<std::streamsize>(loaded.size() * sizeof(float)));
+        if (!input.good()) {
+            throw std::runtime_error("RaBitQSpace truncated centroid file");
+        }
+        for (float value : loaded) {
+            if (!std::isfinite(value)) {
+                throw std::runtime_error("RaBitQSpace centroid file contains non-finite values");
+            }
+        }
+        setCentroids(loaded.data(), centroid_count_);
+        if (training_seed) *training_seed = seed;
+        if (training_sample_count) *training_sample_count = sample_count;
+    }
+
     void saveState(std::ostream &output) const {
-        const std::string magic = nested4x4_layout_ ? "EXRBTQ35" : "EXRBTQ31";
+        const std::string magic = nested4x4_layout_
+            ? "EXRBTQ35"
+            : (code_layout_ == RaBitQCodeLayout::Turbo128 ? "EXRBTQ40" : "EXRBTQ31");
         output.write(magic.data(), magic.size());
 
         const uint64_t dim = static_cast<uint64_t>(dim_);
@@ -2354,6 +2669,10 @@ class RaBitQSpace : public SpaceInterface<float> {
         output.write(reinterpret_cast<const char *>(&residual_block_size), sizeof(residual_block_size));
         output.write(reinterpret_cast<const char *>(&flags), sizeof(flags));
         output.write(reinterpret_cast<const char *>(&centroid_count), sizeof(centroid_count));
+        if (code_layout_ == RaBitQCodeLayout::Turbo128) {
+            const uint8_t layout_id = static_cast<uint8_t>(code_layout_);
+            output.write(reinterpret_cast<const char *>(&layout_id), sizeof(layout_id));
+        }
         output.write(reinterpret_cast<const char *>(&random_seed_), sizeof(random_seed_));
         output.write(reinterpret_cast<const char *>(centroids_.data()), centroids_.size() * sizeof(float));
         output.write(reinterpret_cast<const char *>(fht_signs_.data()), fht_signs_.size() * sizeof(float));
@@ -2367,7 +2686,8 @@ class RaBitQSpace : public SpaceInterface<float> {
         char magic[8];
         input.read(magic, sizeof(magic));
         const std::string magic_value(magic, sizeof(magic));
-        const bool multi_centroid_format = magic_value == "EXRBTQ31";
+        const bool turbo_format = magic_value == "EXRBTQ40";
+        const bool multi_centroid_format = magic_value == "EXRBTQ31" || turbo_format;
         const bool new_format = magic_value == "EXRBTQ30";
         const bool nested4x4_format = magic_value == "EXRBTQ35";
         const bool old_format = magic_value == "EXRBTQ22";
@@ -2395,6 +2715,7 @@ class RaBitQSpace : public SpaceInterface<float> {
         uint64_t stored_residual_block_size = kResidualBlockSize;
         uint64_t stored_centroid_count = 1;
         uint32_t stored_flags = 3U;
+        uint8_t stored_layout_id = 0;
         input.read(reinterpret_cast<char *>(&stored_dim), sizeof(stored_dim));
         input.read(reinterpret_cast<char *>(&stored_code_dim), sizeof(stored_code_dim));
         input.read(reinterpret_cast<char *>(&stored_total_bits), sizeof(stored_total_bits));
@@ -2421,10 +2742,16 @@ class RaBitQSpace : public SpaceInterface<float> {
             input.read(reinterpret_cast<char *>(&stored_residual_block_size), sizeof(stored_residual_block_size));
             input.read(reinterpret_cast<char *>(&stored_flags), sizeof(stored_flags));
             input.read(reinterpret_cast<char *>(&stored_centroid_count), sizeof(stored_centroid_count));
+            if (turbo_format) {
+                input.read(reinterpret_cast<char *>(&stored_layout_id), sizeof(stored_layout_id));
+            }
         }
 
         if (!input.good()) {
             throw std::runtime_error("RaBitQSpace failed to read ExRaBitQ state header");
+        }
+        if (stored_layout_id > static_cast<uint8_t>(RaBitQCodeLayout::Turbo128)) {
+            throw std::runtime_error("RaBitQ index has invalid code layout");
         }
         if (!is_supported_residual_bits(stored_residual_bits)) {
             throw std::runtime_error("RaBitQ index has unsupported residual bits");
@@ -2473,6 +2800,7 @@ class RaBitQSpace : public SpaceInterface<float> {
         }
 
         nested4x4_layout_ = stored_nested4x4_layout;
+        code_layout_ = static_cast<RaBitQCodeLayout>(stored_layout_id);
         legacy_payload_without_centroid_ = !multi_centroid_format;
         nested4x4_hot_aux_bytes_ = nested4x4_layout_ ? residual_scale_bytes_ : 0;
         data_size_ = static_cast<size_t>(stored_data_size);
@@ -2565,12 +2893,57 @@ class RaBitQSpace : public SpaceInterface<float> {
         if (data_point == nullptr) {
             throw std::runtime_error("RaBitQ query received null data point");
         }
-        const PreparedQuery &prepared = *static_cast<const PreparedQuery *>(prepared_query);
+        PreparedQuery &prepared = *const_cast<PreparedQuery *>(
+            static_cast<const PreparedQuery *>(prepared_query));
         const uint8_t id = *centroidId(data_point);
         if (static_cast<size_t>(id) >= prepared.centroid_queries.size()) {
             throw std::runtime_error("RaBitQ payload centroid_id is out of range");
         }
+        if (!prepared.ready[id]) {
+            buildCentroidQuery(prepared, id);
+        }
         return prepared.centroid_queries[id];
+    }
+
+    void buildCentroidQuery(PreparedQuery &prepared, size_t centroid_id) const {
+        QueryContext &query = prepared.centroid_queries[centroid_id];
+        query.rotated_residual.assign(code_dim_, 0.0f);
+        const float *rotated_centroid = rotated_centroids_.data() + centroid_id * code_dim_;
+        for (size_t i = 0; i < code_dim_; ++i) {
+            query.rotated_residual[i] = prepared.rotated_query[i] - rotated_centroid[i];
+        }
+
+        double dot_q_centroid = 0.0;
+        const float *centroid = centroids_.data() + centroid_id * dim_;
+        for (size_t i = 0; i < dim_; ++i) {
+            dot_q_centroid += static_cast<double>(prepared.raw_query[i]) * centroid[i];
+        }
+        query.query_norm_sqr = static_cast<float>(
+            prepared.raw_query_norm_sqr + centroid_norm_sqr_[centroid_id] - 2.0 * dot_q_centroid);
+        query.query_norm_sqr = std::max(0.0f, query.query_norm_sqr);
+
+        const size_t pair_count = code_dim_ >> 1U;
+        query.rotated_residual_even.assign(pair_count, 0.0f);
+        query.rotated_residual_odd.assign(pair_count, 0.0f);
+        query.half_sum_residual = 0.0f;
+        query.rotated_residual_sum = 0.0f;
+        query.positive_sum_residual = 0.0f;
+        query.residual_nibble_lut_ready = false;
+        query.residual_2bit_lut_ready = false;
+        for (size_t pair = 0; pair < pair_count; ++pair) {
+            const float even_value = query.rotated_residual[pair << 1U];
+            const float odd_value = query.rotated_residual[(pair << 1U) + 1U];
+            query.rotated_residual_even[pair] = even_value;
+            query.rotated_residual_odd[pair] = odd_value;
+            query.half_sum_residual += even_value + odd_value;
+            query.rotated_residual_sum += even_value + odd_value;
+            query.positive_sum_residual += std::max(0.0f, even_value) +
+                std::max(0.0f, odd_value);
+        }
+        query.half_sum_residual *= 0.5f;
+        query.query_norm = std::sqrt(query.query_norm_sqr);
+        prepared.ready[centroid_id] = 1;
+        ++prepared.active_centroid_count;
     }
 
     const void *prepare_query(const void *query_data) override {
@@ -2578,53 +2951,36 @@ class RaBitQSpace : public SpaceInterface<float> {
         thread_local PreparedQuery prepared_storage;
         PreparedQuery *prepared = &prepared_storage;
         prepared->centroid_queries.assign(centroid_count_, QueryContext{});
-
-        thread_local std::vector<float> rotated_query;
-        rotate(raw_query, rotated_query);
+        prepared->ready.assign(centroid_count_, 0);
+        prepared->raw_query = raw_query;
+        prepared->active_centroid_count = 0;
+        rotate(raw_query, prepared->rotated_query);
 
         double raw_query_norm_sqr = 0.0;
         for (size_t i = 0; i < dim_; ++i) {
             raw_query_norm_sqr += static_cast<double>(raw_query[i]) * static_cast<double>(raw_query[i]);
         }
 
-        const size_t pair_count = code_dim_ >> 1U;
-        for (size_t centroid_id = 0; centroid_id < centroid_count_; ++centroid_id) {
-            QueryContext &query = prepared->centroid_queries[centroid_id];
-            query.rotated_residual.assign(code_dim_, 0.0f);
-            const float *rotated_centroid = rotated_centroids_.data() + centroid_id * code_dim_;
-            for (size_t i = 0; i < code_dim_; ++i) {
-                query.rotated_residual[i] = rotated_query[i] - rotated_centroid[i];
+        prepared->raw_query_norm_sqr = raw_query_norm_sqr;
+        if (centroid_query_mode_ == CentroidQueryMode::Eager) {
+            for (size_t centroid_id = 0; centroid_id < centroid_count_; ++centroid_id) {
+                buildCentroidQuery(*prepared, centroid_id);
             }
-
-            double dot_q_centroid = 0.0;
-            const float *centroid = centroids_.data() + centroid_id * dim_;
-            for (size_t i = 0; i < dim_; ++i) {
-                dot_q_centroid += static_cast<double>(raw_query[i]) * static_cast<double>(centroid[i]);
-            }
-            query.query_norm_sqr = static_cast<float>(
-                raw_query_norm_sqr + static_cast<double>(centroid_norm_sqr_[centroid_id]) -
-                2.0 * dot_q_centroid);
-            query.query_norm_sqr = std::max(0.0f, query.query_norm_sqr);
-
-            query.rotated_residual_even.assign(pair_count, 0.0f);
-            query.rotated_residual_odd.assign(pair_count, 0.0f);
-            query.half_sum_residual = 0.0f;
-            query.rotated_residual_sum = 0.0f;
-            query.residual_nibble_lut_ready = false;
-            query.residual_2bit_lut_ready = false;
-            for (size_t pair = 0; pair < pair_count; ++pair) {
-                const float even_value = query.rotated_residual[pair << 1U];
-                const float odd_value = query.rotated_residual[(pair << 1U) + 1U];
-                query.rotated_residual_even[pair] = even_value;
-                query.rotated_residual_odd[pair] = odd_value;
-                query.half_sum_residual += even_value + odd_value;
-                query.rotated_residual_sum += even_value + odd_value;
-            }
-            query.half_sum_residual *= 0.5f;
-            query.query_norm = std::sqrt(query.query_norm_sqr);
         }
 
         return prepared;
+    }
+
+    size_t query_active_centroids(const void *prepared_query) const override {
+        return static_cast<const PreparedQuery *>(prepared_query)->active_centroid_count;
+    }
+
+    void set_centroid_query_mode(CentroidQueryMode mode) {
+        centroid_query_mode_ = mode;
+    }
+
+    CentroidQueryMode get_centroid_query_mode() const {
+        return centroid_query_mode_;
     }
 
     void release_query(const void *prepared_query) override {
@@ -2634,6 +2990,245 @@ class RaBitQSpace : public SpaceInterface<float> {
     float query_distance(const void *prepared_query, const void *data_point) override {
         const QueryContext &query = queryForEncoded(prepared_query, data_point);
         return queryDistanceLong(query, data_point);
+    }
+
+    float compute_short_lower_bound(
+        const void *prepared_query,
+        const void *data_point) override {
+        return queryDistanceShortLowerBoundForLong(
+            queryForEncoded(prepared_query, data_point), data_point);
+    }
+
+    float compute_two_bit_lower_bound(
+        const void *prepared_query,
+        const void *data_point) override {
+        if (code_layout_ != RaBitQCodeLayout::SequentialNibble)
+            throw std::runtime_error("2-bit lower bound requires Sequential layout");
+        return queryDistanceTwoBitLowerBoundForLong(
+            queryForEncoded(prepared_query, data_point), data_point);
+    }
+
+    PaperPruneEstimate<float> compute_paper_prune_estimate(
+        const void *prepared_query,
+        const void *data_point,
+        float epsilon0) override {
+        const QueryContext &query = queryForEncoded(prepared_query, data_point);
+        const EncodedHeader header = loadHeader(data_point);
+        const ShortCodeFactors factors = *shortFactors(data_point);
+        PaperPruneEstimate<float> result;
+        if (code_dim_ <= 1 || epsilon0 < 0.0f || !std::isfinite(epsilon0) ||
+            header.norm_sqr <= 0.0f || query.query_norm <= 0.0f ||
+            factors.short_scale <= 0.0f || !std::isfinite(factors.short_scale))
+            return result;
+
+        const float data_norm = std::sqrt(header.norm_sqr);
+        const float alpha_raw = 4.0f * data_norm /
+            (factors.short_scale * std::sqrt(static_cast<float>(code_dim_)));
+        if (!(alpha_raw > 0.0f) || !std::isfinite(alpha_raw)) return result;
+        const float alpha = std::min(1.0f, alpha_raw);
+        const float short_ip = shortCodeIp(query, codeBytes(data_point));
+        const float cross_estimate = short_ip * factors.short_scale;
+        const float two_norms = 2.0f * data_norm * query.query_norm;
+        const float ip_hat = cross_estimate / two_norms;
+        const float alpha2 = alpha * alpha;
+        const float error_bound = std::sqrt(std::max(0.0f, (1.0f - alpha2) / alpha2)) *
+            epsilon0 / std::sqrt(static_cast<float>(code_dim_ - 1));
+        const float ip_upper = std::max(-1.0f, std::min(1.0f, ip_hat + error_bound));
+        result.lower_bound = header.norm_sqr + query.query_norm_sqr - two_norms * ip_upper;
+        result.short_ip = short_ip;
+        result.alpha = alpha;
+        result.ip_hat = ip_hat;
+        result.error_bound = error_bound;
+        result.valid = std::isfinite(result.lower_bound);
+        return result;
+    }
+
+    float query_distance_with_paper_msb(
+        const void *prepared_query,
+        const void *data_point,
+        float short_ip) override {
+        const QueryContext &query = queryForEncoded(prepared_query, data_point);
+        return queryDistanceLongWithShortIp(query, data_point, loadHeader(data_point), short_ip);
+    }
+
+    size_t paper_msb_code_bytes() const override {
+        return (code_dim_ + 7U) / 8U;
+    }
+
+    PaperPruneFactors<float> extract_paper_prune_sidecar(
+        const void *data_point,
+        uint8_t *msb_out) const override {
+        const size_t bytes = paper_msb_code_bytes();
+        std::memset(msb_out, 0, bytes);
+        const uint8_t *code = codeBytes(data_point);
+        for (size_t i = 0; i < code_dim_; ++i) {
+            if ((primaryCodeValue(code, i) >> kRemainingBits) != 0)
+                msb_out[i >> 3U] |= static_cast<uint8_t>(1U << (i & 7U));
+        }
+        const EncodedHeader header = loadHeader(data_point);
+        const ShortCodeFactors factors = *shortFactors(data_point);
+        PaperPruneFactors<float> out;
+        out.norm_sqr = header.norm_sqr;
+        if (code_dim_ <= 1 || header.norm_sqr <= 0.0f || factors.short_scale <= 0.0f)
+            return out;
+        const float data_norm = std::sqrt(header.norm_sqr);
+        out.data_norm = data_norm;
+        const float alpha = std::min(1.0f, 4.0f * data_norm /
+            (factors.short_scale * std::sqrt(static_cast<float>(code_dim_))));
+        if (!(alpha > 0.0f) || !std::isfinite(alpha)) return out;
+        const float alpha2 = alpha * alpha;
+        out.cross_scale = factors.short_scale;
+        out.error_cross_scale = 2.0f * data_norm *
+            std::sqrt(std::max(0.0f, (1.0f - alpha2) / alpha2)) /
+            std::sqrt(static_cast<float>(code_dim_ - 1));
+        out.valid = std::isfinite(out.error_cross_scale);
+        return out;
+    }
+
+    PaperPruneEstimate<float> compute_paper_prune_estimate_sidecar(
+        const void *prepared_query,
+        const uint8_t *msb_code,
+        const PaperPruneFactors<float> &factors,
+        float epsilon0) const override {
+        PaperPruneEstimate<float> result;
+        if (!factors.valid || !msb_code) return result;
+        const PreparedQuery &prepared = *static_cast<const PreparedQuery *>(prepared_query);
+        const QueryContext &query = prepared.centroid_queries[0];
+        float selected_sum = 0.0f;
+#if defined(__AVX512F__)
+        __m512 sum = _mm512_setzero_ps();
+        for (size_t i = 0; i < code_dim_; i += 16U) {
+            uint16_t bits = 0;
+            std::memcpy(&bits, msb_code + (i >> 3U), sizeof(bits));
+            sum = _mm512_add_ps(sum, _mm512_maskz_loadu_ps(
+                static_cast<__mmask16>(bits), query.rotated_residual.data() + i));
+        }
+        selected_sum = _mm512_reduce_add_ps(sum);
+#else
+        for (size_t i = 0; i < code_dim_; ++i)
+            if ((msb_code[i >> 3U] >> (i & 7U)) & 1U)
+                selected_sum += query.rotated_residual[i];
+#endif
+        const float short_ip = selected_sum - query.half_sum_residual;
+        const float cross_estimate = short_ip * factors.cross_scale;
+        const float max_cross = 2.0f * factors.data_norm * query.query_norm;
+        const float upper_cross = std::max(-max_cross, std::min(
+            max_cross, cross_estimate + epsilon0 * factors.error_cross_scale * query.query_norm));
+        result.lower_bound = factors.norm_sqr + query.query_norm_sqr - upper_cross;
+        result.short_ip = short_ip;
+        result.ip_hat = max_cross > 0.0f ? cross_estimate / max_cross : 0.0f;
+        result.error_bound = max_cross > 0.0f
+            ? epsilon0 * factors.error_cross_scale * query.query_norm / max_cross : 0.0f;
+        result.valid = std::isfinite(result.lower_bound);
+        return result;
+    }
+
+    static uint8_t primaryTopTwoBits(uint8_t value) {
+        return static_cast<uint8_t>((value >> 2U) & 0x03U);
+    }
+
+    float compute_two_bit_lower_bound_scalar_for_test(
+        const void *prepared_query,
+        const void *data_point) const {
+        const QueryContext &query = queryForEncoded(prepared_query, data_point);
+        const EncodedHeader header = loadHeader(data_point);
+        if (header.long_scale <= 0.0f || !std::isfinite(header.long_scale))
+            return header.norm_sqr + query.query_norm_sqr;
+        const float top_two_ip = topTwoBitsIpScalar(query, codeBytes(data_point));
+        const float maximum_signed_ip = 4.0f * top_two_ip -
+            7.5f * query.rotated_residual_sum + 3.0f * query.positive_sum_residual;
+        return header.norm_sqr + query.query_norm_sqr -
+            header.long_scale * maximum_signed_ip;
+    }
+
+    void query_distance_batch_k1(
+        const void *prepared_query,
+        const void *const *data_points,
+        size_t count,
+        float *distances,
+        size_t prefetch_distance) override {
+        if (centroid_count_ != 1 || code_layout_ != RaBitQCodeLayout::SequentialNibble) {
+            SpaceInterface<float>::query_distance_batch_k1(
+                prepared_query, data_points, count, distances, prefetch_distance);
+            return;
+        }
+        PreparedQuery &prepared = *const_cast<PreparedQuery *>(
+            static_cast<const PreparedQuery *>(prepared_query));
+        if (!prepared.ready[0]) {
+            buildCentroidQuery(prepared, 0);
+        }
+        const QueryContext &query = prepared.centroid_queries[0];
+        for (size_t i = 0; i < count; ++i) {
+            const size_t pf = i + prefetch_distance;
+            if (pf < count) {
+#if defined(__GNUC__) || defined(__clang__)
+                __builtin_prefetch(data_points[pf], 0, 1);
+#endif
+            }
+            distances[i] = queryDistanceLong(query, data_points[i]);
+        }
+    }
+
+    bool compute_query_route_code(
+        const void *prepared_query,
+        const std::vector<uint32_t> &route_dims,
+        uint32_t *route_code) const override {
+        if (centroid_count_ != 1 || route_code == nullptr || route_dims.size() > 32) {
+            return false;
+        }
+        PreparedQuery &prepared = *const_cast<PreparedQuery *>(
+            static_cast<const PreparedQuery *>(prepared_query));
+        if (!prepared.ready[0]) {
+            buildCentroidQuery(prepared, 0);
+        }
+        const QueryContext &query = prepared.centroid_queries[0];
+        uint32_t code = 0;
+        for (size_t bit = 0; bit < route_dims.size(); ++bit) {
+            const uint32_t dim = route_dims[bit];
+            if (dim >= code_dim_) return false;
+            if (query.rotated_residual[dim] >= 0.0f) code |= (uint32_t{1} << bit);
+        }
+        *route_code = code;
+        return true;
+    }
+
+    bool float32_query_distance(
+        const void *prepared_query,
+        const float *database_vector,
+        float *distance) const override {
+        if (!prepared_query || !database_vector || !distance) return false;
+        const PreparedQuery &prepared = *static_cast<const PreparedQuery *>(prepared_query);
+        double value = 0.0;
+        for (size_t i = 0; i < dim_; ++i) {
+            const double diff = static_cast<double>(prepared.raw_query[i]) - database_vector[i];
+            value += diff * diff;
+        }
+        *distance = static_cast<float>(value);
+        return true;
+    }
+
+    uint32_t compute_database_route_code(
+        const float *raw_vector,
+        const std::vector<uint32_t> &route_dims) const {
+        if (centroid_count_ != 1 || raw_vector == nullptr || route_dims.size() > 32) {
+            throw std::invalid_argument("route codes require K=1 and at most 32 dimensions");
+        }
+        thread_local std::vector<float> rotated;
+        rotate(raw_vector, rotated);
+        uint32_t code = 0;
+        for (size_t bit = 0; bit < route_dims.size(); ++bit) {
+            const uint32_t dim = route_dims[bit];
+            if (dim >= code_dim_) throw std::out_of_range("route dimension is out of range");
+            const float residual = rotated[dim] - rotated_centroids_[dim];
+            if (residual >= 0.0f) code |= (uint32_t{1} << bit);
+        }
+        return code;
+    }
+
+    void compute_rotated_residual_k1(const float *raw_vector, std::vector<float> &out) const {
+        if (centroid_count_ != 1) throw std::invalid_argument("route codes require K=1");
+        rotate(raw_vector, out);
+        for (size_t i = 0; i < code_dim_; ++i) out[i] -= rotated_centroids_[i];
     }
 
     float result_distance(const void *prepared_query, const void *data_point) override {
@@ -2879,6 +3474,12 @@ class RaBitQSpace : public SpaceInterface<float> {
         residual_factors->residual_norm_sqr = static_cast<float>(decoded_residual_norm_sqr);
         residual_factors->long_residual_inner_product = static_cast<float>(x4_residual_ip);
         std::memcpy(encoded_out, &header, sizeof(header));
+        if (code_layout_ == RaBitQCodeLayout::Turbo128) {
+            thread_local std::vector<uint8_t> turbo_code;
+            turbo_code.assign(compact_code_bytes_, 0);
+            convertSequentialToTurbo(code, turbo_code.data(), code_dim_);
+            std::memcpy(code, turbo_code.data(), compact_code_bytes_);
+        }
     }
 
     void encodeVectorFull(const float *raw_vector, void *encoded_out) const {

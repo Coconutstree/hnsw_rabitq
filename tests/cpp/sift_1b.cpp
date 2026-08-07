@@ -22,6 +22,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#endif
 
 #include <omp.h>
 
@@ -34,11 +39,14 @@ using namespace hnswlib;
 namespace {
 
 enum class QueryMode {
+    PrimaryOnly,
     ResidualRerank,
 };
 
-const char *query_mode_name(QueryMode) {
-    return "primary4_plus_residual_rerank";
+const char *query_mode_name(QueryMode mode) {
+    return mode == QueryMode::PrimaryOnly
+        ? "primary4_only"
+        : "primary4_plus_residual_rerank";
 }
 
 QueryMode parse_query_mode(const string &value) {
@@ -51,6 +59,9 @@ QueryMode parse_query_mode(const string &value) {
 }
 
 QueryMode configured_query_mode() {
+    const char *abc = std::getenv("RABITQ_ABC_ABLATION");
+    if (abc != nullptr && std::strcmp(abc, "A") == 0)
+        return QueryMode::PrimaryOnly;
     const char *rerank_mode = std::getenv("RABITQ_RERANK_MODE");
     if (rerank_mode != nullptr && rerank_mode[0] != '\0') {
         return parse_query_mode(rerank_mode);
@@ -485,12 +496,22 @@ vector<float> train_kmeans_centroids(
         throw runtime_error("not enough samples to train centroids");
     }
 
-    vector<float> samples(actual_sample_count * vecdim, 0.0f);
+    std::mt19937 rng(random_seed);
+    vector<size_t> sample_ids(vecsize);
+    std::iota(sample_ids.begin(), sample_ids.end(), size_t{0});
     for (size_t i = 0; i < actual_sample_count; ++i) {
+        std::uniform_int_distribution<size_t> pick_id(i, vecsize - 1U);
+        std::swap(sample_ids[i], sample_ids[pick_id(rng)]);
+    }
+    sample_ids.resize(actual_sample_count);
+    std::sort(sample_ids.begin(), sample_ids.end());
+    vector<float> samples(actual_sample_count * vecdim, 0.0f);
+    const size_t record_bytes = sizeof(int) + vecdim * sizeof(float);
+    for (size_t i = 0; i < actual_sample_count; ++i) {
+        input.seekg(static_cast<std::streamoff>(sample_ids[i] * record_bytes), ios::beg);
         read_fvec_as_float(input, samples.data() + i * vecdim, vecdim);
     }
 
-    std::mt19937 rng(random_seed);
     vector<float> min_dist(actual_sample_count, numeric_limits<float>::infinity());
     vector<float> centroids(centroid_count * vecdim, 0.0f);
     vector<size_t> init_ids;
@@ -635,7 +656,8 @@ vector<float> train_global_center(
     ifstream &input,
     size_t vecdim,
     size_t vecsize,
-    size_t sample_count) {
+    size_t sample_count,
+    int random_seed) {
     input.clear();
     input.seekg(0, ios::beg);
 
@@ -646,7 +668,18 @@ vector<float> train_global_center(
 
     vector<float> center(vecdim, 0.0f);
     vector<float> sample(vecdim, 0.0f);
+    vector<size_t> sample_ids(vecsize);
+    std::iota(sample_ids.begin(), sample_ids.end(), size_t{0});
+    std::mt19937 rng(random_seed);
     for (size_t i = 0; i < actual_sample_count; ++i) {
+        std::uniform_int_distribution<size_t> pick_id(i, vecsize - 1U);
+        std::swap(sample_ids[i], sample_ids[pick_id(rng)]);
+    }
+    sample_ids.resize(actual_sample_count);
+    std::sort(sample_ids.begin(), sample_ids.end());
+    const size_t record_bytes = sizeof(int) + vecdim * sizeof(float);
+    for (size_t i = 0; i < actual_sample_count; ++i) {
+        input.seekg(static_cast<std::streamoff>(sample_ids[i] * record_bytes), ios::beg);
         read_fvec_as_float(input, sample.data(), vecdim);
         for (size_t d = 0; d < vecdim; ++d) {
             center[d] += sample[d];
@@ -765,6 +798,85 @@ struct SearchReport {
     double graph_other_us_per_query{0.0};
     size_t actual_search_ef{0};
     size_t rerank_candidates{0};
+    double p50_us{0.0};
+    double p95_us{0.0};
+    double p99_us{0.0};
+    double visited_nodes_per_query{0.0};
+    double distance_computations_per_query{0.0};
+    double active_centroids_per_query{0.0};
+    double rerank_us_per_query{0.0};
+    long long cache_misses{-1};
+    long long dtlb_load_misses{-1};
+    double short_checked_per_query{0.0};
+    double short_would_reject_per_query{0.0};
+    double short_ambiguous_per_query{0.0};
+    size_t unsafe_reject_total{0};
+    size_t short_bound_violation_total{0};
+    double full_distance_count_per_query{0.0};
+    double short_time_us_per_query{0.0};
+    double full_distance_time_us_per_query{0.0};
+    double two_bit_checked_per_query{0.0};
+    double two_bit_would_reject_per_query{0.0};
+    double two_bit_ambiguous_per_query{0.0};
+    size_t two_bit_unsafe_reject_total{0};
+    size_t two_bit_bound_violation_total{0};
+    double two_bit_time_us_per_query{0.0};
+    double paper_checked_per_query{0.0};
+    double paper_would_prune_per_query{0.0};
+    double paper_not_pruned_per_query{0.0};
+    size_t paper_false_prune_against_baseline_total{0};
+    size_t paper_pruned_baseline_accept_total{0};
+    size_t paper_pruned_baseline_reject_total{0};
+    double paper_full_saved_per_query{0.0};
+    double paper_short_time_us_per_query{0.0};
+    double paper_remaining_time_us_per_query{0.0};
+    double paper_msb_kernel_calls_per_query{0.0};
+    double paper_remaining_kernel_calls_per_query{0.0};
+};
+
+struct HardwareCounters {
+    int cache_fd{-1};
+    int dtlb_fd{-1};
+    HardwareCounters() {
+#ifdef __linux__
+        perf_event_attr attr{};
+        attr.size = sizeof(attr);
+        attr.disabled = 1;
+        attr.exclude_kernel = 1;
+        attr.exclude_hv = 1;
+        attr.type = PERF_TYPE_HARDWARE;
+        attr.config = PERF_COUNT_HW_CACHE_MISSES;
+        cache_fd = static_cast<int>(syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0));
+        attr.type = PERF_TYPE_HW_CACHE;
+        attr.config = PERF_COUNT_HW_CACHE_DTLB |
+            (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+            (PERF_COUNT_HW_CACHE_RESULT_MISS << 16);
+        dtlb_fd = static_cast<int>(syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0));
+#endif
+    }
+    void start() {
+#ifdef __linux__
+        for (int fd : {cache_fd, dtlb_fd}) if (fd >= 0) {
+            ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+            ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+        }
+#endif
+    }
+    std::pair<long long, long long> stop() {
+        long long values[2] = {-1, -1};
+#ifdef __linux__
+        const int fds[2] = {cache_fd, dtlb_fd};
+        for (size_t i = 0; i < 2; ++i) if (fds[i] >= 0) {
+            ioctl(fds[i], PERF_EVENT_IOC_DISABLE, 0);
+            if (::read(fds[i], &values[i], sizeof(values[i])) != sizeof(values[i])) values[i] = -1;
+        }
+#endif
+        return {values[0], values[1]};
+    }
+    ~HardwareCounters() {
+        if (cache_fd >= 0) ::close(cache_fd);
+        if (dtlb_fd >= 0) ::close(dtlb_fd);
+    }
 };
 
 static SearchReport test_approx(
@@ -782,15 +894,50 @@ static SearchReport test_approx(
     size_t correct = 0;
     size_t total = 0;
     double hnsw_us = 0.0;
+    double prepare_us = 0.0;
+    double traversal_us = 0.0;
+    double rerank_us = 0.0;
+    size_t visited_nodes = 0;
+    size_t distance_computations = 0;
+    size_t active_centroids = 0;
+    size_t short_checked = 0, short_would_reject = 0, short_ambiguous = 0;
+    size_t unsafe_reject = 0, short_bound_violation = 0, full_distance_count = 0;
+    double short_time_us = 0.0, full_distance_time_us = 0.0;
+    size_t two_bit_checked = 0, two_bit_would_reject = 0, two_bit_ambiguous = 0;
+    size_t two_bit_unsafe_reject = 0, two_bit_bound_violation = 0;
+    double two_bit_time_us = 0.0;
+    size_t paper_checked = 0, paper_would_prune = 0, paper_not_pruned = 0;
+    size_t paper_false_prune = 0, paper_pruned_accept = 0, paper_pruned_reject = 0;
+    size_t paper_full_saved = 0, paper_msb_calls = 0, paper_remaining_calls = 0;
+    double paper_short_time_us = 0.0, paper_remaining_time_us = 0.0;
+    vector<double> latencies;
+    latencies.reserve(qsize);
 
+    HardwareCounters hardware_counters;
+    hardware_counters.start();
     for (size_t i = 0; i < qsize; i++) {
         StopW hnsw_timer;
         vector<pair<float, labeltype>> results;
+        hnswlib::RaBitQSearchMetrics metrics;
         try {
-            results = appr_alg.searchKnnPlainThenResidualRerankCloserFirst(
-                massQ + vecdim * i,
-                k,
-                rerank_candidates);
+            if (query_mode == QueryMode::PrimaryOnly) {
+                const auto raw = appr_alg.searchKnnPrimaryOnly(
+                    massQ + vecdim * i, k, nullptr, &metrics);
+                auto copy = raw;
+                results.reserve(copy.size());
+                while (!copy.empty()) {
+                    results.push_back(copy.top());
+                    copy.pop();
+                }
+                std::reverse(results.begin(), results.end());
+            } else {
+                results = appr_alg.searchKnnPlainThenResidualRerankCloserFirst(
+                    massQ + vecdim * i,
+                    k,
+                    rerank_candidates,
+                    nullptr,
+                    &metrics);
+            }
         } catch (const std::exception &error) {
             cerr << query_mode_name(query_mode) << "_query_failed"
                  << " query=" << i
@@ -800,7 +947,40 @@ static SearchReport test_approx(
                  << "\n";
             throw;
         }
-        hnsw_us += hnsw_timer.getElapsedTimeMicro();
+        const double elapsed_us = hnsw_timer.getElapsedTimeMicro();
+        hnsw_us += elapsed_us;
+        latencies.push_back(elapsed_us);
+        prepare_us += metrics.prepare_query_us;
+        traversal_us += metrics.traversal_us;
+        rerank_us += metrics.rerank_us;
+        visited_nodes += metrics.visited_nodes;
+        distance_computations += metrics.distance_computations;
+        active_centroids += metrics.active_centroids;
+        short_checked += metrics.short_checked;
+        short_would_reject += metrics.short_would_reject;
+        short_ambiguous += metrics.short_ambiguous;
+        unsafe_reject += metrics.unsafe_reject;
+        short_bound_violation += metrics.short_bound_violation;
+        full_distance_count += metrics.full_distance_count;
+        short_time_us += metrics.short_time_us;
+        full_distance_time_us += metrics.full_distance_time_us;
+        two_bit_checked += metrics.two_bit_checked;
+        two_bit_would_reject += metrics.two_bit_would_reject;
+        two_bit_ambiguous += metrics.two_bit_ambiguous;
+        two_bit_unsafe_reject += metrics.two_bit_unsafe_reject;
+        two_bit_bound_violation += metrics.two_bit_bound_violation;
+        two_bit_time_us += metrics.two_bit_time_us;
+        paper_checked += metrics.paper_checked;
+        paper_would_prune += metrics.paper_would_prune;
+        paper_not_pruned += metrics.paper_not_pruned;
+        paper_false_prune += metrics.paper_false_prune_against_baseline;
+        paper_pruned_accept += metrics.paper_pruned_baseline_accept;
+        paper_pruned_reject += metrics.paper_pruned_baseline_reject;
+        paper_full_saved += metrics.paper_full_saved;
+        paper_msb_calls += metrics.paper_msb_kernel_calls;
+        paper_remaining_calls += metrics.paper_remaining_kernel_calls;
+        paper_short_time_us += metrics.paper_short_time_us;
+        paper_remaining_time_us += metrics.paper_remaining_time_us;
 
         std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
         unordered_set<labeltype> g;
@@ -818,18 +998,19 @@ static SearchReport test_approx(
         }
     }
 
+    const auto hardware_values = hardware_counters.stop();
     SearchReport report;
     report.recall = total == 0 ? 0.0f : 1.0f * correct / total;
     report.hnsw_search_us_per_query = static_cast<float>(hnsw_us / static_cast<double>(qsize));
     report.redundant_rerank_us_per_query = 0.0f;
     report.total_us_per_query = report.hnsw_search_us_per_query;
     report.graph_total_us_per_query = report.hnsw_search_us_per_query;
-    report.graph_prepare_us_per_query = 0.0;
+    report.graph_prepare_us_per_query = prepare_us / static_cast<double>(qsize);
     report.graph_entry_us_per_query = 0.0;
-    report.graph_base_layer_us_per_query = 0.0;
+    report.graph_base_layer_us_per_query = traversal_us / static_cast<double>(qsize);
     report.graph_distance_us_per_query = 0.0;
     report.graph_heap_us_per_query = 0.0;
-    report.graph_finalize_residual_us_per_query = 0.0;
+    report.graph_finalize_residual_us_per_query = rerank_us / static_cast<double>(qsize);
     report.graph_result_sort_us_per_query = 0.0;
     const double measured_graph_parts =
         report.graph_prepare_us_per_query +
@@ -841,6 +1022,48 @@ static SearchReport test_approx(
         std::max(0.0, report.graph_total_us_per_query - measured_graph_parts);
     report.actual_search_ef = actual_search_ef;
     report.rerank_candidates = rerank_candidates;
+    std::sort(latencies.begin(), latencies.end());
+    const auto percentile = [&latencies](double p) {
+        if (latencies.empty()) return 0.0;
+        const size_t index = std::min(
+            latencies.size() - 1,
+            static_cast<size_t>(std::ceil(p * latencies.size())) - 1U);
+        return latencies[index];
+    };
+    report.p50_us = percentile(0.50);
+    report.p95_us = percentile(0.95);
+    report.p99_us = percentile(0.99);
+    report.visited_nodes_per_query = static_cast<double>(visited_nodes) / qsize;
+    report.distance_computations_per_query = static_cast<double>(distance_computations) / qsize;
+    report.active_centroids_per_query = static_cast<double>(active_centroids) / qsize;
+    report.rerank_us_per_query = rerank_us / qsize;
+    report.cache_misses = hardware_values.first;
+    report.dtlb_load_misses = hardware_values.second;
+    report.short_checked_per_query = static_cast<double>(short_checked) / qsize;
+    report.short_would_reject_per_query = static_cast<double>(short_would_reject) / qsize;
+    report.short_ambiguous_per_query = static_cast<double>(short_ambiguous) / qsize;
+    report.unsafe_reject_total = unsafe_reject;
+    report.short_bound_violation_total = short_bound_violation;
+    report.full_distance_count_per_query = static_cast<double>(full_distance_count) / qsize;
+    report.short_time_us_per_query = short_time_us / qsize;
+    report.full_distance_time_us_per_query = full_distance_time_us / qsize;
+    report.two_bit_checked_per_query = static_cast<double>(two_bit_checked) / qsize;
+    report.two_bit_would_reject_per_query = static_cast<double>(two_bit_would_reject) / qsize;
+    report.two_bit_ambiguous_per_query = static_cast<double>(two_bit_ambiguous) / qsize;
+    report.two_bit_unsafe_reject_total = two_bit_unsafe_reject;
+    report.two_bit_bound_violation_total = two_bit_bound_violation;
+    report.two_bit_time_us_per_query = two_bit_time_us / qsize;
+    report.paper_checked_per_query = static_cast<double>(paper_checked) / qsize;
+    report.paper_would_prune_per_query = static_cast<double>(paper_would_prune) / qsize;
+    report.paper_not_pruned_per_query = static_cast<double>(paper_not_pruned) / qsize;
+    report.paper_false_prune_against_baseline_total = paper_false_prune;
+    report.paper_pruned_baseline_accept_total = paper_pruned_accept;
+    report.paper_pruned_baseline_reject_total = paper_pruned_reject;
+    report.paper_full_saved_per_query = static_cast<double>(paper_full_saved) / qsize;
+    report.paper_short_time_us_per_query = paper_short_time_us / qsize;
+    report.paper_remaining_time_us_per_query = paper_remaining_time_us / qsize;
+    report.paper_msb_kernel_calls_per_query = static_cast<double>(paper_msb_calls) / qsize;
+    report.paper_remaining_kernel_calls_per_query = static_cast<double>(paper_remaining_calls) / qsize;
     return report;
 }
 
@@ -853,24 +1076,32 @@ static void test_vs_recall(
     vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
     size_t k,
     size_t rerank_candidates,
-    QueryMode query_mode) {
+    QueryMode query_mode,
+    const string &layout = "original") {
     vector<size_t> efs;
-    for (size_t i = 1; i <= 30; i++) {
-        if (i >= k) {
-            efs.push_back(i);
-        }
-    }
-    for (size_t i = 40; i <= 100; i += 10) {
-        if (i >= k) {
-            efs.push_back(i);
-        }
-    }
-    for (size_t i = 140; i <= 460; i += 40) {
-        if (i >= k) {
-            efs.push_back(i);
-        }
+    if (std::getenv("RABITQ_ABC_ABLATION") != nullptr) {
+        efs = {200};
+    } else if (std::getenv("RABITQ_SHORT_SHADOW_COMPARE") != nullptr ||
+        std::getenv("RABITQ_TWO_BIT_SHADOW_COMPARE") != nullptr ||
+        std::getenv("RABITQ_PAPER_PRUNE_COMPARE") != nullptr) {
+        efs = {64, 96, 128, 192, 256, 460};
+    } else if (getenv_bool01_strict("RABITQ_STRICT_BFS_REORDER", false)) {
+        efs = {64, 96, 128, 192, 256, 460};
+    } else if (getenv_bool01_strict("RABITQ_STRICT_ABLATION", false)) {
+        efs = {32, 64, 96, 128, 192, 256, 320, 460, 640};
+    } else {
+        for (size_t i = 1; i <= 30; i++) if (i >= k) efs.push_back(i);
+        for (size_t i = 40; i <= 100; i += 10) if (i >= k) efs.push_back(i);
+        for (size_t i = 140; i <= 460; i += 40) if (i >= k) efs.push_back(i);
     }
 
+    const uint64_t graph_fingerprint = appr_alg.labelGraphFingerprint();
+    cout << "layout=" << layout
+         << " graph_fingerprint=" << graph_fingerprint
+         << " payload_fingerprint=" << appr_alg.payloadFingerprintByLabel()
+         << " residual_fingerprint=" << appr_alg.residualFingerprintByLabel()
+         << " average_neighbor_id_distance=" << appr_alg.averageLevel0NeighborIdDistance()
+         << "\n";
     for (size_t ef : efs) {
         const size_t actual_search_ef = ef;
         const size_t actual_rerank_candidates = std::min(ef, rerank_candidates);
@@ -905,6 +1136,9 @@ static void test_vs_recall(
 
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
+             << "\t" << "layout=" << layout
+             << "\t" << "qps="
+             << (report.total_us_per_query > 0.0 ? 1e6 / report.total_us_per_query : 0.0)
              << "\t" << "method=" << query_mode_name(query_mode)
              << "\t" << "recall_at=" << k
              << "\t" << "requested_ef=" << ef
@@ -922,9 +1156,108 @@ static void test_vs_recall(
              << report.graph_finalize_residual_us_per_query
              << "\t" << "graph_result_sort_us_per_query=" << report.graph_result_sort_us_per_query
              << "\t" << "graph_other_us_per_query=" << report.graph_other_us_per_query
+             << "\t" << "p50_us=" << report.p50_us
+             << "\t" << "p95_us=" << report.p95_us
+             << "\t" << "p99_us=" << report.p99_us
+             << "\t" << "visited_nodes=" << report.visited_nodes_per_query
+             << "\t" << "distance_computations=" << report.distance_computations_per_query
+             << "\t" << "cache_misses=" << report.cache_misses
+             << "\t" << "dtlb_load_misses=" << report.dtlb_load_misses
+             << "\t" << "active_centroids=" << report.active_centroids_per_query
+             << "\t" << "rerank_us_per_query=" << report.rerank_us_per_query
+             << "\t" << "short_checked=" << report.short_checked_per_query
+             << "\t" << "short_would_reject=" << report.short_would_reject_per_query
+             << "\t" << "short_ambiguous=" << report.short_ambiguous_per_query
+             << "\t" << "unsafe_reject_total=" << report.unsafe_reject_total
+             << "\t" << "short_bound_violation_total=" << report.short_bound_violation_total
+             << "\t" << "full_distance_count=" << report.full_distance_count_per_query
+             << "\t" << "theoretical_full_saved=" << report.short_would_reject_per_query
+             << "\t" << "short_time_us=" << report.short_time_us_per_query
+             << "\t" << "full_distance_time_us=" << report.full_distance_time_us_per_query
+             << "\t" << "global_saved_ratio="
+             << (report.full_distance_count_per_query > 0.0
+                    ? report.short_would_reject_per_query / report.full_distance_count_per_query : 0.0)
+             << "\t" << "eligible_reject_ratio="
+             << (report.short_checked_per_query > 0.0
+                    ? report.short_would_reject_per_query / report.short_checked_per_query : 0.0)
+             << "\t" << "two_bit_checked=" << report.two_bit_checked_per_query
+             << "\t" << "two_bit_would_reject=" << report.two_bit_would_reject_per_query
+             << "\t" << "two_bit_ambiguous=" << report.two_bit_ambiguous_per_query
+             << "\t" << "two_bit_unsafe_reject_total=" << report.two_bit_unsafe_reject_total
+             << "\t" << "two_bit_bound_violation_total=" << report.two_bit_bound_violation_total
+             << "\t" << "two_bit_time_us=" << report.two_bit_time_us_per_query
+             << "\t" << "two_bit_global_saved_ratio="
+             << (report.full_distance_count_per_query > 0.0
+                    ? report.two_bit_would_reject_per_query / report.full_distance_count_per_query : 0.0)
+             << "\t" << "two_bit_eligible_reject_ratio="
+             << (report.two_bit_checked_per_query > 0.0
+                    ? report.two_bit_would_reject_per_query / report.two_bit_checked_per_query : 0.0)
+             << "\t" << "paper_checked=" << report.paper_checked_per_query
+             << "\t" << "paper_would_prune=" << report.paper_would_prune_per_query
+             << "\t" << "paper_not_pruned=" << report.paper_not_pruned_per_query
+             << "\t" << "paper_false_prune_against_baseline="
+             << report.paper_false_prune_against_baseline_total
+             << "\t" << "paper_pruned_baseline_accept=" << report.paper_pruned_baseline_accept_total
+             << "\t" << "paper_pruned_baseline_reject=" << report.paper_pruned_baseline_reject_total
+             << "\t" << "paper_short_time_us=" << report.paper_short_time_us_per_query
+             << "\t" << "paper_remaining_time_us=" << report.paper_remaining_time_us_per_query
+             << "\t" << "paper_full_saved=" << report.paper_full_saved_per_query
+             << "\t" << "paper_prune_ratio="
+             << (report.paper_checked_per_query > 0.0
+                    ? report.paper_would_prune_per_query / report.paper_checked_per_query : 0.0)
+             << "\t" << "paper_saved_ratio="
+             << (report.full_distance_count_per_query > 0.0
+                    ? report.paper_full_saved_per_query /
+                        (report.full_distance_count_per_query +
+                         (appr_alg.getGraphTurboConfig().paper_active
+                            ? report.paper_full_saved_per_query : 0.0)) : 0.0)
+             << "\t" << "paper_false_prune_ratio="
+             << (report.paper_would_prune_per_query > 0.0
+                    ? static_cast<double>(report.paper_false_prune_against_baseline_total) /
+                        (report.paper_would_prune_per_query * qsize) : 0.0)
+             << "\t" << "paper_msb_kernel_calls=" << report.paper_msb_kernel_calls_per_query
+             << "\t" << "paper_remaining_kernel_calls=" << report.paper_remaining_kernel_calls_per_query
              << "\t" << "graph_slowest_stage=" << slowest_stage
              << "\t" << "graph_slowest_us_per_query=" << slowest_us
              << "\n";
+        const string csv_path = getenv_string("RABITQ_CSV_PATH", "");
+        if (!csv_path.empty()) {
+            const bool write_header = !exists_test(csv_path);
+            ofstream csv(csv_path, ios::app);
+            if (!csv.is_open()) {
+                throw runtime_error("cannot open benchmark CSV: " + csv_path);
+            }
+            if (write_header) {
+                csv << "dataset,layout,centroid_count,centroid_mode,M,efConstruction,ef,k,"
+                       "rerank_candidates,recall,qps,avg_latency_us,p50_us,p95_us,p99_us,"
+                       "visited_nodes,distance_computations,prepare_query_us,traversal_us,"
+                       "rerank_us,total_query_us,active_centroids,bytes_per_vector,"
+                       "quantization_mse,average_relative_distance_error,ns_per_distance,"
+                       "cycles_per_distance,run_index,graph_fingerprint,index_format_version\n";
+            }
+            csv << getenv_string("RABITQ_DATASET", "sift10m") << ','
+                << layout << ','
+                << appr_alg.space().get_centroid_count() << ','
+                << getenv_string("RABITQ_CENTROID_MODE", "eager") << ','
+                << getenv_size_t("RABITQ_M", 32) << ','
+                << getenv_size_t("RABITQ_EF_CONSTRUCTION", 400) << ','
+                << ef << ',' << k << ',' << report.rerank_candidates << ','
+                << report.recall << ','
+                << (report.total_us_per_query > 0.0 ? 1e6 / report.total_us_per_query : 0.0) << ','
+                << report.total_us_per_query << ',' << report.p50_us << ','
+                << report.p95_us << ',' << report.p99_us << ','
+                << report.visited_nodes_per_query << ','
+                << report.distance_computations_per_query << ','
+                << report.graph_prepare_us_per_query << ','
+                << report.graph_base_layer_us_per_query << ','
+                << report.rerank_us_per_query << ',' << report.graph_total_us_per_query << ','
+                << report.active_centroids_per_query << ',' << appr_alg.space().get_data_size() << ','
+                << "unavailable,unavailable,unavailable,unavailable,"
+                << getenv_size_t("RABITQ_RUN_INDEX", 0) << ','
+                << graph_fingerprint << ','
+                << (appr_alg.space().get_code_layout() == RaBitQCodeLayout::Turbo128
+                        ? "EXRBTQ40" : "EXRBTQ31") << '\n';
+        }
         if (report.recall > 1.0f) {
             cout << report.recall << "\t" << report.total_us_per_query << " us\n";
             break;
@@ -932,13 +1265,90 @@ static void test_vs_recall(
     }
 }
 
+static void report_paper_true_distance_coverage(
+    float *massQ,
+    size_t qsize,
+    size_t vecdim,
+    const string &base_path,
+    const vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
+    RaBitQHierarchicalNSW &index) {
+    std::ifstream base(base_path, std::ios::binary);
+    if (!base.is_open()) throw std::runtime_error("cannot open base file for paper coverage test");
+    const float epsilons[] = {1.9f, 2.2f, 2.5f};
+    size_t checked[3] = {0, 0, 0};
+    size_t violations[3] = {0, 0, 0};
+    std::vector<float> point(vecdim);
+    const std::streamoff record_bytes = static_cast<std::streamoff>(sizeof(uint32_t) +
+        vecdim * sizeof(float));
+    for (size_t qi = 0; qi < qsize; ++qi) {
+        const void *prepared = index.space().prepare_query(massQ + qi * vecdim);
+        auto gt = answers[qi];
+        while (!gt.empty()) {
+            const labeltype label = gt.top().second;
+            gt.pop();
+            base.clear();
+            base.seekg(static_cast<std::streamoff>(label) * record_bytes, std::ios::beg);
+            uint32_t stored_dim = 0;
+            base.read(reinterpret_cast<char *>(&stored_dim), sizeof(stored_dim));
+            if (!base.good() || stored_dim != vecdim)
+                throw std::runtime_error("base file error during paper coverage test");
+            base.read(reinterpret_cast<char *>(point.data()),
+                      static_cast<std::streamsize>(vecdim * sizeof(float)));
+            if (!base.good()) throw std::runtime_error("base vector read failed");
+            double true_distance = 0.0;
+            for (size_t d = 0; d < vecdim; ++d) {
+                const double delta = static_cast<double>(point[d]) - massQ[qi * vecdim + d];
+                true_distance += delta * delta;
+            }
+            const std::vector<char> encoded = index.space().encodeVector(point.data());
+            for (size_t ei = 0; ei < 3; ++ei) {
+                const auto paper = index.space().compute_paper_prune_estimate(
+                    prepared, encoded.data(), epsilons[ei]);
+                if (!paper.valid) continue;
+                ++checked[ei];
+                const double tolerance = 1e-5 * std::max(1.0, std::fabs(true_distance));
+                if (static_cast<double>(paper.lower_bound) > true_distance + tolerance)
+                    ++violations[ei];
+            }
+        }
+        index.space().release_query(prepared);
+    }
+    for (size_t ei = 0; ei < 3; ++ei) {
+        cout << "paper_offline_true_distance_coverage"
+             << " epsilon0=" << epsilons[ei]
+             << " checked=" << checked[ei]
+             << " paper_bound_violation_true_distance=" << violations[ei]
+             << " violation_ratio="
+             << (checked[ei] ? static_cast<double>(violations[ei]) / checked[ei] : 0.0)
+             << " sample=ground_truth_pairs"
+             << " included_in_search_timing=0\n";
+    }
+}
+
 void sift_test1B() {
-    const int efConstruction = static_cast<int>(getenv_size_t("RABITQ_EF_CONSTRUCTION", 400));
-    const int M = static_cast<int>(getenv_size_t("RABITQ_M", 32));
-    const int centroid_count = static_cast<int>(getenv_size_t("RABITQ_CENTROID_COUNT", 256));
+    const string abc_ablation = getenv_string("RABITQ_ABC_ABLATION", "");
+    if (!abc_ablation.empty() && abc_ablation != "A" &&
+        abc_ablation != "B" && abc_ablation != "C")
+        throw runtime_error("RABITQ_ABC_ABLATION must be A, B, or C");
+    const bool paper_prune_profile = []() {
+        const char *value = std::getenv("RABITQ_PAPER_PRUNE_COMPARE");
+        return value != nullptr && value[0] != '\0';
+    }();
+    const int efConstruction = static_cast<int>(getenv_size_t(
+        "RABITQ_EF_CONSTRUCTION", paper_prune_profile ? 200 : 400));
+    const int M = static_cast<int>(getenv_size_t(
+        "RABITQ_M", paper_prune_profile ? 16 : 32));
+    const int centroid_count = static_cast<int>(getenv_size_t(
+        "RABITQ_CENTROID_COUNT", paper_prune_profile ? 1 : 256));
     const size_t rerank_candidates =
         getenv_size_t("RABITQ_RERANK_CANDIDATES", 100);
     const int random_seed = 100;
+    const string code_layout_name = getenv_string("RABITQ_CODE_LAYOUT", "sequential");
+    const RaBitQCodeLayout code_layout = code_layout_name == "sequential"
+        ? RaBitQCodeLayout::SequentialNibble
+        : (code_layout_name == "turbo128"
+            ? RaBitQCodeLayout::Turbo128
+            : throw runtime_error("RABITQ_CODE_LAYOUT must be sequential or turbo128"));
 
     struct DatasetConfig {
         string name;
@@ -950,20 +1360,28 @@ void sift_test1B() {
         string index_prefix;
     };
 
-    const string dataset_name_config = getenv_string("RABITQ_DATASET", "sift10m");
+    const string paper_data_dir = "/home/lyx_20251022/hnsw_rabitq/dbpedia_1M";
+    const string dataset_name_config = getenv_string(
+        "RABITQ_DATASET", paper_prune_profile ? "dbpedia_openai1536" : "sift10m");
     const DatasetConfig dataset{
         dataset_name_config,
-        getenv_size_t("RABITQ_DIM", 128),
-        getenv_size_t("RABITQ_GT_WIDTH", 1000),
+        getenv_size_t("RABITQ_DIM", paper_prune_profile ? 1536 : 128),
+        getenv_size_t("RABITQ_GT_WIDTH", paper_prune_profile ? 10 : 1000),
         getenv_string(
             "RABITQ_BASE_PATH",
-            "/home/kai3/coco/data/sift10m/sift10m_base.fvecs"),
+            paper_prune_profile
+                ? paper_data_dir + "/dbpedia_openai1536_base.fvecs"
+                : "/home/kai3/coco/data/sift10m/sift10m_base.fvecs"),
         getenv_string(
             "RABITQ_QUERY_PATH",
-            "/home/kai3/coco/data/sift10m/sift10m_query.fvecs"),
+            paper_prune_profile
+                ? paper_data_dir + "/dbpedia_openai1536_query.fvecs"
+                : "/home/kai3/coco/data/sift10m/sift10m_query.fvecs"),
         getenv_string(
             "RABITQ_GT_PATH",
-            "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs"),
+            paper_prune_profile
+                ? paper_data_dir + "/dbpedia_openai1536_groundtruth.ivecs"
+                : "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs"),
         dataset_name_config};
 
     const char *dataset_name = dataset.name.c_str();
@@ -975,9 +1393,9 @@ void sift_test1B() {
     if (residual_bits != 4 && residual_bits != 8) {
         throw runtime_error("Only primary4+residual4 and primary4+residual8 are supported");
     }
-    const size_t default_centroid_train_samples = vecdim == 128 && dataset.name == "sift10m"
+    const size_t default_centroid_train_samples = dataset.name == "sift10m"
         ? 10000000
-        : fvec_count_from_file_size(dataset.base_path.c_str(), vecdim);
+        : std::min<size_t>(100000, fvec_count_from_file_size(dataset.base_path.c_str(), vecdim));
     const size_t centroid_train_samples =
         getenv_size_t("RABITQ_CENTROID_TRAIN_SAMPLES", default_centroid_train_samples);
     const hnswlib::RaBitQSpace::ResidualQuantizationConfig residual_config =
@@ -986,7 +1404,9 @@ void sift_test1B() {
             config.bits = residual_bits == 4
                 ? hnswlib::RaBitQSpace::ResidualQuantizationBits::B4
                 : hnswlib::RaBitQSpace::ResidualQuantizationBits::B8;
-            config.block_size = getenv_size_t("RABITQ_RESIDUAL_BLOCK_SIZE", 16);
+            const size_t abc_default_block = abc_ablation == "B" ? 2048 : 16;
+            config.block_size = getenv_size_t(
+                "RABITQ_RESIDUAL_BLOCK_SIZE", abc_default_block);
             if (config.block_size == 0) {
                 throw runtime_error("RABITQ_RESIDUAL_BLOCK_SIZE must be a positive integer");
             }
@@ -1033,24 +1453,37 @@ void sift_test1B() {
     const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
     const char *scale_name = residual_config.mse_optimal_scale ? "mse" : "maxabs";
     const char *scale_storage_name = residual_config.scale_fp16 ? "fp16" : "fp32";
+    const string block_suffix = residual_config.block_size == 16
+        ? ""
+        : "_block" + std::to_string(residual_config.block_size);
     snprintf(
         index_name,
         sizeof(index_name),
-        "%s_primary4_residual%zu_trueK%d_%s_%s_floatbuild_ef_%d_M_%d.bin",
+        "%s_primary4_residual%zu_trueK%d_%s_%s_%s%s_floatbuild_ef_%d_M_%d.bin",
         dataset.index_prefix.c_str(),
         residual_bits,
         centroid_count,
         scale_name,
         scale_storage_name,
+        code_layout_name.c_str(),
+        block_suffix.c_str(),
         efConstruction,
         M);
-    const string default_index_dir = residual_bits == 8
-        ? "build/trueK256_train10m_residual8"
-        : "build/trueK256_train10m";
+    const string default_index_dir = paper_prune_profile
+        ? "/home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation"
+        : (residual_bits == 8
+            ? "build/trueK256_train10m_residual8"
+            : "build/trueK256_train10m");
     const string index_dir = getenv_string("RABITQ_INDEX_DIR", default_index_dir);
     ensure_directory_exists(index_dir);
     const string path_index_string = join_path(index_dir, index_name);
     const char *path_index = path_index_string.c_str();
+
+    if (paper_prune_profile) {
+        cout << "experiment_profile=paper_prune_dbpedia_k1"
+             << " defaults=dim1536,gt10,K1,M16,efConstruction200,sequential,residual4,mse,fp16,rerank100"
+             << " explicit_environment_overrides=enabled\n";
+    }
 
     print_run_config(
         dataset_name,
@@ -1121,6 +1554,13 @@ void sift_test1B() {
         false,
         external_residual_storage,
         residual_config);
+    appr_alg->space().set_code_layout(code_layout);
+    const string centroid_query_mode = getenv_string("RABITQ_CENTROID_MODE", "eager");
+    if (centroid_query_mode == "lazy") {
+        appr_alg->space().set_centroid_query_mode(RaBitQSpace::CentroidQueryMode::Lazy);
+    } else if (centroid_query_mode != "eager") {
+        throw runtime_error("RABITQ_CENTROID_MODE must be eager or lazy");
+    }
     cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
          << (external_residual_storage
                 ? " (4-bit code in index; residual in mmap sidecar)\n"
@@ -1163,6 +1603,7 @@ void sift_test1B() {
                     false,
                     external_residual_storage,
                     residual_config);
+                appr_alg->space().set_code_layout(code_layout);
                 cout << "  encoded_bytes_per_vector=" << appr_alg->space().get_data_size()
                      << (external_residual_storage
                             ? " (4-bit code in index; residual in mmap sidecar)\n"
@@ -1194,24 +1635,51 @@ void sift_test1B() {
         StopW train_center_timer;
         vector<float> centroids;
         vector<unsigned char> centroid_scratch;
-        if (centroid_count == 1) {
-            centroids = train_global_center(
-                input,
-                vecdim,
-                vecsize,
-                centroid_train_samples);
-            appr_alg->space().setGlobalCenter(centroids.data());
+        const string centroid_path = getenv_string(
+            "RABITQ_CENTROID_PATH", path_index_string + ".centroids");
+        if (exists_test(centroid_path)) {
+            ifstream centroid_input(centroid_path, ios::binary);
+            uint32_t stored_seed = 0;
+            uint64_t stored_samples = 0;
+            appr_alg->space().loadCentroids(
+                centroid_input, &stored_seed, &stored_samples);
+            if (stored_seed != static_cast<uint32_t>(random_seed) ||
+                stored_samples != centroid_train_samples) {
+                throw runtime_error("centroid training metadata does not match requested configuration");
+            }
+            cout << "Loaded centroids from " << centroid_path << "\n";
         } else {
-            centroids = train_kmeans_centroids(
-                input,
-                vecdim,
-                vecsize,
-                static_cast<size_t>(centroid_count),
-                centroid_train_samples,
-                random_seed,
-                centroid_scratch);
-            appr_alg->space().setCentroids(centroids.data(), static_cast<size_t>(centroid_count));
+            if (centroid_count == 1) {
+                centroids = train_global_center(
+                    input,
+                    vecdim,
+                    vecsize,
+                    centroid_train_samples,
+                    random_seed);
+                appr_alg->space().setGlobalCenter(centroids.data());
+            } else {
+                centroids = train_kmeans_centroids(
+                    input,
+                    vecdim,
+                    vecsize,
+                    static_cast<size_t>(centroid_count),
+                    centroid_train_samples,
+                    random_seed,
+                    centroid_scratch);
+                appr_alg->space().setCentroids(centroids.data(), static_cast<size_t>(centroid_count));
+            }
+            ofstream centroid_output(centroid_path, ios::binary | ios::trunc);
+            if (!centroid_output.is_open()) {
+                throw runtime_error("cannot create centroid file: " + centroid_path);
+            }
+            appr_alg->space().saveCentroids(
+                centroid_output,
+                static_cast<uint32_t>(random_seed),
+                static_cast<uint64_t>(centroid_train_samples));
+            cout << "Saved centroids to " << centroid_path << "\n";
         }
+        input.clear();
+        input.seekg(0, ios::beg);
         const double train_center_us = train_center_timer.getElapsedTimeMicro();
         cout << "build_stage=train_center"
              << " us=" << train_center_us << "\n";
@@ -1245,12 +1713,23 @@ void sift_test1B() {
 
         cout << "Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ\n";
         L2Space float_space(vecdim);
-        HierarchicalNSW<float> float_index(
-            &float_space,
-            vecsize,
-            M,
-            efConstruction,
-            random_seed);
+        const string float_graph_path = getenv_string(
+            "RABITQ_FLOAT_GRAPH_PATH",
+            join_path(index_dir, dataset.name + "_float_ef_" +
+                std::to_string(efConstruction) + "_M_" + std::to_string(M) + ".bin"));
+        const bool reuse_float_graph = exists_test(float_graph_path);
+        unique_ptr<HierarchicalNSW<float>> float_index;
+        if (reuse_float_graph) {
+            cout << "Loading shared Float32 graph from " << float_graph_path << "\n";
+            float_index.reset(new HierarchicalNSW<float>(
+                &float_space, float_graph_path, false, vecsize));
+            if (float_index->cur_element_count != vecsize) {
+                throw runtime_error("shared Float32 graph element count mismatch");
+            }
+        } else {
+            float_index.reset(new HierarchicalNSW<float>(
+                &float_space, vecsize, M, efConstruction, random_seed));
+        }
 
         vector<float> first(vecdim);
         read_fvec_as_float(input, first.data(), vecdim);
@@ -1271,7 +1750,9 @@ void sift_test1B() {
             }
             payload_encode_cpu_us += payload_timer.getElapsedTimeMicro();
         }
-        float_index.addPoint(first.data(), (size_t)0);
+        if (!reuse_float_graph) {
+            float_index->addPoint(first.data(), (size_t)0);
+        }
 
         StopW payload_encode_wall_timer;
 #pragma omp parallel for
@@ -1311,12 +1792,18 @@ void sift_test1B() {
             const double local_payload_encode_us = payload_timer.getElapsedTimeMicro();
 #pragma omp atomic
             payload_encode_cpu_us += local_payload_encode_us;
-            float_index.addPoint(local_mass.data(), (size_t)label);
+            if (!reuse_float_graph) {
+                float_index->addPoint(local_mass.data(), (size_t)label);
+            }
         }
         const double payload_encode_wall_us = payload_encode_wall_timer.getElapsedTimeMicro();
 
         input.close();
         const double float_graph_build_us = float_graph_timer.getElapsedTimeMicro();
+        if (!reuse_float_graph) {
+            float_index->saveIndex(float_graph_path);
+            cout << "Saved shared Float32 graph to " << float_graph_path << "\n";
+        }
         cout << "Float graph build time:" << 1e-6 * float_graph_build_us
              << " seconds; importing graph and writing 4-bit payloads\n";
         cout << "build_stage=float_graph_build"
@@ -1354,7 +1841,7 @@ void sift_test1B() {
         StopW convertw;
         if (external_residual_storage && payload_disk_mode) {
             appr_alg->importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
-                float_index,
+                *float_index,
                 payload_path,
                 residual_state_path(path_index, query_mode),
                 payload_record_size,
@@ -1380,7 +1867,7 @@ void sift_test1B() {
                     appr_alg->space().get_residual_disk_record_bytes());
             }
             appr_alg->importGraphFromFloatIndexWithPayloads(
-                float_index,
+                *float_index,
                 compact_payloads,
                 appr_alg->space().get_data_size(),
                 true);
@@ -1388,7 +1875,7 @@ void sift_test1B() {
         } else {
             if (payload_disk_mode) {
                 appr_alg->importGraphFromFloatIndexWithPayloadFile(
-                    float_index,
+                    *float_index,
                     payload_path,
                     payload_record_size,
                     true);
@@ -1396,14 +1883,14 @@ void sift_test1B() {
                 std::remove(payload_path.c_str());
             } else {
                 appr_alg->importGraphFromFloatIndexWithPayloads(
-                    float_index,
+                    *float_index,
                     payloads,
                     payload_record_size,
                     true);
             }
         }
         const double graph_payload_import_us = convertw.getElapsedTimeMicro();
-        const size_t graph_payload_import_count = float_index.cur_element_count;
+        const size_t graph_payload_import_count = float_index->cur_element_count;
         cout << "Float graph payload import time:" << 1e-6 * graph_payload_import_us
              << " seconds\n";
         cout << "build_stage=graph_payload_import"
@@ -1425,20 +1912,166 @@ void sift_test1B() {
         print_index_file_size(path_index, query_mode);
     }
 
+    appr_alg->space().set_centroid_query_mode(
+        centroid_query_mode == "lazy"
+            ? RaBitQSpace::CentroidQueryMode::Lazy
+            : RaBitQSpace::CentroidQueryMode::Eager);
     vector<std::priority_queue<std::pair<float, labeltype>>> answers;
     const size_t k = 10;
     cout << "Parsing gt:\n";
     get_gt(massQA, qsize, gt_width, answers, k);
     cout << "Loaded gt\n";
-    test_vs_recall(
-        massQ,
-        qsize,
-        *appr_alg,
-        path_data,
-        vecdim,
-        answers,
-        k,
-        rerank_candidates,
-        query_mode);
+    const string short_shadow_compare = getenv_string("RABITQ_SHORT_SHADOW_COMPARE", "");
+    const string two_bit_shadow_compare = getenv_string("RABITQ_TWO_BIT_SHADOW_COMPARE", "");
+    const string paper_prune_compare = getenv_string("RABITQ_PAPER_PRUNE_COMPARE", "");
+    const unsigned low_bit_experiments = static_cast<unsigned>(!short_shadow_compare.empty()) +
+        static_cast<unsigned>(!two_bit_shadow_compare.empty()) +
+        static_cast<unsigned>(!paper_prune_compare.empty());
+    if (low_bit_experiments > 1)
+        throw runtime_error("low-bit experiment variables are mutually exclusive");
+    if (!paper_prune_compare.empty()) {
+        if (paper_prune_compare != "baseline" && paper_prune_compare != "shadow" &&
+            paper_prune_compare != "active" && paper_prune_compare != "all")
+            throw runtime_error("RABITQ_PAPER_PRUNE_COMPARE must be baseline, shadow, active, or all");
+        if (centroid_count != 1 || code_layout != RaBitQCodeLayout::SequentialNibble)
+            throw runtime_error("paper pruning requires K=1 and Sequential layout");
+        const float epsilon0 = getenv_float("RABITQ_PAPER_EPSILON0", 1.9f);
+        if (!(epsilon0 == 1.9f || epsilon0 == 2.2f || epsilon0 == 2.5f))
+            throw runtime_error("RABITQ_PAPER_EPSILON0 must be 1.9, 2.2, or 2.5");
+        if (paper_prune_compare == "shadow" || paper_prune_compare == "all") {
+            report_paper_true_distance_coverage(
+                massQ, qsize, vecdim, path_data, answers, *appr_alg);
+        }
+        GraphTurboConfig config = appr_alg->getGraphTurboConfig();
+        config.mode = GraphTurboMode::BatchPrefetch;
+        config.prefetch_distance = 2;
+        config.short_shadow = false;
+        config.two_bit_shadow = false;
+        config.paper_shadow = false;
+        config.paper_active = false;
+        config.paper_staged_control = false;
+        config.paper_epsilon0 = epsilon0;
+        const auto run = [&](const string &name, bool shadow, bool active, bool staged) {
+            config.paper_shadow = shadow;
+            config.paper_active = active;
+            config.paper_staged_control = staged;
+            appr_alg->setGraphTurboConfig(config);
+            cout << "paper_experiment=" << name
+                 << " epsilon0=" << epsilon0
+                 << " msb_remaining_physical_layout=split_msb_sidecar_plus_full_nibble"
+                 << " paper_msb_sidecar_bytes="
+                 << vecsize * (appr_alg->space().paper_msb_code_bytes() +
+                               sizeof(hnswlib::PaperPruneFactors<float>))
+                 << " residual_sidecar_accessed_by_paper_prune=0\n";
+            test_vs_recall(massQ, qsize, *appr_alg, path_data, vecdim, answers, k,
+                           rerank_candidates, query_mode, name);
+        };
+        if (paper_prune_compare == "baseline" || paper_prune_compare == "all")
+            run("paper_batch_baseline", false, false, false);
+        if (paper_prune_compare == "all")
+            run("paper_staged_full_control", false, false, true);
+        if (paper_prune_compare == "shadow" || paper_prune_compare == "all")
+            run("paper_shadow", true, false, false);
+        if (paper_prune_compare == "active" || paper_prune_compare == "all")
+            run("paper_active", false, true, false);
+        print_index_file_size(path_index, query_mode);
+        return;
+    }
+    if (!two_bit_shadow_compare.empty()) {
+        if (two_bit_shadow_compare != "baseline" && two_bit_shadow_compare != "shadow" &&
+            two_bit_shadow_compare != "both")
+            throw runtime_error("RABITQ_TWO_BIT_SHADOW_COMPARE must be baseline, shadow, or both");
+        if (centroid_count != 1 || code_layout != RaBitQCodeLayout::SequentialNibble)
+            throw runtime_error("2-bit shadow experiment requires K=1 and Sequential layout");
+        GraphTurboConfig shadow_config = appr_alg->getGraphTurboConfig();
+        shadow_config.mode = GraphTurboMode::BatchPrefetch;
+        shadow_config.prefetch_distance = 2;
+        shadow_config.short_shadow = false;
+        shadow_config.two_bit_shadow = false;
+        appr_alg->setGraphTurboConfig(shadow_config);
+        if (two_bit_shadow_compare == "baseline" || two_bit_shadow_compare == "both") {
+            test_vs_recall(massQ, qsize, *appr_alg, path_data, vecdim, answers, k,
+                           rerank_candidates, query_mode, "baseline");
+        }
+        if (two_bit_shadow_compare == "shadow" || two_bit_shadow_compare == "both") {
+            shadow_config.two_bit_shadow = true;
+            appr_alg->setGraphTurboConfig(shadow_config);
+            test_vs_recall(massQ, qsize, *appr_alg, path_data, vecdim, answers, k,
+                           rerank_candidates, query_mode, "two_bit_shadow");
+        }
+        print_index_file_size(path_index, query_mode);
+        return;
+    }
+    if (!short_shadow_compare.empty()) {
+        if (short_shadow_compare != "baseline" && short_shadow_compare != "shadow" &&
+            short_shadow_compare != "both")
+            throw runtime_error("RABITQ_SHORT_SHADOW_COMPARE must be baseline, shadow, or both");
+        if (centroid_count != 1 || code_layout != RaBitQCodeLayout::SequentialNibble)
+            throw runtime_error("short-shadow experiment requires K=1 and Sequential layout");
+        GraphTurboConfig shadow_config = appr_alg->getGraphTurboConfig();
+        shadow_config.mode = GraphTurboMode::BatchPrefetch;
+        shadow_config.prefetch_distance = 2;
+        shadow_config.short_shadow = false;
+        shadow_config.two_bit_shadow = false;
+        appr_alg->setGraphTurboConfig(shadow_config);
+        if (short_shadow_compare == "baseline" || short_shadow_compare == "both") {
+            test_vs_recall(massQ, qsize, *appr_alg, path_data, vecdim, answers, k,
+                           rerank_candidates, query_mode, "baseline");
+        }
+        if (short_shadow_compare == "shadow" || short_shadow_compare == "both") {
+            shadow_config.short_shadow = true;
+            appr_alg->setGraphTurboConfig(shadow_config);
+            test_vs_recall(massQ, qsize, *appr_alg, path_data, vecdim, answers, k,
+                           rerank_candidates, query_mode, "short_shadow");
+        }
+        print_index_file_size(path_index, query_mode);
+        return;
+    }
+    const string layout_compare = getenv_string("RABITQ_LAYOUT_COMPARE", "original");
+    if (layout_compare != "original" && layout_compare != "bfs" && layout_compare != "both")
+        throw runtime_error("RABITQ_LAYOUT_COMPARE must be original, bfs, or both");
+
+    unique_ptr<RaBitQHierarchicalNSW> bfs_index;
+    const string bfs_path = path_index_string + ".bfs";
+    if (layout_compare == "bfs" || layout_compare == "both") {
+        bfs_index.reset(new RaBitQHierarchicalNSW(
+            vecdim, vecsize, centroid_count, M, efConstruction, random_seed, false,
+            external_residual_storage, residual_config));
+        bfs_index->space().set_code_layout(code_layout);
+        if (exists_test(bfs_path) && exists_test(quantizer_state_path(bfs_path)) &&
+            exists_test(residual_state_path(bfs_path, query_mode))) {
+            cout << "Loading BFS-reordered index from " << bfs_path << ":\n";
+            bfs_index->loadIndex(bfs_path, vecsize);
+        } else {
+            cout << "Building BFS-reordered index from original layout:\n";
+            StopW reorder_timer;
+            bfs_index->importBfsReorderedFrom(
+                *appr_alg, residual_state_path(bfs_path, query_mode));
+            bfs_index->saveIndex(bfs_path);
+            cout << "build_stage=bfs_reorder us=" << reorder_timer.getElapsedTimeMicro() << "\n";
+        }
+        cout << "bfs_reorder_validation"
+             << " graph_fingerprint_original=" << appr_alg->labelGraphFingerprint()
+             << " graph_fingerprint_bfs=" << bfs_index->labelGraphFingerprint()
+             << " payload_fingerprint_original=" << appr_alg->payloadFingerprintByLabel()
+             << " payload_fingerprint_bfs=" << bfs_index->payloadFingerprintByLabel()
+             << " residual_fingerprint_original=" << appr_alg->residualFingerprintByLabel()
+             << " residual_fingerprint_bfs=" << bfs_index->residualFingerprintByLabel()
+             << " average_neighbor_id_distance_original=" << appr_alg->averageLevel0NeighborIdDistance()
+             << " average_neighbor_id_distance_bfs=" << bfs_index->averageLevel0NeighborIdDistance()
+             << "\n";
+        if (appr_alg->labelGraphFingerprint() != bfs_index->labelGraphFingerprint() ||
+            appr_alg->payloadFingerprintByLabel() != bfs_index->payloadFingerprintByLabel() ||
+            appr_alg->residualFingerprintByLabel() != bfs_index->residualFingerprintByLabel())
+            throw runtime_error("BFS-reordered index verification failed");
+    }
+    if (layout_compare == "original" || layout_compare == "both") {
+        test_vs_recall(massQ, qsize, *appr_alg, path_data, vecdim, answers, k,
+                       rerank_candidates, query_mode, "original");
+    }
+    if (layout_compare == "bfs" || layout_compare == "both") {
+        test_vs_recall(massQ, qsize, *bfs_index, path_data, vecdim, answers, k,
+                       rerank_candidates, query_mode, "bfs");
+    }
     print_index_file_size(path_index, query_mode);
 }

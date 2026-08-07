@@ -1,4 +1,6 @@
 hnswlib.egg-info/
+
+
 build/*
 !logs/
 !logs/**/*.log
@@ -18,3 +20,22 @@ var/
 *.residual
 *.refine4
 *.nested4x4_low4
+
+# Build products and indexes
+build/
+*.bin
+*.payload
+*.residual
+*.rabitq
+*.centroids
+
+# Large datasets
+*.fvecs
+*.ivecs
+*.npy
+*.tgz
+*.jsonl
+
+# Keep the conversion script, ignore generated DBpedia data
+dbpedia_1M/*
+!dbpedia_1M/convert_dbpedia.py

@@ -186,6 +186,123 @@ struct DistanceInterval {
     float upper_bound;
 };
 
+enum class GraphTurboMode : uint32_t {
+    Baseline = 0,
+    BatchPrefetch = 1,
+    RoutePriority = 2
+};
+
+enum class RouteCodeStrategy : uint32_t {
+    EqualInterval = 0,
+    HighVariance = 1,
+    ShortCodeSelected = 2
+};
+
+struct GraphTurboConfig {
+    GraphTurboMode mode{GraphTurboMode::Baseline};
+    RouteCodeStrategy route_strategy{RouteCodeStrategy::EqualInterval};
+    uint32_t route_bits{8};
+    uint32_t top_p{4};
+    uint32_t prefetch_distance{8};
+    bool remaining_in_route_order{false};
+    uint32_t statistics_sample_rate{0};
+    bool short_shadow{false};
+    bool two_bit_shadow{false};
+    bool paper_shadow{false};
+    bool paper_active{false};
+    bool paper_staged_control{false};
+    float paper_epsilon0{1.9f};
+};
+
+class RouteCodeStorage {
+ public:
+    virtual ~RouteCodeStorage() = default;
+    virtual size_t size() const = 0;
+    virtual uint32_t code(size_t internal_id) const = 0;
+};
+
+class ContiguousRouteCodeStorage final : public RouteCodeStorage {
+    std::vector<uint32_t> codes_;
+ public:
+    explicit ContiguousRouteCodeStorage(std::vector<uint32_t> codes)
+        : codes_(std::move(codes)) {}
+    size_t size() const override { return codes_.size(); }
+    uint32_t code(size_t internal_id) const override { return codes_.at(internal_id); }
+    const std::vector<uint32_t> &codes() const { return codes_; }
+};
+
+struct RaBitQSearchMetrics {
+    size_t visited_nodes{0};
+    size_t distance_computations{0};
+    size_t active_centroids{0};
+    double prepare_query_us{0.0};
+    double traversal_us{0.0};
+    double rerank_us{0.0};
+    double total_query_us{0.0};
+    size_t neighbors_seen{0};
+    size_t neighbors_unvisited{0};
+    size_t route_scored{0};
+    size_t priority_full_distance_count{0};
+    size_t remaining_full_distance_count{0};
+    double route_score_us{0.0};
+    double top_p_select_us{0.0};
+    double full_distance_us{0.0};
+    double queue_update_us{0.0};
+    double lower_bound_before_priority{0.0};
+    double lower_bound_after_priority{0.0};
+    size_t lower_bound_samples{0};
+    size_t route_oracle_samples{0};
+    size_t route_top1_matches_float_top1{0};
+    size_t route_top4_contains_float_top1{0};
+    size_t route_top8_float_top4_hits{0};
+    size_t route_top8_float_top4_total{0};
+    size_t prefetch_issued{0};
+    size_t short_checked{0};
+    size_t short_would_reject{0};
+    size_t short_ambiguous{0};
+    size_t unsafe_reject{0};
+    size_t short_bound_violation{0};
+    size_t full_distance_count{0};
+    double short_time_us{0.0};
+    double full_distance_time_us{0.0};
+    size_t two_bit_checked{0};
+    size_t two_bit_would_reject{0};
+    size_t two_bit_ambiguous{0};
+    size_t two_bit_unsafe_reject{0};
+    size_t two_bit_bound_violation{0};
+    double two_bit_time_us{0.0};
+    size_t paper_checked{0};
+    size_t paper_would_prune{0};
+    size_t paper_not_pruned{0};
+    size_t paper_false_prune_against_baseline{0};
+    size_t paper_pruned_baseline_accept{0};
+    size_t paper_pruned_baseline_reject{0};
+    size_t paper_full_saved{0};
+    size_t paper_msb_kernel_calls{0};
+    size_t paper_remaining_kernel_calls{0};
+    double paper_short_time_us{0.0};
+    double paper_remaining_time_us{0.0};
+};
+
+template<typename MTYPE>
+struct PaperPruneEstimate {
+    MTYPE lower_bound{};
+    MTYPE short_ip{};
+    MTYPE alpha{};
+    MTYPE ip_hat{};
+    MTYPE error_bound{};
+    bool valid{false};
+};
+
+template<typename MTYPE>
+struct PaperPruneFactors {
+    MTYPE norm_sqr{};
+    MTYPE data_norm{};
+    MTYPE cross_scale{};
+    MTYPE error_cross_scale{};
+    bool valid{false};
+};
+
 template<typename MTYPE>
 //距离空间接口
 class SpaceInterface {
@@ -206,8 +323,98 @@ class SpaceInterface {
         (void) prepared_query;
     }
 
+    virtual size_t query_active_centroids(const void *prepared_query) const {
+        (void) prepared_query;
+        return 0;
+    }
+
     virtual MTYPE query_distance(const void *prepared_query, const void *data_point) {
         return get_dist_func()(prepared_query, data_point, get_dist_func_param());
+    }
+
+    virtual MTYPE compute_short_lower_bound(
+        const void *prepared_query,
+        const void *data_point) {
+        return static_cast<MTYPE>(
+            compute_short_distance_interval(prepared_query, data_point).lower_bound);
+    }
+
+    virtual MTYPE compute_two_bit_lower_bound(
+        const void *prepared_query,
+        const void *data_point) {
+        return query_distance(prepared_query, data_point);
+    }
+
+    virtual PaperPruneEstimate<MTYPE> compute_paper_prune_estimate(
+        const void *prepared_query,
+        const void *data_point,
+        MTYPE epsilon0) {
+        (void) prepared_query;
+        (void) data_point;
+        (void) epsilon0;
+        return {};
+    }
+
+    virtual MTYPE query_distance_with_paper_msb(
+        const void *prepared_query,
+        const void *data_point,
+        MTYPE short_ip) {
+        (void) short_ip;
+        return query_distance(prepared_query, data_point);
+    }
+
+    virtual size_t paper_msb_code_bytes() const { return 0; }
+
+    virtual PaperPruneFactors<MTYPE> extract_paper_prune_sidecar(
+        const void *data_point,
+        uint8_t *msb_out) const {
+        (void) data_point;
+        (void) msb_out;
+        return {};
+    }
+
+    virtual PaperPruneEstimate<MTYPE> compute_paper_prune_estimate_sidecar(
+        const void *prepared_query,
+        const uint8_t *msb_code,
+        const PaperPruneFactors<MTYPE> &factors,
+        MTYPE epsilon0) const {
+        (void) prepared_query;
+        (void) msb_code;
+        (void) factors;
+        (void) epsilon0;
+        return {};
+    }
+
+    virtual void query_distance_batch_k1(
+        const void *prepared_query,
+        const void *const *data_points,
+        size_t count,
+        MTYPE *distances,
+        size_t prefetch_distance) {
+        (void) prefetch_distance;
+        for (size_t i = 0; i < count; ++i) {
+            distances[i] = query_distance(prepared_query, data_points[i]);
+        }
+    }
+
+    virtual bool compute_query_route_code(
+        const void *prepared_query,
+        const std::vector<uint32_t> &route_dims,
+        uint32_t *route_code) const {
+        (void) prepared_query;
+        (void) route_dims;
+        (void) route_code;
+        return false;
+    }
+
+    virtual bool float32_query_distance(
+        const void *prepared_query,
+        const float *database_vector,
+        float *distance) const {
+        (void) prepared_query;
+        (void) database_vector;
+        (void) distance;
+        return false;
     }
 
     virtual MTYPE result_distance(const void *prepared_query, const void *data_point) {

@@ -110,12 +110,150 @@ static void run_residual_bits_smoke(size_t residual_bits) {
         external_index.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
     assert(!external_result.empty());
     assert(std::isfinite(external_result.top().first));
+    const char *tmp_external_bfs_residual =
+        "/tmp/rabitq_hnsw_smoke_external_bfs.index.residual";
+    std::remove(tmp_external_bfs_residual);
+    hnswlib::RaBitQHierarchicalNSW external_bfs(
+        dim, 4, 1, 8, 32, 0, false, true, residual_bits);
+    external_bfs.importBfsReorderedFrom(external_index, tmp_external_bfs_residual);
+    assert(external_bfs.labelGraphFingerprint() == external_index.labelGraphFingerprint());
+    assert(external_bfs.payloadFingerprintByLabel() == external_index.payloadFingerprintByLabel());
+    assert(external_bfs.residualFingerprintByLabel() == external_index.residualFingerprintByLabel());
+    auto external_bfs_result =
+        external_bfs.searchKnnPlainThenResidualRerank(data.data(), 1, 4);
+    assert(!external_bfs_result.empty());
+    assert(external_bfs_result.top().second == external_result.top().second);
     std::remove(tmp_external_residual.c_str());
     std::remove(tmp_external_payload.c_str());
+    std::remove(tmp_external_bfs_residual);
+}
+
+static void test_multimeans_eager_lazy_equivalence() {
+    const size_t dim = 4;
+    const std::vector<float> centroids = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+    };
+    const std::vector<float> points = {
+        1.0f, 0.1f, 0.0f, 0.0f,
+        0.9f, 0.0f, 0.1f, 0.0f,
+        0.0f, 1.0f, 0.1f, 0.0f,
+        0.1f, 0.9f, 0.0f, 0.1f,
+    };
+    hnswlib::RaBitQHierarchicalNSW index(dim, 4, 2, 8, 32, 0, false, false, 4);
+    index.space().setIdentityRotation();
+    index.space().setCentroids(centroids.data(), 2);
+    for (size_t i = 0; i < 4; ++i) {
+        index.addPoint(points.data() + i * dim, i);
+    }
+
+    hnswlib::RaBitQSearchMetrics eager_metrics;
+    index.space().set_centroid_query_mode(hnswlib::RaBitQSpace::CentroidQueryMode::Eager);
+    auto eager = index.searchKnnPlainThenResidualRerank(points.data(), 2, 4, nullptr, &eager_metrics);
+    hnswlib::RaBitQSearchMetrics lazy_metrics;
+    index.space().set_centroid_query_mode(hnswlib::RaBitQSpace::CentroidQueryMode::Lazy);
+    auto lazy = index.searchKnnPlainThenResidualRerank(points.data(), 2, 4, nullptr, &lazy_metrics);
+    assert(eager_metrics.active_centroids == 2);
+    assert(lazy_metrics.active_centroids > 0 && lazy_metrics.active_centroids <= 2);
+    assert(eager_metrics.distance_computations == lazy_metrics.distance_computations);
+    assert(eager_metrics.visited_nodes == lazy_metrics.visited_nodes);
+    while (!eager.empty()) {
+        assert(!lazy.empty());
+        assert(eager.top().second == lazy.top().second);
+        assert(std::fabs(eager.top().first - lazy.top().first) < 1e-5f);
+        eager.pop();
+        lazy.pop();
+    }
+    assert(lazy.empty());
+
+    const std::string centroid_path = "/tmp/rabitq_multimeans.centroids";
+    {
+        std::ofstream output(centroid_path, std::ios::binary);
+        index.space().saveCentroids(output, 123U, 1000U);
+    }
+    hnswlib::RaBitQHierarchicalNSW restored(dim, 4, 2, 8, 32, 0, false, false, 4);
+    uint32_t restored_seed = 0;
+    uint64_t restored_samples = 0;
+    {
+        std::ifstream input(centroid_path, std::ios::binary);
+        restored.space().loadCentroids(input, &restored_seed, &restored_samples);
+    }
+    assert(restored_seed == 123U);
+    assert(restored_samples == 1000U);
+    for (size_t i = 0; i < 4; ++i) {
+        assert(restored.space().assignCentroid(points.data() + i * dim) ==
+               index.space().assignCentroid(points.data() + i * dim));
+    }
+    std::remove(centroid_path.c_str());
+}
+
+static void test_turbo128_layout() {
+    for (const size_t dim : {size_t(128), size_t(256), size_t(960), size_t(1536)}) {
+        size_t code_dim = 1;
+        const size_t rounded_dim = ((dim + 63U) / 64U) * 64U;
+        while (code_dim < rounded_dim) code_dim <<= 1U;
+        std::vector<uint8_t> values(code_dim, 0);
+        std::vector<uint8_t> sequential(code_dim / 2U, 0);
+        std::vector<uint8_t> turbo(code_dim / 2U, 0);
+        std::vector<uint8_t> unpacked(code_dim, 0);
+        for (size_t i = 0; i < code_dim; ++i) {
+            values[i] = static_cast<uint8_t>((i * 13U + 7U) & 0x0FU);
+            if (i & 1U) sequential[i >> 1U] |= static_cast<uint8_t>(values[i] << 4U);
+            else sequential[i >> 1U] |= values[i];
+        }
+        hnswlib::RaBitQSpace::convertSequentialToTurbo(
+            sequential.data(), turbo.data(), code_dim);
+        hnswlib::RaBitQSpace::unpackTurbo128(turbo.data(), unpacked.data(), code_dim);
+        assert(values == unpacked);
+
+        std::vector<float> point(dim, 0.0f);
+        std::vector<float> query(dim, 0.0f);
+        std::vector<float> center(dim, 0.0f);
+        for (size_t i = 0; i < dim; ++i) {
+            point[i] = std::sin(static_cast<float>(i + 1U) * 0.013f);
+            query[i] = std::cos(static_cast<float>(i + 3U) * 0.017f);
+        }
+        hnswlib::RaBitQHierarchicalNSW seq_index(dim, 1, 1, 8, 32, 0, false, false, 4);
+        hnswlib::RaBitQHierarchicalNSW turbo_index(dim, 1, 1, 8, 32, 0, false, false, 4);
+        seq_index.space().setIdentityRotation();
+        turbo_index.space().setIdentityRotation();
+        seq_index.space().setGlobalCenter(center.data());
+        turbo_index.space().setGlobalCenter(center.data());
+        turbo_index.space().set_code_layout(hnswlib::RaBitQCodeLayout::Turbo128);
+        const std::vector<char> seq_encoded = seq_index.space().encodeVector(point.data());
+        const std::vector<char> turbo_encoded = turbo_index.space().encodeVector(point.data());
+        const void *seq_query = seq_index.space().prepare_query(query.data());
+        const void *turbo_query = turbo_index.space().prepare_query(query.data());
+        const float seq_distance = seq_index.space().query_distance(seq_query, seq_encoded.data());
+        const float turbo_distance = turbo_index.space().query_distance(turbo_query, turbo_encoded.data());
+        assert(std::fabs(seq_distance - turbo_distance) <= 1e-4f);
+        seq_index.space().release_query(seq_query);
+        turbo_index.space().release_query(turbo_query);
+        if (dim == 128) {
+            turbo_index.addPoint(point.data(), 0);
+            const std::string path = "/tmp/rabitq_turbo128.index";
+            turbo_index.saveIndex(path);
+            hnswlib::RaBitQHierarchicalNSW loaded(dim, 1, 1, 8, 32, 0, false, false, 4);
+            loaded.loadIndex(path, 1);
+            assert(loaded.space().get_code_layout() == hnswlib::RaBitQCodeLayout::Turbo128);
+            auto result = loaded.searchKnnPlainThenResidualRerank(query.data(), 1, 1);
+            assert(!result.empty() && std::isfinite(result.top().first));
+            std::remove(path.c_str());
+            std::remove((path + ".rabitq").c_str());
+        }
+    }
 }
 
 int main() {
+    assert(!hnswlib::HierarchicalNSW<float>::baselineWouldAccept(1.0f, 1.0f, 10, 10));
+    assert(hnswlib::HierarchicalNSW<float>::baselineWouldAccept(1.0f, 1.0f, 9, 10));
+    assert(hnswlib::HierarchicalNSW<float>::baselineWouldAccept(0.9f, 1.0f, 10, 10));
+    const uint8_t nibble_boundaries[] = {0, 3, 4, 7, 8, 11, 12, 15};
+    for (uint8_t value : nibble_boundaries)
+        assert(hnswlib::RaBitQSpace::primaryTopTwoBits(value) == value / 4U);
     test_residual_pack_roundtrip();
+    test_multimeans_eager_lazy_equivalence();
+    test_turbo128_layout();
     for (size_t bits : {size_t(4), size_t(8)}) {
         run_residual_bits_smoke(bits);
     }
@@ -197,6 +335,8 @@ int main() {
     const float single_distance = index.space().query_distance(query_context, encoded.data());
     const hnswlib::DistanceInterval short_interval =
         index.space().compute_short_distance_interval(query_context, encoded.data());
+    const float lightweight_short_lower_bound =
+        index.space().compute_short_lower_bound(query_context, encoded.data());
     const hnswlib::DistanceInterval long_interval =
         index.space().compute_long_distance_interval(query_context, encoded.data());
     const hnswlib::DistanceInterval residual_interval =
@@ -204,6 +344,7 @@ int main() {
     assert(std::isfinite(short_interval.estimate));
     assert(std::isfinite(short_interval.lower_bound));
     assert(std::isfinite(short_interval.upper_bound));
+    assert(std::isfinite(lightweight_short_lower_bound));
     assert(std::isfinite(long_interval.estimate));
     assert(std::isfinite(residual_interval.estimate));
     std::vector<std::vector<char>> encoded_points;
@@ -218,7 +359,40 @@ int main() {
     }
 
     for (const void *point : points) {
-        assert(std::isfinite(index.space().query_distance(query_context, point)));
+        const float full = index.space().query_distance(query_context, point);
+        const float lower = index.space().compute_short_lower_bound(query_context, point);
+        const float lower_two = index.space().compute_two_bit_lower_bound(query_context, point);
+        const float lower_two_scalar =
+            index.space().compute_two_bit_lower_bound_scalar_for_test(query_context, point);
+        assert(std::isfinite(full));
+        assert(lower <= full + 1e-5f * std::max(1.0f, std::fabs(full)));
+        assert(lower_two <= full + 1e-5f * std::max(1.0f, std::fabs(full)));
+        assert(std::fabs(lower_two - lower_two_scalar) <
+               1e-5f * std::max(1.0f, std::fabs(lower_two_scalar)));
+        for (const float epsilon0 : {1.9f, 2.2f, 2.5f}) {
+            const auto paper = index.space().compute_paper_prune_estimate(
+                query_context, point, epsilon0);
+            std::vector<uint8_t> msb(index.space().paper_msb_code_bytes());
+            const auto sidecar_factors = index.space().extract_paper_prune_sidecar(
+                point, msb.data());
+            const auto sidecar_paper = index.space().compute_paper_prune_estimate_sidecar(
+                query_context, msb.data(), sidecar_factors, epsilon0);
+            assert(paper.valid);
+            assert(sidecar_paper.valid);
+            assert(std::fabs(sidecar_paper.short_ip - paper.short_ip) < 1e-5f);
+            assert(std::fabs(sidecar_paper.lower_bound - paper.lower_bound) <
+                   1e-5f * std::max(1.0f, std::fabs(paper.lower_bound)));
+            assert(paper.alpha > 0.0f && paper.alpha <= 1.0f);
+            const float reference_error =
+                std::sqrt((1.0f - paper.alpha * paper.alpha) /
+                          (paper.alpha * paper.alpha)) *
+                epsilon0 / std::sqrt(static_cast<float>(index.space().get_code_dim() - 1));
+            assert(std::fabs(paper.error_bound - reference_error) < 1e-6f);
+            const float staged = index.space().query_distance_with_paper_msb(
+                query_context, point, paper.short_ip);
+            assert(std::fabs(staged - full) <
+                   1e-5f * std::max(1.0f, std::fabs(full)));
+        }
     }
     const float one_distance = index.space().query_distance(query_context, points[0]);
     index.space().release_query(query_context);
@@ -276,6 +450,30 @@ int main() {
     assert(!payload_build_result.empty());
     assert(std::isfinite(payload_build_result.top().first));
 
+    hnswlib::RaBitQHierarchicalNSW bfs_reordered_index(dim, 4, 1, 8, 32, 0);
+    bfs_reordered_index.importBfsReorderedFrom(payload_build_index);
+    assert(bfs_reordered_index.labelGraphFingerprint() ==
+           payload_build_index.labelGraphFingerprint());
+    assert(bfs_reordered_index.payloadFingerprintByLabel() ==
+           payload_build_index.payloadFingerprintByLabel());
+    assert(bfs_reordered_index.index().getExternalLabel(0) ==
+           payload_build_index.index().getExternalLabel(
+               payload_build_index.index().enterpoint_node_));
+    const char *tmp_bfs_index = "/tmp/rabitq_hnsw_smoke_bfs.index";
+    const char *tmp_bfs_state = "/tmp/rabitq_hnsw_smoke_bfs.index.rabitq";
+    std::remove(tmp_bfs_index);
+    std::remove(tmp_bfs_state);
+    bfs_reordered_index.saveIndex(tmp_bfs_index);
+    hnswlib::RaBitQHierarchicalNSW loaded_bfs(dim, 4, 1, 8, 32, 0);
+    loaded_bfs.loadIndex(tmp_bfs_index, 4);
+    assert(loaded_bfs.labelGraphFingerprint() == payload_build_index.labelGraphFingerprint());
+    assert(loaded_bfs.payloadFingerprintByLabel() == payload_build_index.payloadFingerprintByLabel());
+    auto bfs_result = loaded_bfs.searchKnn(data.data(), 1);
+    assert(!bfs_result.empty());
+    assert(bfs_result.top().second == payload_build_result.top().second);
+    std::remove(tmp_bfs_index);
+    std::remove(tmp_bfs_state);
+
     hnswlib::RaBitQHierarchicalNSW payload_file_build_index(dim, 4, 1, 8, 32, 0);
     payload_file_build_index.space().setIdentityRotation();
     const char *tmp_payload_file = "/tmp/rabitq_hnsw_smoke.payload";
@@ -301,17 +499,97 @@ int main() {
 
     const char *tmp_floatbuild_index = "/tmp/rabitq_hnsw_smoke_floatbuild.index";
     const char *tmp_floatbuild_state = "/tmp/rabitq_hnsw_smoke_floatbuild.index.rabitq";
+    const char *tmp_floatbuild_route = "/tmp/rabitq_hnsw_smoke_floatbuild.index.route";
     std::remove(tmp_floatbuild_index);
     std::remove(tmp_floatbuild_state);
+    std::remove(tmp_floatbuild_route);
+    hnswlib::GraphTurboConfig turbo_config;
+    turbo_config.mode = hnswlib::GraphTurboMode::BatchPrefetch;
+    turbo_config.prefetch_distance = 2;
+    payload_build_index.setGraphTurboConfig(turbo_config);
+    hnswlib::RaBitQSearchMetrics batch_metrics;
+    const auto batch_result = payload_build_index.searchKnnPlainThenResidualRerank(
+        data.data(), 2, 2, nullptr, &batch_metrics);
+    assert(batch_metrics.distance_computations > 0);
+    turbo_config.short_shadow = true;
+    payload_build_index.setEf(1);
+    payload_build_index.setGraphTurboConfig(turbo_config);
+    hnswlib::RaBitQSearchMetrics shadow_metrics;
+    const auto shadow_result = payload_build_index.searchKnnPlainThenResidualRerank(
+        data.data(), 1, 1, nullptr, &shadow_metrics);
+    assert(!shadow_result.empty());
+    assert(shadow_metrics.short_checked ==
+           shadow_metrics.short_would_reject + shadow_metrics.short_ambiguous);
+    assert(shadow_metrics.unsafe_reject == 0);
+    assert(shadow_metrics.short_bound_violation == 0);
+    assert(shadow_metrics.full_distance_count > 0);
+    turbo_config.short_shadow = false;
+    turbo_config.two_bit_shadow = true;
+    payload_build_index.setGraphTurboConfig(turbo_config);
+    hnswlib::RaBitQSearchMetrics two_bit_metrics;
+    const auto two_bit_result = payload_build_index.searchKnnPlainThenResidualRerank(
+        data.data(), 1, 1, nullptr, &two_bit_metrics);
+    assert(!two_bit_result.empty());
+    assert(two_bit_result.top().second == shadow_result.top().second);
+    assert(two_bit_metrics.two_bit_checked ==
+           two_bit_metrics.two_bit_would_reject + two_bit_metrics.two_bit_ambiguous);
+    assert(two_bit_metrics.two_bit_unsafe_reject == 0);
+    assert(two_bit_metrics.two_bit_bound_violation == 0);
+    turbo_config.two_bit_shadow = false;
+    turbo_config.paper_shadow = true;
+    turbo_config.paper_epsilon0 = 1.9f;
+    payload_build_index.setGraphTurboConfig(turbo_config);
+    hnswlib::RaBitQSearchMetrics paper_shadow_metrics;
+    const auto paper_shadow_result = payload_build_index.searchKnnPlainThenResidualRerank(
+        data.data(), 1, 1, nullptr, &paper_shadow_metrics);
+    assert(!paper_shadow_result.empty());
+    assert(paper_shadow_result.top().second == shadow_result.top().second);
+    assert(paper_shadow_metrics.paper_checked ==
+           paper_shadow_metrics.paper_would_prune + paper_shadow_metrics.paper_not_pruned);
+    turbo_config.paper_shadow = false;
+    turbo_config.paper_active = true;
+    payload_build_index.setGraphTurboConfig(turbo_config);
+    hnswlib::RaBitQSearchMetrics paper_active_metrics;
+    const auto paper_active_result = payload_build_index.searchKnnPlainThenResidualRerank(
+        data.data(), 1, 1, nullptr, &paper_active_metrics);
+    assert(!paper_active_result.empty());
+    assert(paper_active_metrics.paper_checked ==
+           paper_active_metrics.paper_would_prune + paper_active_metrics.paper_not_pruned);
+    assert(paper_active_metrics.paper_remaining_kernel_calls +
+           paper_active_metrics.paper_full_saved > 0);
+    payload_build_index.buildRouteCodes(
+        data.data(), 4, hnswlib::RouteCodeStrategy::EqualInterval, 6);
+    assert(payload_build_index.routeCodeFingerprint() != 0);
+    turbo_config.mode = hnswlib::GraphTurboMode::RoutePriority;
+    turbo_config.short_shadow = false;
+    turbo_config.two_bit_shadow = false;
+    turbo_config.paper_active = false;
+    turbo_config.route_bits = 6;
+    turbo_config.top_p = 2;
+    payload_build_index.setGraphTurboConfig(turbo_config);
+    hnswlib::RaBitQSearchMetrics route_metrics;
+    const auto route_result = payload_build_index.searchKnnPlainThenResidualRerank(
+        data.data(), 2, 2, nullptr, &route_metrics);
+    assert(route_metrics.route_scored > 0);
+    assert(route_metrics.priority_full_distance_count +
+           route_metrics.remaining_full_distance_count == route_metrics.route_scored);
+    assert(batch_result.size() == route_result.size());
+    bool frozen_rejected = false;
+    try { payload_build_index.addPoint(data.data(), 99); }
+    catch (const std::runtime_error &) { frozen_rejected = true; }
+    assert(frozen_rejected);
     payload_build_index.saveIndex(tmp_floatbuild_index);
     hnswlib::RaBitQHierarchicalNSW loaded_floatbuild(dim, 4, 1, 8, 32, 0);
     loaded_floatbuild.loadIndex(tmp_floatbuild_index, 4);
+    assert(loaded_floatbuild.routeCodeFingerprint() == payload_build_index.routeCodeFingerprint());
+    loaded_floatbuild.setGraphTurboConfig(turbo_config);
     assert(loaded_floatbuild.index().data_size_ == loaded_floatbuild.space().get_data_size());
     auto loaded_floatbuild_result = loaded_floatbuild.searchKnn(data.data(), 1);
     assert(!loaded_floatbuild_result.empty());
     assert(loaded_floatbuild_result.top().second == payload_build_result.top().second);
     std::remove(tmp_floatbuild_index);
     std::remove(tmp_floatbuild_state);
+    std::remove(tmp_floatbuild_route);
 
     const char *tmp_external_index = "/tmp/rabitq_hnsw_smoke_external.index";
     const char *tmp_external_state = "/tmp/rabitq_hnsw_smoke_external.index.rabitq";

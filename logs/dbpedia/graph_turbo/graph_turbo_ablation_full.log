@@ -1,0 +1,83 @@
+baseline  0 0 ef 64 rerank 64 recall 0.94132 qps 879.4898457732771
+baseline  0 0 ef 96 rerank 96 recall 0.9589 qps 676.1030178330709
+baseline  0 0 ef 128 rerank 100 recall 0.9659 qps 562.2885629265513
+baseline  0 0 ef 192 rerank 100 recall 0.97284 qps 425.49036981771013
+baseline  0 0 ef 256 rerank 100 recall 0.97636 qps 345.68421764735933
+baseline  0 0 ef 460 rerank 100 recall 0.98152 qps 220.19903011265092
+batch_prefetch  0 0 ef 64 rerank 64 recall 0.94132 qps 962.0096807107503
+batch_prefetch  0 0 ef 96 rerank 96 recall 0.9589 qps 700.3718513918865
+batch_prefetch  0 0 ef 128 rerank 100 recall 0.9659 qps 576.3012088026725
+batch_prefetch  0 0 ef 192 rerank 100 recall 0.97284 qps 434.924508997996
+batch_prefetch  0 0 ef 256 rerank 100 recall 0.97636 qps 352.44896246434166
+batch_prefetch  0 0 ef 460 rerank 100 recall 0.98152 qps 225.41973501030384
+batch_prefetch  0 0 ef 64 rerank 64 recall 0.94132 qps 949.2414842686558
+batch_prefetch  0 0 ef 96 rerank 96 recall 0.9589 qps 691.4122826499956
+batch_prefetch  0 0 ef 128 rerank 100 recall 0.9659 qps 568.4617792511204
+batch_prefetch  0 0 ef 192 rerank 100 recall 0.97284 qps 427.4560592699817
+batch_prefetch  0 0 ef 256 rerank 100 recall 0.97636 qps 347.762684424363
+batch_prefetch  0 0 ef 460 rerank 100 recall 0.98152 qps 220.9369200589905
+batch_prefetch  0 0 ef 64 rerank 64 recall 0.94132 qps 923.1821443003587
+batch_prefetch  0 0 ef 96 rerank 96 recall 0.9589 qps 670.57260847691
+batch_prefetch  0 0 ef 128 rerank 100 recall 0.9659 qps 554.0197907167602
+batch_prefetch  0 0 ef 192 rerank 100 recall 0.97284 qps 414.15585948727283
+batch_prefetch  0 0 ef 256 rerank 100 recall 0.97636 qps 334.85911293283743
+batch_prefetch  0 0 ef 460 rerank 100 recall 0.98152 qps 213.11840029076458
+batch_prefetch  0 0 ef 64 rerank 64 recall 0.94132 qps 885.7706448819567
+batch_prefetch  0 0 ef 96 rerank 96 recall 0.9589 qps 642.6886063613244
+batch_prefetch  0 0 ef 128 rerank 100 recall 0.9659 qps 527.3230212645332
+batch_prefetch  0 0 ef 192 rerank 100 recall 0.97284 qps 398.0487200443557
+batch_prefetch  0 0 ef 256 rerank 100 recall 0.97636 qps 320.76933626090994
+batch_prefetch  0 0 ef 460 rerank 100 recall 0.98152 qps 203.58417298821328
+route_priority equal_interval 6 2 ef 64 rerank 64 recall 0.94132 qps 713.6639284684129
+route_priority equal_interval 6 2 ef 96 rerank 96 recall 0.9589 qps 515.1529952595109
+route_priority equal_interval 6 2 ef 128 rerank 100 recall 0.9659 qps 416.1527652928534
+route_priority equal_interval 6 2 ef 192 rerank 100 recall 0.97284 qps 315.10002080185654
+route_priority equal_interval 6 2 ef 256 rerank 100 recall 0.97636 qps 244.19359793243206
+route_priority equal_interval 6 2 ef 460 rerank 100 recall 0.98152 qps 159.92632864555617
+route_priority equal_interval 6 4 ef 64 rerank 64 recall 0.94132 qps 699.6022255369123
+route_priority equal_interval 6 4 ef 96 rerank 96 recall 0.9589 qps 516.7268278453051
+route_priority equal_interval 6 4 ef 128 rerank 100 recall 0.9659 qps 417.53746053922066
+route_priority equal_interval 6 4 ef 192 rerank 100 recall 0.97284 qps 320.8717561295264
+route_priority equal_interval 6 4 ef 256 rerank 100 recall 0.97636 qps 253.86710557939077
+route_priority equal_interval 6 4 ef 460 rerank 100 recall 0.98152 qps 161.17620689933054
+route_priority equal_interval 6 8 ef 64 rerank 64 recall 0.94132 qps 697.770625697031
+route_priority equal_interval 6 8 ef 96 rerank 96 recall 0.9589 qps 512.6301850292353
+route_priority equal_interval 6 8 ef 128 rerank 100 recall 0.9659 qps 415.9388355648336
+route_priority equal_interval 6 8 ef 192 rerank 100 recall 0.97284 qps 316.3326672734855
+route_priority equal_interval 6 8 ef 256 rerank 100 recall 0.97636 qps 252.2353646976428
+route_priority equal_interval 6 8 ef 460 rerank 100 recall 0.98152 qps 160.08599906953694
+route_priority high_variance 6 2 ef 64 rerank 64 recall 0.94132 qps 703.084787598333
+route_priority high_variance 6 2 ef 96 rerank 96 recall 0.9589 qps 520.2374225776775
+route_priority high_variance 6 2 ef 128 rerank 100 recall 0.9659 qps 425.3413147848324
+route_priority high_variance 6 2 ef 192 rerank 100 recall 0.97284 qps 318.23321228651713
+route_priority high_variance 6 2 ef 256 rerank 100 recall 0.97636 qps 255.32902742102254
+route_priority high_variance 6 2 ef 460 rerank 100 recall 0.98152 qps 162.08440038886235
+route_priority high_variance 6 4 ef 64 rerank 64 recall 0.94132 qps 699.4441615295234
+route_priority high_variance 6 4 ef 96 rerank 96 recall 0.9589 qps 516.9527035706041
+route_priority high_variance 6 4 ef 128 rerank 100 recall 0.9659 qps 420.20877086059716
+route_priority high_variance 6 4 ef 192 rerank 100 recall 0.97284 qps 316.0570167733042
+route_priority high_variance 6 4 ef 256 rerank 100 recall 0.97636 qps 253.52757401613718
+route_priority high_variance 6 4 ef 460 rerank 100 recall 0.98152 qps 160.84318782904495
+route_priority high_variance 6 8 ef 64 rerank 64 recall 0.94132 qps 695.741672959765
+route_priority high_variance 6 8 ef 96 rerank 96 recall 0.9589 qps 517.9595297470523
+route_priority high_variance 6 8 ef 128 rerank 100 recall 0.9659 qps 416.1512928230444
+route_priority high_variance 6 8 ef 192 rerank 100 recall 0.97284 qps 314.5388369539955
+route_priority high_variance 6 8 ef 256 rerank 100 recall 0.97636 qps 252.05449312237263
+route_priority high_variance 6 8 ef 460 rerank 100 recall 0.98152 qps 160.07997058512115
+route_priority short_code_selected 6 2 ef 64 rerank 64 recall 0.94132 qps 710.729994026204
+route_priority short_code_selected 6 2 ef 96 rerank 96 recall 0.9589 qps 517.6136502379571
+route_priority short_code_selected 6 2 ef 128 rerank 100 recall 0.9659 qps 418.86748496867125
+route_priority short_code_selected 6 2 ef 192 rerank 100 recall 0.97284 qps 316.9910218014706
+route_priority short_code_selected 6 2 ef 256 rerank 100 recall 0.97636 qps 253.3192471799467
+route_priority short_code_selected 6 2 ef 460 rerank 100 recall 0.98152 qps 157.0960767805505
+route_priority short_code_selected 6 4 ef 64 rerank 64 recall 0.94132 qps 687.7602099029557
+route_priority short_code_selected 6 4 ef 96 rerank 96 recall 0.9589 qps 508.02734765211295
+route_priority short_code_selected 6 4 ef 128 rerank 100 recall 0.9659 qps 410.85437078037063
+route_priority short_code_selected 6 4 ef 192 rerank 100 recall 0.97284 qps 309.82783145752353
+route_priority short_code_selected 6 4 ef 256 rerank 100 recall 0.97636 qps 248.98299237876407
+route_priority short_code_selected 6 4 ef 460 rerank 100 recall 0.98152 qps 156.85582201405586
+route_priority short_code_selected 6 8 ef 64 rerank 64 recall 0.94132 qps 685.9793681955357
+route_priority short_code_selected 6 8 ef 96 rerank 96 recall 0.9589 qps 502.08148990343443
+route_priority short_code_selected 6 8 ef 128 rerank 100 recall 0.9659 qps 402.74187082079294
+route_priority short_code_selected 6 8 ef 192 rerank 100 recall 0.97284 qps 310.91594416848113
+route_priority short_code_selected 6 8 ef 256 rerank 100 recall 0.97636 qps 246.39939612067326

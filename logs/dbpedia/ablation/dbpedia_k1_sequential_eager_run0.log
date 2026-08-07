@@ -1,0 +1,68 @@
+Run config:
+  dataset=dbpedia_openai1536
+  base_count=975000
+  query_count=5000
+  dimension=1536
+  M=16 efConstruction=200
+  quantizer=4-bit ExRaBitQ centroid_count=1 random_seed=100
+  rerank_mode=primary4_plus_residual_rerank method=primary4_plus_residual_rerank rerank_candidates=100
+  build_distance=float32_l2 stored_data=4bit_rabitq_plus_disk_residual residual_bits=4 residual_block_size=16 residual_scale_mode=mse residual_scale_storage=fp16 query_distance=primary4_plus_residual_rerank
+  enabled_paths=primary4_residual4,primary4_residual8 routing=primary4 rerank_distance=residual4
+  base_path=/home/lyx_20251022/hnsw_rabitq/dbpedia_1M/dbpedia_openai1536_base.fvecs
+  query_path=/home/lyx_20251022/hnsw_rabitq/dbpedia_1M/dbpedia_openai1536_query.fvecs
+  gt_path=/home/lyx_20251022/hnsw_rabitq/dbpedia_1M/dbpedia_openai1536_groundtruth.ivecs
+  index_path=/home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation/dbpedia_openai1536_primary4_residual4_trueK1_mse_fp16_sequential_floatbuild_ef_200_M_16.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=1041 (4-bit code in index; residual in mmap sidecar)
+  residual_bits=4 residual_block_size=16 residual_scale_mode=mse primary_bits=4 short_bits=1 remaining_bits=3 compact_primary_bytes_per_vector=1024 residual_code_bytes_per_vector=1024 residual_record_bytes_per_vector=1288 primary_4bit_empirical_error_reference=0.00794114
+Building index:
+Training 1 ExRaBitQ centroid(s) from 100000 base vectors
+Saved centroids to /home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation/dbpedia_k1.centroids
+build_stage=train_center us=261512
+payload_mode=disk_file payload_record_bytes=2329 payload_bytes=2270775000 payload_path=/home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation/dbpedia_openai1536_primary4_residual4_trueK1_mse_fp16_sequential_floatbuild_ef_200_M_16.bin.payload.tmp
+Building HNSW graph with float32 L2 distances, then encoding payloads to 4-bit RaBitQ
+10.2564 %, 7.56235 kips  Mem: 834 Mb 
+20.5128 %, 4.05288 kips  Mem: 1468 Mb 
+30.7692 %, 3.59776 kips  Mem: 2100 Mb 
+41.0256 %, 3.35737 kips  Mem: 2738 Mb 
+51.2821 %, 3.13235 kips  Mem: 3371 Mb 
+61.5385 %, 3.08193 kips  Mem: 4005 Mb 
+71.7949 %, 3.08545 kips  Mem: 4637 Mb 
+82.0513 %, 3.06505 kips  Mem: 5280 Mb 
+92.3077 %, 3.04137 kips  Mem: 5913 Mb 
+Saved shared Float32 graph to /home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation/dbpedia_float_ef_200_M_16.bin
+Float graph build time:285.189 seconds; importing graph and writing 4-bit payloads
+build_stage=float_graph_build us=2.85189e+08 kips=3.41878
+build_stage=payload_encode cpu_us=9.55742e+08 wall_us=2.85167e+08 count=975000 record_bytes=2329 total_bytes=2270775000 cpu_kips=1.02015 wall_kips=3.41905 cpu_MBps=2.37593 wall_MBps=7.96296
+centroid_assignment_stats count=1 min=975000 max=975000 p50=975000 p95=975000 empty=0
+Graph/payload import 10.2564 %, 231.367 kips
+Graph/payload import 20.5128 %, 232.038 kips
+Graph/payload import 30.7692 %, 232.734 kips
+Graph/payload import 41.0256 %, 231.931 kips
+Graph/payload import 51.2821 %, 232.189 kips
+Graph/payload import 61.5385 %, 227.678 kips
+Graph/payload import 71.7949 %, 222.085 kips
+Graph/payload import 82.0513 %, 217.458 kips
+Graph/payload import 92.3077 %, 214.579 kips
+Graph/payload import 100 %, 212.965 kips
+Float graph payload import time:5.01164 seconds
+build_stage=graph_payload_import us=5.01164e+06 count=975000 record_bytes=2329 total_bytes=2270775000 kips=194.547 MBps=453.1
+Build time:294.518  seconds
+build_stage=save_index us=789894
+build_total_us=2.95308e+08
+Index storage size: 2415.65 MB (index=1159.83 MB, auxiliary=0.014473 MB, residual=1255.8 MB, total_bytes=2415646697)
+Parsing gt:
+5000
+Loaded gt
+graph_fingerprint=10578023270251871138
+32	0.89534	614.86 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=32	actual_search_ef=32	rerank_candidates=32	hnsw_search_us_per_query=614.86	total_us_per_query=614.86	graph_total_us_per_query=614.86	graph_prepare_us_per_query=23.16	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=499.173	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=92.602	graph_result_sort_us_per_query=0	graph_other_us_per_query=0	p50_us=608	p95_us=788	p99_us=925	visited_nodes=790.663	distance_computations=790.663	active_centroids=1	rerank_us_per_query=92.602	graph_slowest_stage=base_layer	graph_slowest_us_per_query=499.173
+64	0.94132	1028.89 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=64	actual_search_ef=64	rerank_candidates=64	hnsw_search_us_per_query=1028.89	total_us_per_query=1028.89	graph_total_us_per_query=1028.89	graph_prepare_us_per_query=21.4853	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=846.346	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=161.053	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.00491996	p50_us=1025	p95_us=1283	p99_us=1499	visited_nodes=1274.48	distance_computations=1274.48	active_centroids=1	rerank_us_per_query=161.053	graph_slowest_stage=base_layer	graph_slowest_us_per_query=846.346
+96	0.9589	1434.53 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=96	actual_search_ef=96	rerank_candidates=96	hnsw_search_us_per_query=1434.53	total_us_per_query=1434.53	graph_total_us_per_query=1434.53	graph_prepare_us_per_query=22.0095	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=1166.26	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=246.264	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.000423152	p50_us=1414	p95_us=1750	p99_us=3159	visited_nodes=1730.53	distance_computations=1730.53	active_centroids=1	rerank_us_per_query=246.264	graph_slowest_stage=base_layer	graph_slowest_us_per_query=1166.26
+128	0.9659	1730.78 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=128	actual_search_ef=128	rerank_candidates=100	hnsw_search_us_per_query=1730.78	total_us_per_query=1730.78	graph_total_us_per_query=1730.78	graph_prepare_us_per_query=22.1209	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=1451.47	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=257.148	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.0456112	p50_us=1720	p95_us=2154	p99_us=3244	visited_nodes=2161.19	distance_computations=2161.19	active_centroids=1	rerank_us_per_query=257.148	graph_slowest_stage=base_layer	graph_slowest_us_per_query=1451.47
+192	0.97284	2234.62 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=192	actual_search_ef=192	rerank_candidates=100	hnsw_search_us_per_query=2234.62	total_us_per_query=2234.62	graph_total_us_per_query=2234.62	graph_prepare_us_per_query=21.8728	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=1955.19	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=257.467	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.090116	p50_us=2251	p95_us=2856	p99_us=3009	visited_nodes=2977.88	distance_computations=2977.88	active_centroids=1	rerank_us_per_query=257.467	graph_slowest_stage=base_layer	graph_slowest_us_per_query=1955.19
+256	0.97636	2772.6 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=256	actual_search_ef=256	rerank_candidates=100	hnsw_search_us_per_query=2772.6	total_us_per_query=2772.6	graph_total_us_per_query=2772.6	graph_prepare_us_per_query=21.905	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=2488.72	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=261.803	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.1635	p50_us=2786	p95_us=3619	p99_us=3854	visited_nodes=3750.03	distance_computations=3750.03	active_centroids=1	rerank_us_per_query=261.803	graph_slowest_stage=base_layer	graph_slowest_us_per_query=2488.72
+320	0.97822	3268.65 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=320	actual_search_ef=320	rerank_candidates=100	hnsw_search_us_per_query=3268.65	total_us_per_query=3268.65	graph_total_us_per_query=3268.65	graph_prepare_us_per_query=21.9471	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=2980.15	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=266.365	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.18103	p50_us=3289	p95_us=4306	p99_us=4554	visited_nodes=4491.05	distance_computations=4491.05	active_centroids=1	rerank_us_per_query=266.365	graph_slowest_stage=base_layer	graph_slowest_us_per_query=2980.15
+460	0.98152	4345.15 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=460	actual_search_ef=460	rerank_candidates=100	hnsw_search_us_per_query=4345.15	total_us_per_query=4345.15	graph_total_us_per_query=4345.15	graph_prepare_us_per_query=22.007	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=4046.06	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=276.888	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.200106	p50_us=4368	p95_us=5825	p99_us=6178	visited_nodes=6028.88	distance_computations=6028.88	active_centroids=1	rerank_us_per_query=276.888	graph_slowest_stage=base_layer	graph_slowest_us_per_query=4046.06
+640	0.9836	5642.44 us	method=primary4_plus_residual_rerank	recall_at=10	requested_ef=640	actual_search_ef=640	rerank_candidates=100	hnsw_search_us_per_query=5642.44	total_us_per_query=5642.44	graph_total_us_per_query=5642.44	graph_prepare_us_per_query=21.8907	graph_entry_search_us_per_query=0	graph_base_layer_us_per_query=5329.87	graph_distance_us_per_query=0	graph_heap_us_per_query=0	graph_finalize_residual_us_per_query=290.433	graph_result_sort_us_per_query=0	graph_other_us_per_query=0.245934	p50_us=5671	p95_us=7640	p99_us=8193	visited_nodes=7889.97	distance_computations=7889.97	active_centroids=1	rerank_us_per_query=290.433	graph_slowest_stage=base_layer	graph_slowest_us_per_query=5329.87
+Index storage size: 2415.65 MB (index=1159.83 MB, auxiliary=0.014473 MB, residual=1255.8 MB, total_bytes=2415646697)

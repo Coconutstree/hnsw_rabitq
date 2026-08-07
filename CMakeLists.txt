@@ -32,6 +32,7 @@ else()
     option(HNSWLIB_EXAMPLES "Build examples and tests." OFF)
 endif()
 if(HNSWLIB_EXAMPLES)
+    enable_testing()
     set(CMAKE_CXX_STANDARD 11)
 
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -102,9 +103,13 @@ if(HNSWLIB_EXAMPLES)
 
     add_executable(rabitq_hnsw_smoke_test tests/cpp/rabitq_hnsw_smoke.cpp)
     target_link_libraries(rabitq_hnsw_smoke_test hnswlib)
+    add_test(NAME rabitq_hnsw_smoke COMMAND rabitq_hnsw_smoke_test)
 
     add_executable(rabitq_distance_accuracy tests/cpp/rabitq_distance_accuracy.cpp)
     target_link_libraries(rabitq_distance_accuracy hnswlib)
+
+    add_executable(rabitq_turbo_benchmark tests/cpp/rabitq_turbo_benchmark.cpp)
+    target_link_libraries(rabitq_turbo_benchmark hnswlib)
 
     add_executable(main tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
     target_link_libraries(main hnswlib)
