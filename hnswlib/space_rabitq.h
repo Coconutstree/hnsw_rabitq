@@ -2298,6 +2298,15 @@ class RaBitQSpace : public SpaceInterface<float> {
     float distanceBetweenEncoded(const char *lhs, const char *rhs) const {
         const EncodedHeader lhs_header = loadHeader(lhs);
         const EncodedHeader rhs_header = loadHeader(rhs);
+        const double lhs_norm = std::sqrt(std::max(0.0, static_cast<double>(lhs_header.norm_sqr)));
+        const double rhs_norm = std::sqrt(std::max(0.0, static_cast<double>(rhs_header.norm_sqr)));
+        if (!(lhs_norm > 0.0) || !(rhs_norm > 0.0) ||
+            !(lhs_header.long_scale > 0.0f) || !(rhs_header.long_scale > 0.0f) ||
+            !std::isfinite(lhs_header.long_scale) || !std::isfinite(rhs_header.long_scale)) {
+            return static_cast<float>(
+                static_cast<double>(lhs_header.norm_sqr) +
+                static_cast<double>(rhs_header.norm_sqr));
+        }
         const uint8_t *lhs_code = codeBytes(lhs);
         const uint8_t *rhs_code = codeBytes(rhs);
 
@@ -2308,9 +2317,18 @@ class RaBitQSpace : public SpaceInterface<float> {
             code_ip += lhs_y * rhs_y;
         }
 
-        const double residual_ip =
-            0.25 * static_cast<double>(lhs_header.long_scale) *
-            static_cast<double>(rhs_header.long_scale) * code_ip;
+        // Encoding stores long_scale = 2 * ||o|| * ip_norm, where
+        // ip_norm = 1 / <o_bar, o_unit>.  Consequently the expression below
+        // is exactly the symmetric RaBitQ estimator
+        //   <o_bar,q_bar> / (<o_bar,o_unit><q_bar,q_unit>).
+        const double lhs_ip_norm =
+            static_cast<double>(lhs_header.long_scale) / (2.0 * lhs_norm);
+        const double rhs_ip_norm =
+            static_cast<double>(rhs_header.long_scale) / (2.0 * rhs_norm);
+        double estimated_unit_ip = code_ip * lhs_ip_norm * rhs_ip_norm;
+        if (!std::isfinite(estimated_unit_ip)) estimated_unit_ip = 0.0;
+        estimated_unit_ip = std::max(-1.0, std::min(1.0, estimated_unit_ip));
+        const double residual_ip = lhs_norm * rhs_norm * estimated_unit_ip;
         return static_cast<float>(
             static_cast<double>(lhs_header.norm_sqr) + static_cast<double>(rhs_header.norm_sqr) -
             2.0 * residual_ip);
@@ -2990,6 +3008,27 @@ class RaBitQSpace : public SpaceInterface<float> {
     float query_distance(const void *prepared_query, const void *data_point) override {
         const QueryContext &query = queryForEncoded(prepared_query, data_point);
         return queryDistanceLong(query, data_point);
+    }
+
+    float asymmetric_build_distance(
+        const void *raw_query,
+        const void *encoded_database) override {
+        if (raw_query == nullptr || encoded_database == nullptr)
+            throw std::invalid_argument("RaBitQ asymmetric build distance received null data");
+        PreparedQuery prepared;
+        prepared.centroid_queries.assign(centroid_count_, QueryContext{});
+        prepared.ready.assign(centroid_count_, 0);
+        prepared.raw_query = static_cast<const float *>(raw_query);
+        prepared.active_centroid_count = 0;
+        rotate(prepared.raw_query, prepared.rotated_query);
+        double norm_sqr = 0.0;
+        for (size_t i = 0; i < dim_; ++i) {
+            const double value = prepared.raw_query[i];
+            norm_sqr += value * value;
+        }
+        prepared.raw_query_norm_sqr = norm_sqr;
+        const QueryContext &query = queryForEncoded(&prepared, encoded_database);
+        return queryDistanceLong(query, encoded_database);
     }
 
     float compute_short_lower_bound(

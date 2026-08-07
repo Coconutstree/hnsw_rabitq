@@ -417,6 +417,18 @@ class SpaceInterface {
         return false;
     }
 
+    // Construction-only asymmetric distance: an uncompressed query against an
+    // encoded database payload. Spaces that support quantized construction
+    // override this without changing the normal encoded-to-encoded DISTFUNC.
+    virtual MTYPE asymmetric_build_distance(
+        const void *raw_query,
+        const void *encoded_database) {
+        const void *prepared = prepare_query(raw_query);
+        const MTYPE distance = query_distance(prepared, encoded_database);
+        release_query(prepared);
+        return distance;
+    }
+
     virtual MTYPE result_distance(const void *prepared_query, const void *data_point) {
         return query_distance(prepared_query, data_point);
     }

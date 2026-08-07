@@ -187,6 +187,95 @@ static void test_multimeans_eager_lazy_equivalence() {
     std::remove(centroid_path.c_str());
 }
 
+static void test_asymmetric_four_bit_construction() {
+    constexpr size_t dim = 4;
+    constexpr size_t count = 8;
+    const std::vector<float> data = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
+        1,1,0,0, 0,1,1,0, 0,0,1,1, 1,0,0,1,
+    };
+    hnswlib::RaBitQHierarchicalNSW index(dim, count, 1, 2, 8, 100);
+    index.space().setIdentityRotation();
+    const std::vector<char> encoded_reference = index.space().encodeVector(data.data() + dim);
+    const void *prepared = index.space().prepare_query(data.data());
+    const float expected = index.space().query_distance(prepared, encoded_reference.data());
+    const float actual = index.space().asymmetric_build_distance(
+        data.data(), encoded_reference.data());
+    index.space().release_query(prepared);
+    assert(std::fabs(expected - actual) < 1e-6f);
+    index.setAsymmetricBuildRawProvider(
+        [&data](hnswlib::labeltype label) -> const void * {
+            return data.data() + static_cast<size_t>(label) * dim;
+        });
+    for (size_t label = 0; label < count; ++label)
+        index.addPointAsymmetric(data.data() + label * dim, label);
+    assert(index.asymmetricBuildDistanceCalls() > 0);
+    assert(index.encodedBuildDistanceCalls() == 0);
+    index.clearAsymmetricBuildRawProvider();
+    auto result = index.searchKnn(data.data(), 1);
+    assert(!result.empty());
+    assert(result.top().second == 0);
+
+    const std::string payload_path = "/tmp/rabitq_asym_external.payload";
+    const std::string residual_path = "/tmp/rabitq_asym_external.residual";
+    std::remove(payload_path.c_str());
+    std::remove(residual_path.c_str());
+    hnswlib::RaBitQHierarchicalNSW external(dim, count, 1, 2, 8, 100, false, true, 4);
+    external.space().setIdentityRotation();
+    external.setAsymmetricBuildRawProvider(
+        [&data](hnswlib::labeltype label) -> const void * {
+            return data.data() + static_cast<size_t>(label) * dim;
+        });
+    std::ofstream payload(payload_path, std::ios::binary);
+    assert(payload.is_open());
+    for (size_t label = 0; label < count; ++label) {
+        std::vector<char> full(external.space().get_full_data_size(), 0);
+        std::vector<char> compact(external.space().get_data_size(), 0);
+        external.space().encodeVectorFull(data.data() + label * dim, full.data());
+        external.space().copyCompactPayloadFromFull(full.data(), compact.data());
+        payload.write(full.data(), static_cast<std::streamsize>(full.size()));
+        external.addPointAsymmetric(data.data() + label * dim, label, compact.data());
+    }
+    payload.close();
+    external.materializeExternalResidualsFromFullPayloadFile(
+        payload_path, residual_path, external.space().get_full_data_size());
+    assert(external.residualFingerprintByLabel() != 0);
+    external.clearAsymmetricBuildRawProvider();
+    std::remove(payload_path.c_str());
+    std::remove(residual_path.c_str());
+}
+
+static void test_symmetric_four_bit_construction() {
+    constexpr size_t dim = 4;
+    constexpr size_t count = 8;
+    const std::vector<float> data = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
+        1,1,0,0, 0,1,1,0, 0,0,1,1, 1,0,0,1,
+    };
+    hnswlib::RaBitQHierarchicalNSW index(dim, count, 1, 2, 8, 100);
+    index.space().setIdentityRotation();
+
+    const std::vector<char> lhs = index.space().encodeVector(data.data());
+    const std::vector<char> rhs = index.space().encodeVector(data.data() + dim);
+    const auto distance = index.space().get_dist_func();
+    const void *distance_param = index.space().get_dist_func_param();
+    const float self_distance = distance(lhs.data(), lhs.data(), distance_param);
+    const float lhs_rhs = distance(lhs.data(), rhs.data(), distance_param);
+    const float rhs_lhs = distance(rhs.data(), lhs.data(), distance_param);
+    assert(std::fabs(self_distance) < 1e-6f);
+    assert(std::isfinite(lhs_rhs));
+    assert(lhs_rhs >= 0.0f && lhs_rhs <= 4.0f);
+    assert(std::fabs(lhs_rhs - rhs_lhs) < 1e-6f);
+
+    for (size_t label = 0; label < count; ++label)
+        index.addPoint(data.data() + label * dim, label);
+    assert(index.asymmetricBuildDistanceCalls() == 0);
+    assert(index.encodedBuildDistanceCalls() > 0);
+    auto result = index.searchKnn(data.data(), 1);
+    assert(!result.empty());
+    assert(result.top().second == 0);
+}
+
 static void test_turbo128_layout() {
     for (const size_t dim : {size_t(128), size_t(256), size_t(960), size_t(1536)}) {
         size_t code_dim = 1;
@@ -245,6 +334,8 @@ static void test_turbo128_layout() {
 }
 
 int main() {
+    test_asymmetric_four_bit_construction();
+    test_symmetric_four_bit_construction();
     assert(!hnswlib::HierarchicalNSW<float>::baselineWouldAccept(1.0f, 1.0f, 10, 10));
     assert(hnswlib::HierarchicalNSW<float>::baselineWouldAccept(1.0f, 1.0f, 9, 10));
     assert(hnswlib::HierarchicalNSW<float>::baselineWouldAccept(0.9f, 1.0f, 10, 10));

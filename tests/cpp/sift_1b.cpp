@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #ifdef __linux__
 #include <linux/perf_event.h>
@@ -37,6 +38,46 @@ using namespace std;
 using namespace hnswlib;
 
 namespace {
+
+class FvecMmap {
+ public:
+    FvecMmap(const string &path, size_t count, size_t dim)
+        : count_(count), dim_(dim), record_bytes_(sizeof(int32_t) + dim * sizeof(float)) {
+        fd_ = ::open(path.c_str(), O_RDONLY);
+        if (fd_ < 0) throw runtime_error("cannot mmap base vectors: " + path);
+        bytes_ = count_ * record_bytes_;
+        mapping_ = static_cast<const char *>(::mmap(nullptr, bytes_, PROT_READ, MAP_SHARED, fd_, 0));
+        if (mapping_ == MAP_FAILED) {
+            mapping_ = nullptr;
+            ::close(fd_);
+            fd_ = -1;
+            throw runtime_error("mmap failed for base vectors: " + path);
+        }
+    }
+
+    ~FvecMmap() {
+        if (mapping_) ::munmap(const_cast<char *>(mapping_), bytes_);
+        if (fd_ >= 0) ::close(fd_);
+    }
+
+    const float *vector(size_t label) const {
+        if (label >= count_) throw out_of_range("base-vector label outside mmap");
+        const char *record = mapping_ + label * record_bytes_;
+        int32_t stored_dim = 0;
+        std::memcpy(&stored_dim, record, sizeof(stored_dim));
+        if (stored_dim != static_cast<int32_t>(dim_))
+            throw runtime_error("invalid fvec dimension in mmap");
+        return reinterpret_cast<const float *>(record + sizeof(int32_t));
+    }
+
+ private:
+    int fd_{-1};
+    const char *mapping_{nullptr};
+    size_t bytes_{0};
+    size_t count_{0};
+    size_t dim_{0};
+    size_t record_bytes_{0};
+};
 
 enum class QueryMode {
     PrimaryOnly,
@@ -122,7 +163,8 @@ void print_run_config(
     const char *path_data,
     const char *path_q,
     const char *path_gt,
-    bool external_residual_storage) {
+    bool external_residual_storage,
+    const string &build_distance) {
     cout << "Run config:\n";
     cout << "  dataset=" << dataset_name << "\n";
     cout << "  base_count=" << vecsize << "\n";
@@ -134,7 +176,7 @@ void print_run_config(
     cout << "  rerank_mode=" << query_mode_name(query_mode)
          << " method=" << query_mode_name(query_mode)
          << " rerank_candidates=" << rerank_candidates << "\n";
-    cout << "  build_distance=float32_l2"
+    cout << "  build_distance=" << build_distance
          << " stored_data="
          << (external_residual_storage ? "4bit_rabitq_plus_disk_residual" : "4bit_rabitq_plus_residual")
          << " residual_bits=" << residual_bits
@@ -1080,7 +1122,12 @@ static void test_vs_recall(
     const string &layout = "original") {
     vector<size_t> efs;
     if (std::getenv("RABITQ_ABC_ABLATION") != nullptr) {
-        efs = {200};
+        for (size_t i = 1; i <= 30; ++i)
+            if (i >= k) efs.push_back(i);
+        for (size_t i = 40; i <= 100; i += 10)
+            if (i >= k) efs.push_back(i);
+        for (size_t i = 140; i <= 460; i += 40)
+            if (i >= k) efs.push_back(i);
     } else if (std::getenv("RABITQ_SHORT_SHADOW_COMPARE") != nullptr ||
         std::getenv("RABITQ_TWO_BIT_SHADOW_COMPARE") != nullptr ||
         std::getenv("RABITQ_PAPER_PRUNE_COMPARE") != nullptr) {
@@ -1133,6 +1180,32 @@ static void test_vs_recall(
         consider_slowest("finalize_residual", report.graph_finalize_residual_us_per_query);
         consider_slowest("result_sort", report.graph_result_sort_us_per_query);
         consider_slowest("other", report.graph_other_us_per_query);
+
+        if (std::getenv("RABITQ_ABC_ABLATION") != nullptr) {
+            cout << ef << "\t" << report.recall
+                 << "\t" << report.total_us_per_query << " us"
+                 << "\thnsw_search_us_per_query=" << report.hnsw_search_us_per_query
+                 << "\tresidual_rerank_us_per_query=" << report.rerank_us_per_query
+                 << "\trerank_candidates=" << report.rerank_candidates
+                 << "\ttotal_us_per_query=" << report.total_us_per_query
+                 << "\tqps="
+                 << (report.total_us_per_query > 0.0 ? 1e6 / report.total_us_per_query : 0.0)
+                 << "\tp95_us=" << report.p95_us
+                 << "\tvisited_nodes=" << report.visited_nodes_per_query
+                 << "\tdistance_computations=" << report.distance_computations_per_query
+                 << "\tpaper_prune_ratio="
+                 << (report.paper_checked_per_query > 0.0
+                        ? report.paper_would_prune_per_query / report.paper_checked_per_query : 0.0)
+                 << "\tpaper_saved_ratio="
+                 << (report.full_distance_count_per_query > 0.0
+                        ? report.paper_full_saved_per_query /
+                            (report.full_distance_count_per_query +
+                             (appr_alg.getGraphTurboConfig().paper_active
+                                ? report.paper_full_saved_per_query : 0.0)) : 0.0)
+                 << "\tpaper_false_prune=" << report.paper_false_prune_against_baseline_total
+                 << "\n";
+            continue;
+        }
 
         cout << ef << "\t" << report.recall
              << "\t" << report.total_us_per_query << " us"
@@ -1328,8 +1401,8 @@ static void report_paper_true_distance_coverage(
 void sift_test1B() {
     const string abc_ablation = getenv_string("RABITQ_ABC_ABLATION", "");
     if (!abc_ablation.empty() && abc_ablation != "A" &&
-        abc_ablation != "B" && abc_ablation != "C")
-        throw runtime_error("RABITQ_ABC_ABLATION must be A, B, or C");
+        abc_ablation != "B" && abc_ablation != "C" && abc_ablation != "D")
+        throw runtime_error("RABITQ_ABC_ABLATION must be A, B, C, or D");
     const bool paper_prune_profile = []() {
         const char *value = std::getenv("RABITQ_PAPER_PRUNE_COMPARE");
         return value != nullptr && value[0] != '\0';
@@ -1445,6 +1518,29 @@ void sift_test1B() {
     const char *residual_scale_storage =
         residual_config.scale_fp16 ? "fp16" : "fp32";
 
+    const string build_distance_mode = getenv_string(
+        "RABITQ_BUILD_DISTANCE",
+        centroid_count == 1 && code_layout == RaBitQCodeLayout::SequentialNibble
+            ? "asymmetric4"
+            : "float32");
+    if (build_distance_mode != "asymmetric4" &&
+        build_distance_mode != "symmetric4" && build_distance_mode != "float32")
+        throw runtime_error(
+            "RABITQ_BUILD_DISTANCE must be asymmetric4, symmetric4, or float32");
+    const bool asymmetric4_build = build_distance_mode == "asymmetric4";
+    const bool symmetric4_build = build_distance_mode == "symmetric4";
+    const bool quantized4_build = asymmetric4_build || symmetric4_build;
+    const bool force_rebuild = getenv_bool01_strict("RABITQ_FORCE_REBUILD", false);
+    if (quantized4_build &&
+        (centroid_count != 1 || code_layout != RaBitQCodeLayout::SequentialNibble))
+        throw runtime_error("4-bit construction requires K=1 and Sequential layout");
+    if (!abc_ablation.empty()) {
+        if (abc_ablation == "D" && !symmetric4_build)
+            throw runtime_error("D requires RABITQ_BUILD_DISTANCE=symmetric4");
+        if (abc_ablation != "D" && !asymmetric4_build)
+            throw runtime_error("A, B, and C require RABITQ_BUILD_DISTANCE=asymmetric4");
+    }
+
     char index_name[1024];
     const char *path_q = dataset.query_path.c_str();
     const char *path_data = dataset.base_path.c_str();
@@ -1459,7 +1555,7 @@ void sift_test1B() {
     snprintf(
         index_name,
         sizeof(index_name),
-        "%s_primary4_residual%zu_trueK%d_%s_%s_%s%s_floatbuild_ef_%d_M_%d.bin",
+        "%s_primary4_residual%zu_trueK%d_%s_%s_%s%s_%s_ef_%d_M_%d.bin",
         dataset.index_prefix.c_str(),
         residual_bits,
         centroid_count,
@@ -1467,6 +1563,8 @@ void sift_test1B() {
         scale_storage_name,
         code_layout_name.c_str(),
         block_suffix.c_str(),
+        asymmetric4_build ? "asym4bitbuild" :
+            (symmetric4_build ? "sym4bitbuild" : "floatbuild"),
         efConstruction,
         M);
     const string default_index_dir = paper_prune_profile
@@ -1482,7 +1580,8 @@ void sift_test1B() {
     if (paper_prune_profile) {
         cout << "experiment_profile=paper_prune_dbpedia_k1"
              << " defaults=dim1536,gt10,K1,M16,efConstruction200,sequential,residual4,mse,fp16,rerank100"
-             << " explicit_environment_overrides=enabled\n";
+             << " explicit_environment_overrides=enabled"
+             << " force_rebuild=" << (force_rebuild ? 1 : 0) << "\n";
     }
 
     print_run_config(
@@ -1504,7 +1603,9 @@ void sift_test1B() {
         path_data,
         path_q,
         path_gt,
-        external_residual_storage);
+        external_residual_storage,
+        asymmetric4_build ? "extended_rabitq_asymmetric4" :
+            (symmetric4_build ? "extended_rabitq_symmetric4" : "float32_l2"));
 
     cout << "Loading GT:\n";
     ifstream inputGT(path_gt, ios::binary);
@@ -1579,8 +1680,21 @@ void sift_test1B() {
          << appr_alg->space().get_primary_code_empirical_error_reference()
          << "\n";
 
+    const string build_metrics_path = string(path_index) + ".build_metrics";
+    double reported_graph_construction_us = -1.0;
+    double reported_total_build_us = -1.0;
+    const auto load_build_metrics = [](const string &path, double &graph_us, double &total_us) {
+        ifstream metrics(path);
+        if (metrics.is_open()) metrics >> graph_us >> total_us;
+    };
+    const auto save_build_metrics = [](const string &path, double graph_us, double total_us) {
+        ofstream metrics(path, ios::trunc);
+        if (!metrics.is_open()) throw runtime_error("cannot write build metrics: " + path);
+        metrics << graph_us << ' ' << total_us << '\n';
+    };
+
     bool need_build = true;
-    if (exists_test(path_index)) {
+    if (!force_rebuild && exists_test(path_index)) {
         cout << "Loading index from " << path_index << ":\n";
         if (!exists_test(quantizer_state_path(path_index))) {
             cout << "Missing RaBitQ quantizer state sidecar; rebuilding the index\n";
@@ -1637,7 +1751,7 @@ void sift_test1B() {
         vector<unsigned char> centroid_scratch;
         const string centroid_path = getenv_string(
             "RABITQ_CENTROID_PATH", path_index_string + ".centroids");
-        if (exists_test(centroid_path)) {
+        if (!force_rebuild && exists_test(centroid_path)) {
             ifstream centroid_input(centroid_path, ios::binary);
             uint32_t stored_seed = 0;
             uint64_t stored_samples = 0;
@@ -1684,6 +1798,145 @@ void sift_test1B() {
         cout << "build_stage=train_center"
              << " us=" << train_center_us << "\n";
         vector<size_t> centroid_counts(static_cast<size_t>(centroid_count), 0);
+
+        if (quantized4_build) {
+            cout << "build_distance="
+                 << (asymmetric4_build
+                     ? "extended_rabitq_asymmetric4"
+                     : "extended_rabitq_symmetric4")
+                 << " build_query=" << (asymmetric4_build ? "float32" : "primary4")
+                 << " build_database=primary4"
+                 << " build_residual_used=0"
+                 << " build_float32_retained=0\n";
+            const size_t full_record_size = appr_alg->space().get_full_data_size();
+            const size_t compact_record_size = appr_alg->space().get_data_size();
+            const string payload_path = string(path_index) + ".payload.tmp";
+            const string shared_graph_path = join_path(
+                index_dir,
+                dataset.name + "_primary4_K1_" + code_layout_name +
+                    (asymmetric4_build ? "_asym4bit_graph_seed_" : "_sym4bit_graph_seed_") +
+                    std::to_string(random_seed) +
+                    "_train_" + std::to_string(centroid_train_samples) +
+                    "_ef_" + std::to_string(efConstruction) +
+                    "_M_" + std::to_string(M) + ".bin");
+            const bool reuse_quantized_graph =
+                !force_rebuild && exists_test(shared_graph_path);
+            const string shared_graph_metrics_path = shared_graph_path + ".build_metrics";
+            DiskPayloadStore payload_store(payload_path, vecsize * full_record_size);
+            FvecMmap base_vectors(path_data, vecsize, vecdim);
+            if (reuse_quantized_graph) {
+                cout << "Loading shared " << build_distance_mode
+                     << " graph from " << shared_graph_path << "\n";
+            } else if (asymmetric4_build) {
+                appr_alg->setAsymmetricBuildRawProvider(
+                    [&base_vectors](labeltype label) -> const void * {
+                        return base_vectors.vector(static_cast<size_t>(label));
+                    });
+            }
+            StopW encode_timer;
+            double encode_cpu_us = 0.0;
+            StopW graph_timer;
+            const size_t report_every = 100000;
+#pragma omp parallel for
+            for (int64_t label = 0; label < static_cast<int64_t>(vecsize); ++label) {
+                const float *raw = base_vectors.vector(static_cast<size_t>(label));
+                StopW local_encode_timer;
+                vector<char> full(full_record_size, 0);
+                vector<char> compact(compact_record_size, 0);
+                const uint8_t centroid_id = appr_alg->space().assignCentroid(raw);
+                appr_alg->space().encodeVectorFullWithCentroid(raw, centroid_id, full.data());
+                appr_alg->space().copyCompactPayloadFromFull(full.data(), compact.data());
+                payload_store.writeRecord(static_cast<size_t>(label), full.data(), full_record_size);
+                const double local_encode_us = local_encode_timer.getElapsedTimeMicro();
+#pragma omp atomic
+                encode_cpu_us += local_encode_us;
+#pragma omp atomic
+                centroid_counts[centroid_id]++;
+                if (!reuse_quantized_graph) {
+                    if (asymmetric4_build) {
+                        appr_alg->addPointAsymmetric(
+                            raw, static_cast<labeltype>(label), compact.data());
+                    } else {
+                        appr_alg->index().addPoint(
+                            compact.data(), static_cast<labeltype>(label));
+                    }
+                }
+                if ((static_cast<size_t>(label) + 1U) % report_every == 0U) {
+#pragma omp critical
+                    cout << (asymmetric4_build ? "Asymmetric" : "Symmetric")
+                         << " graph progress label=" << (label + 1)
+                         << " count=" << appr_alg->index().cur_element_count << "\n";
+                }
+            }
+            const double graph_build_us = graph_timer.getElapsedTimeMicro();
+            const double encode_wall_us = encode_timer.getElapsedTimeMicro();
+            cout << "build_stage=payload_encode"
+                 << " cpu_us=" << encode_cpu_us
+                 << " wall_us=" << encode_wall_us
+                 << " count=" << vecsize
+                 << " record_bytes=" << full_record_size << "\n";
+            StopW residual_timer;
+            if (reuse_quantized_graph) {
+                double ignored_total_us = -1.0;
+                load_build_metrics(
+                    shared_graph_metrics_path,
+                    reported_graph_construction_us,
+                    ignored_total_us);
+                HierarchicalNSW<float> shared_graph(
+                    &appr_alg->space(), shared_graph_path, false, vecsize);
+                appr_alg->importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
+                    shared_graph,
+                    payload_path,
+                    residual_state_path(path_index, query_mode),
+                    full_record_size,
+                    true);
+                cout << "build_stage=" << build_distance_mode << "_graph_reuse"
+                     << " us=" << graph_build_us
+                     << " source=" << shared_graph_path << "\n";
+            } else {
+                reported_graph_construction_us = graph_build_us;
+                cout << "build_stage=" << build_distance_mode << "_graph_build"
+                     << " us=" << graph_build_us
+                     << " kips=" << kips_from_count_us(vecsize, graph_build_us)
+                     << " asymmetric_distance_calls=" << appr_alg->asymmetricBuildDistanceCalls()
+                     << " encoded_distance_calls=" << appr_alg->encodedBuildDistanceCalls() << "\n";
+                if (asymmetric4_build && appr_alg->encodedBuildDistanceCalls() != 0)
+                    throw runtime_error("asymmetric construction used encoded-to-encoded distance");
+                if (symmetric4_build &&
+                    (appr_alg->asymmetricBuildDistanceCalls() != 0 ||
+                     appr_alg->encodedBuildDistanceCalls() == 0))
+                    throw runtime_error("symmetric construction did not exclusively use encoded distance");
+                appr_alg->index().saveIndex(shared_graph_path);
+                save_build_metrics(
+                    shared_graph_metrics_path,
+                    reported_graph_construction_us,
+                    reported_graph_construction_us);
+                cout << "Saved shared " << build_distance_mode
+                     << " graph to " << shared_graph_path << "\n";
+            }
+            if (!reuse_quantized_graph) {
+                appr_alg->materializeExternalResidualsFromFullPayloadFile(
+                    payload_path,
+                    residual_state_path(path_index, query_mode),
+                    full_record_size);
+            }
+            cout << "build_stage=residual_sidecar_materialize"
+                 << " us=" << residual_timer.getElapsedTimeMicro()
+                 << " count=" << vecsize << "\n";
+            if (asymmetric4_build && !reuse_quantized_graph)
+                appr_alg->clearAsymmetricBuildRawProvider();
+            std::remove(payload_path.c_str());
+            StopW save_index_timer;
+            appr_alg->saveIndex(path_index);
+            cout << "build_stage=save_index us=" << save_index_timer.getElapsedTimeMicro() << "\n";
+            reported_total_build_us = total_build_timer.getElapsedTimeMicro();
+            save_build_metrics(
+                build_metrics_path,
+                reported_graph_construction_us,
+                reported_total_build_us);
+            cout << "build_total_us=" << reported_total_build_us << "\n";
+            print_index_file_size(path_index, query_mode);
+        } else {
 
         int j1 = 0;
         StopW stopw;
@@ -1800,6 +2053,7 @@ void sift_test1B() {
 
         input.close();
         const double float_graph_build_us = float_graph_timer.getElapsedTimeMicro();
+        reported_graph_construction_us = float_graph_build_us;
         if (!reuse_float_graph) {
             float_index->saveIndex(float_graph_path);
             cout << "Saved shared Float32 graph to " << float_graph_path << "\n";
@@ -1908,9 +2162,31 @@ void sift_test1B() {
         const double save_index_us = save_index_timer.getElapsedTimeMicro();
         cout << "build_stage=save_index"
              << " us=" << save_index_us << "\n";
-        cout << "build_total_us=" << total_build_timer.getElapsedTimeMicro() << "\n";
+        reported_total_build_us = total_build_timer.getElapsedTimeMicro();
+        save_build_metrics(
+            build_metrics_path,
+            reported_graph_construction_us,
+            reported_total_build_us);
+        cout << "build_total_us=" << reported_total_build_us << "\n";
         print_index_file_size(path_index, query_mode);
+        }
     }
+
+    if (reported_graph_construction_us < 0.0 || reported_total_build_us < 0.0)
+        load_build_metrics(
+            build_metrics_path,
+            reported_graph_construction_us,
+            reported_total_build_us);
+    cout << "Graph construction time: ";
+    if (reported_graph_construction_us >= 0.0)
+        cout << 1e-6 * reported_graph_construction_us << " seconds\n";
+    else
+        cout << "unavailable (legacy index without build metrics)\n";
+    cout << "Build time: ";
+    if (reported_total_build_us >= 0.0)
+        cout << 1e-6 * reported_total_build_us << " seconds\n";
+    else
+        cout << "unavailable (legacy index without build metrics)\n";
 
     appr_alg->space().set_centroid_query_mode(
         centroid_query_mode == "lazy"

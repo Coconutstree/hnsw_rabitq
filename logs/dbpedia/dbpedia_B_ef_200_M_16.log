@@ -1,0 +1,85 @@
+experiment_profile=paper_prune_dbpedia_k1 defaults=dim1536,gt10,K1,M16,efConstruction200,sequential,residual4,mse,fp16,rerank100 explicit_environment_overrides=enabled force_rebuild=1
+Run config:
+  dataset=dbpedia_openai1536
+  base_count=975000
+  query_count=5000
+  dimension=1536
+  M=16 efConstruction=200
+  quantizer=4-bit ExRaBitQ centroid_count=1 random_seed=100
+  rerank_mode=primary4_plus_residual_rerank method=primary4_plus_residual_rerank rerank_candidates=100
+  build_distance=extended_rabitq_asymmetric4 stored_data=4bit_rabitq_plus_disk_residual residual_bits=4 residual_block_size=2048 residual_scale_mode=mse residual_scale_storage=fp16 query_distance=primary4_plus_residual_rerank
+  enabled_paths=primary4_residual4,primary4_residual8 routing=primary4 rerank_distance=residual4
+  base_path=/home/lyx_20251022/hnsw_rabitq/dbpedia_1M/dbpedia_openai1536_base.fvecs
+  query_path=/home/lyx_20251022/hnsw_rabitq/dbpedia_1M/dbpedia_openai1536_query.fvecs
+  gt_path=/home/lyx_20251022/hnsw_rabitq/dbpedia_1M/dbpedia_openai1536_groundtruth.ivecs
+  index_path=/home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation/dbpedia_openai1536_primary4_residual4_trueK1_mse_fp16_sequential_block2048_asym4bitbuild_ef_200_M_16.bin
+Loading GT:
+Loading queries:
+  encoded_bytes_per_vector=1041 (4-bit code in index; residual in mmap sidecar)
+  residual_bits=4 residual_block_size=2048 residual_scale_mode=mse primary_bits=4 short_bits=1 remaining_bits=3 compact_primary_bytes_per_vector=1024 residual_code_bytes_per_vector=1024 residual_record_bytes_per_vector=1034 primary_4bit_empirical_error_reference=0.00794114
+Building index:
+Training 1 ExRaBitQ centroid(s) from 100000 base vectors
+Saved centroids to /home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation/dbpedia_openai1536_primary4_residual4_trueK1_mse_fp16_sequential_block2048_asym4bitbuild_ef_200_M_16.bin.centroids
+build_stage=train_center us=272637
+build_distance=extended_rabitq_asymmetric4 build_query=float32 build_database=primary4 build_residual_used=0 build_float32_retained=0
+Asymmetric graph progress label=800000 count=77085
+Asymmetric graph progress label=300000 count=147948
+Asymmetric graph progress label=600000 count=302419
+Asymmetric graph progress label=100000 count=369649
+Asymmetric graph progress label=900000 count=447949
+Asymmetric graph progress label=400000 count=509610
+Asymmetric graph progress label=700000 count=687171
+Asymmetric graph progress label=200000 count=765559
+Asymmetric graph progress label=500000 count=879990
+build_stage=payload_encode cpu_us=1.58192e+09 wall_us=7.28438e+08 count=975000 record_bytes=2075
+build_stage=asymmetric4_graph_build us=7.28438e+08 kips=1.33848 asymmetric_distance_calls=3778295775 encoded_distance_calls=0
+Saved shared asymmetric4 graph to /home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation/dbpedia_openai1536_primary4_K1_sequential_asym4bit_graph_seed_100_train_100000_ef_200_M_16.bin
+build_stage=residual_sidecar_materialize us=9.67931e+06 count=975000
+build_stage=save_index us=3.18924e+06
+build_total_us=7.4158e+08
+Index storage size: 2168 MB (index=1159.83 MB, auxiliary=0.014473 MB, residual=1008.15 MB, total_bytes=2167995949)
+Graph construction time: 728.438 seconds
+Build time: 741.58 seconds
+Parsing gt:
+5000
+Loaded gt
+paper_experiment=paper_active epsilon0=1.9 msb_remaining_physical_layout=split_msb_sidecar_plus_full_nibble paper_msb_sidecar_bytes=269100000 residual_sidecar_accessed_by_paper_prune=0
+layout=paper_active graph_fingerprint=15945592377069461039 payload_fingerprint=14582973183844331953 residual_fingerprint=11603904380129049796 average_neighbor_id_distance=272015
+10	0.72818	331.078 us	hnsw_search_us_per_query=331.078	residual_rerank_us_per_query=47.2167	rerank_candidates=10	total_us_per_query=331.078	qps=3020.44	p95_us=443	visited_nodes=416.389	distance_computations=200.387	paper_prune_ratio=0.763493	paper_saved_ratio=0.739953	paper_false_prune=0
+11	0.74886	337.429 us	hnsw_search_us_per_query=337.429	residual_rerank_us_per_query=52.2733	rerank_candidates=11	total_us_per_query=337.429	qps=2963.58	p95_us=451	visited_nodes=435.752	distance_computations=206.181	paper_prune_ratio=0.761995	paper_saved_ratio=0.737515	paper_false_prune=0
+12	0.76368	355.992 us	hnsw_search_us_per_query=355.992	residual_rerank_us_per_query=57.0842	rerank_candidates=12	total_us_per_query=355.992	qps=2809.05	p95_us=474	visited_nodes=454.238	distance_computations=211.765	paper_prune_ratio=0.760671	paper_saved_ratio=0.735297	paper_false_prune=0
+13	0.78014	372.442 us	hnsw_search_us_per_query=372.442	residual_rerank_us_per_query=62.0587	rerank_candidates=13	total_us_per_query=372.442	qps=2684.98	p95_us=495	visited_nodes=473.123	distance_computations=217.322	paper_prune_ratio=0.759847	paper_saved_ratio=0.733694	paper_false_prune=0
+14	0.79312	390.196 us	hnsw_search_us_per_query=390.196	residual_rerank_us_per_query=66.5615	rerank_candidates=14	total_us_per_query=390.196	qps=2562.82	p95_us=519	visited_nodes=491.12	distance_computations=222.561	paper_prune_ratio=0.759404	paper_saved_ratio=0.732478	paper_false_prune=0
+15	0.80226	407.833 us	hnsw_search_us_per_query=407.833	residual_rerank_us_per_query=71.3501	rerank_candidates=15	total_us_per_query=407.833	qps=2451.99	p95_us=539	visited_nodes=508.138	distance_computations=227.682	paper_prune_ratio=0.758683	paper_saved_ratio=0.730998	paper_false_prune=0
+16	0.81212	423.547 us	hnsw_search_us_per_query=423.547	residual_rerank_us_per_query=76.3038	rerank_candidates=16	total_us_per_query=423.547	qps=2361.01	p95_us=560	visited_nodes=525.716	distance_computations=232.824	paper_prune_ratio=0.758315	paper_saved_ratio=0.729966	paper_false_prune=0
+17	0.82088	445.217 us	hnsw_search_us_per_query=445.217	residual_rerank_us_per_query=80.8311	rerank_candidates=17	total_us_per_query=445.217	qps=2246.09	p95_us=588	visited_nodes=543.26	distance_computations=237.883	paper_prune_ratio=0.758164	paper_saved_ratio=0.729198	paper_false_prune=0
+18	0.82888	457.462 us	hnsw_search_us_per_query=457.462	residual_rerank_us_per_query=85.6086	rerank_candidates=18	total_us_per_query=457.462	qps=2185.98	p95_us=601	visited_nodes=559.9	distance_computations=242.826	paper_prune_ratio=0.757782	paper_saved_ratio=0.728196	paper_false_prune=0
+19	0.83698	472.939 us	hnsw_search_us_per_query=472.939	residual_rerank_us_per_query=90.3297	rerank_candidates=19	total_us_per_query=472.939	qps=2114.44	p95_us=620	visited_nodes=576.819	distance_computations=247.742	paper_prune_ratio=0.757642	paper_saved_ratio=0.727494	paper_false_prune=0
+20	0.84342	489.519 us	hnsw_search_us_per_query=489.519	residual_rerank_us_per_query=95.076	rerank_candidates=20	total_us_per_query=489.519	qps=2042.82	p95_us=637	visited_nodes=593.783	distance_computations=252.543	paper_prune_ratio=0.757794	paper_saved_ratio=0.727115	paper_false_prune=0
+21	0.84992	519.134 us	hnsw_search_us_per_query=519.134	residual_rerank_us_per_query=99.7966	rerank_candidates=21	total_us_per_query=519.134	qps=1926.28	p95_us=693	visited_nodes=610.14	distance_computations=257.321	paper_prune_ratio=0.757669	paper_saved_ratio=0.726467	paper_false_prune=0
+22	0.85502	521.708 us	hnsw_search_us_per_query=521.708	residual_rerank_us_per_query=104.631	rerank_candidates=22	total_us_per_query=521.708	qps=1916.78	p95_us=677	visited_nodes=626.429	distance_computations=261.931	paper_prune_ratio=0.757865	paper_saved_ratio=0.726159	paper_false_prune=0
+23	0.85984	556.542 us	hnsw_search_us_per_query=556.542	residual_rerank_us_per_query=110.311	rerank_candidates=23	total_us_per_query=556.542	qps=1796.81	p95_us=739	visited_nodes=643.059	distance_computations=266.559	paper_prune_ratio=0.75818	paper_saved_ratio=0.726016	paper_false_prune=0
+24	0.8652	556.008 us	hnsw_search_us_per_query=556.008	residual_rerank_us_per_query=113.783	rerank_candidates=24	total_us_per_query=556.008	qps=1798.53	p95_us=720	visited_nodes=659.394	distance_computations=271.115	paper_prune_ratio=0.758479	paper_saved_ratio=0.725866	paper_false_prune=0
+25	0.86888	568.872 us	hnsw_search_us_per_query=568.872	residual_rerank_us_per_query=118.774	rerank_candidates=25	total_us_per_query=568.872	qps=1757.87	p95_us=738	visited_nodes=675.037	distance_computations=275.576	paper_prune_ratio=0.758621	paper_saved_ratio=0.725551	paper_false_prune=0
+26	0.87302	598.615 us	hnsw_search_us_per_query=598.615	residual_rerank_us_per_query=123.148	rerank_candidates=26	total_us_per_query=598.615	qps=1670.52	p95_us=784	visited_nodes=691.345	distance_computations=279.982	paper_prune_ratio=0.759155	paper_saved_ratio=0.725674	paper_false_prune=0
+27	0.87684	588.062 us	hnsw_search_us_per_query=588.062	residual_rerank_us_per_query=128.263	rerank_candidates=27	total_us_per_query=588.062	qps=1700.5	p95_us=752	visited_nodes=707.262	distance_computations=284.457	paper_prune_ratio=0.759366	paper_saved_ratio=0.725488	paper_false_prune=0
+28	0.87952	628.251 us	hnsw_search_us_per_query=628.251	residual_rerank_us_per_query=132.645	rerank_candidates=28	total_us_per_query=628.251	qps=1591.72	p95_us=825	visited_nodes=723.185	distance_computations=288.75	paper_prune_ratio=0.759887	paper_saved_ratio=0.725618	paper_false_prune=0
+29	0.8831	612.246 us	hnsw_search_us_per_query=612.246	residual_rerank_us_per_query=137.796	rerank_candidates=29	total_us_per_query=612.246	qps=1633.33	p95_us=777	visited_nodes=739.725	distance_computations=293.127	paper_prune_ratio=0.760491	paper_saved_ratio=0.725881	paper_false_prune=0
+30	0.88636	651.65 us	hnsw_search_us_per_query=651.65	residual_rerank_us_per_query=142.14	rerank_candidates=30	total_us_per_query=651.65	qps=1534.57	p95_us=848	visited_nodes=755.395	distance_computations=297.374	paper_prune_ratio=0.760934	paper_saved_ratio=0.725958	paper_false_prune=0
+40	0.91062	773.508 us	hnsw_search_us_per_query=773.508	residual_rerank_us_per_query=190.428	rerank_candidates=40	total_us_per_query=773.508	qps=1292.81	p95_us=968	visited_nodes=910.763	distance_computations=338.462	paper_prune_ratio=0.765837	paper_saved_ratio=0.727852	paper_false_prune=0
+50	0.92536	906.976 us	hnsw_search_us_per_query=906.976	residual_rerank_us_per_query=237.506	rerank_candidates=50	total_us_per_query=906.976	qps=1102.56	p95_us=1113	visited_nodes=1062.32	distance_computations=377.484	paper_prune_ratio=0.770478	paper_saved_ratio=0.730222	paper_false_prune=0
+60	0.93498	1045.08 us	hnsw_search_us_per_query=1045.08	residual_rerank_us_per_query=285.431	rerank_candidates=60	total_us_per_query=1045.08	qps=956.869	p95_us=1269	visited_nodes=1209.39	distance_computations=415.354	paper_prune_ratio=0.773979	paper_saved_ratio=0.731888	paper_false_prune=0
+70	0.94316	1199.51 us	hnsw_search_us_per_query=1199.51	residual_rerank_us_per_query=333.635	rerank_candidates=70	total_us_per_query=1199.51	qps=833.674	p95_us=1467	visited_nodes=1354.87	distance_computations=452.368	paper_prune_ratio=0.777085	paper_saved_ratio=0.733507	paper_false_prune=0
+80	0.94836	1330.86 us	hnsw_search_us_per_query=1330.86	residual_rerank_us_per_query=380.826	rerank_candidates=80	total_us_per_query=1330.86	qps=751.396	p95_us=1613	visited_nodes=1495.69	distance_computations=488.516	paper_prune_ratio=0.779417	paper_saved_ratio=0.734512	paper_false_prune=0
+90	0.95258	1467.12 us	hnsw_search_us_per_query=1467.12	residual_rerank_us_per_query=428.641	rerank_candidates=90	total_us_per_query=1467.12	qps=681.606	p95_us=1768	visited_nodes=1634.75	distance_computations=524.067	paper_prune_ratio=0.78147	paper_saved_ratio=0.735419	paper_false_prune=0
+100	0.95632	1601.07 us	hnsw_search_us_per_query=1601.07	residual_rerank_us_per_query=476.349	rerank_candidates=100	total_us_per_query=1601.07	qps=624.584	p95_us=1925	visited_nodes=1772.01	distance_computations=559.404	paper_prune_ratio=0.783067	paper_saved_ratio=0.736013	paper_false_prune=0
+140	0.96462	1934.94 us	hnsw_search_us_per_query=1934.94	residual_rerank_us_per_query=479.251	rerank_candidates=100	total_us_per_query=1934.94	qps=516.812	p95_us=2365	visited_nodes=2302.34	distance_computations=696.143	paper_prune_ratio=0.78779	paper_saved_ratio=0.737511	paper_false_prune=0
+180	0.97008	2251.54 us	hnsw_search_us_per_query=2251.54	residual_rerank_us_per_query=481.897	rerank_candidates=100	total_us_per_query=2251.54	qps=444.14	p95_us=2799	visited_nodes=2807.79	distance_computations=829.559	paper_prune_ratio=0.789929	paper_saved_ratio=0.737234	paper_false_prune=0
+220	0.97312	2574.87 us	hnsw_search_us_per_query=2574.87	residual_rerank_us_per_query=484.726	rerank_candidates=100	total_us_per_query=2574.87	qps=388.369	p95_us=3242	visited_nodes=3294.03	distance_computations=960	paper_prune_ratio=0.791048	paper_saved_ratio=0.73639	paper_false_prune=0
+260	0.97558	2884.98 us	hnsw_search_us_per_query=2884.98	residual_rerank_us_per_query=489.399	rerank_candidates=100	total_us_per_query=2884.98	qps=346.623	p95_us=3673	visited_nodes=3766.65	distance_computations=1088.37	paper_prune_ratio=0.791648	paper_saved_ratio=0.735353	paper_false_prune=0
+300	0.97734	3152.02 us	hnsw_search_us_per_query=3152.02	residual_rerank_us_per_query=491.247	rerank_candidates=100	total_us_per_query=3152.02	qps=317.257	p95_us=4048	visited_nodes=4226.84	distance_computations=1214.95	paper_prune_ratio=0.7919	paper_saved_ratio=0.734183	paper_false_prune=0
+340	0.97856	3469.41 us	hnsw_search_us_per_query=3469.41	residual_rerank_us_per_query=493.354	rerank_candidates=100	total_us_per_query=3469.41	qps=288.234	p95_us=4488	visited_nodes=4677.71	distance_computations=1340.35	paper_prune_ratio=0.791925	paper_saved_ratio=0.732964	paper_false_prune=0
+380	0.97938	3787.32 us	hnsw_search_us_per_query=3787.32	residual_rerank_us_per_query=497.154	rerank_candidates=100	total_us_per_query=3787.32	qps=264.039	p95_us=4911	visited_nodes=5118.79	distance_computations=1464.15	paper_prune_ratio=0.79185	paper_saved_ratio=0.73176	paper_false_prune=0
+420	0.9802	4038.8 us	hnsw_search_us_per_query=4038.8	residual_rerank_us_per_query=500.148	rerank_candidates=100	total_us_per_query=4038.8	qps=247.598	p95_us=5261	visited_nodes=5552.32	distance_computations=1586.72	paper_prune_ratio=0.79172	paper_saved_ratio=0.730604	paper_false_prune=0
+460	0.98092	4325.3 us	hnsw_search_us_per_query=4325.3	residual_rerank_us_per_query=502.602	rerank_candidates=100	total_us_per_query=4325.3	qps=231.198	p95_us=5657	visited_nodes=5979.06	distance_computations=1708.43	paper_prune_ratio=0.791504	paper_saved_ratio=0.72945	paper_false_prune=0
+Index storage size: 2168 MB (index=1159.83 MB, auxiliary=0.014473 MB, residual=1008.15 MB, total_bytes=2167995949)
