@@ -1433,27 +1433,31 @@ void sift_test1B() {
         string index_prefix;
     };
 
-    const string paper_data_dir = "/home/lyx_20251022/hnsw_rabitq/dbpedia_1M";
+    const string dbpedia_data_dir = "/home/kai3/coco/data/dbpedia_openai1536";
     const string dataset_name_config = getenv_string(
-        "RABITQ_DATASET", paper_prune_profile ? "dbpedia_openai1536" : "sift10m");
+        "RABITQ_DATASET", "dbpedia_openai1536");
+    const bool is_dbpedia_dataset =
+        dataset_name_config == "dbpedia_openai1536" ||
+        dataset_name_config == "dbpedia" ||
+        dataset_name_config == "dbpedia-openai1536";
     const DatasetConfig dataset{
         dataset_name_config,
-        getenv_size_t("RABITQ_DIM", paper_prune_profile ? 1536 : 128),
-        getenv_size_t("RABITQ_GT_WIDTH", paper_prune_profile ? 10 : 1000),
+        getenv_size_t("RABITQ_DIM", is_dbpedia_dataset ? 1536 : 128),
+        getenv_size_t("RABITQ_GT_WIDTH", 100),
         getenv_string(
             "RABITQ_BASE_PATH",
-            paper_prune_profile
-                ? paper_data_dir + "/dbpedia_openai1536_base.fvecs"
+            is_dbpedia_dataset
+                ? dbpedia_data_dir + "/dbpedia_openai1536_base.fvecs"
                 : "/home/kai3/coco/data/sift10m/sift10m_base.fvecs"),
         getenv_string(
             "RABITQ_QUERY_PATH",
-            paper_prune_profile
-                ? paper_data_dir + "/dbpedia_openai1536_query.fvecs"
+            is_dbpedia_dataset
+                ? dbpedia_data_dir + "/dbpedia_openai1536_query.fvecs"
                 : "/home/kai3/coco/data/sift10m/sift10m_query.fvecs"),
         getenv_string(
             "RABITQ_GT_PATH",
-            paper_prune_profile
-                ? paper_data_dir + "/dbpedia_openai1536_groundtruth.ivecs"
+            is_dbpedia_dataset
+                ? dbpedia_data_dir + "/dbpedia_openai1536_groundtruth.ivecs"
                 : "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs"),
         dataset_name_config};
 
@@ -1520,7 +1524,7 @@ void sift_test1B() {
 
     const string build_distance_mode = getenv_string(
         "RABITQ_BUILD_DISTANCE",
-        centroid_count == 1 && code_layout == RaBitQCodeLayout::SequentialNibble
+        centroid_count == 1
             ? "asymmetric4"
             : "float32");
     if (build_distance_mode != "asymmetric4" &&
@@ -1531,9 +1535,10 @@ void sift_test1B() {
     const bool symmetric4_build = build_distance_mode == "symmetric4";
     const bool quantized4_build = asymmetric4_build || symmetric4_build;
     const bool force_rebuild = getenv_bool01_strict("RABITQ_FORCE_REBUILD", false);
-    if (quantized4_build &&
-        (centroid_count != 1 || code_layout != RaBitQCodeLayout::SequentialNibble))
-        throw runtime_error("4-bit construction requires K=1 and Sequential layout");
+    if (quantized4_build && centroid_count != 1)
+        throw runtime_error("4-bit construction requires K=1");
+    if (symmetric4_build && code_layout != RaBitQCodeLayout::SequentialNibble)
+        throw runtime_error("symmetric 4-bit construction requires Sequential layout");
     if (!abc_ablation.empty()) {
         if (abc_ablation == "D" && !symmetric4_build)
             throw runtime_error("D requires RABITQ_BUILD_DISTANCE=symmetric4");
@@ -1583,6 +1588,10 @@ void sift_test1B() {
              << " explicit_environment_overrides=enabled"
              << " force_rebuild=" << (force_rebuild ? 1 : 0) << "\n";
     }
+    cout << "build_runtime"
+         << " omp_max_threads=" << omp_get_max_threads()
+         << " omp_dynamic=" << omp_get_dynamic()
+         << "\n";
 
     print_run_config(
         dataset_name,
@@ -1824,6 +1833,16 @@ void sift_test1B() {
             const string shared_graph_metrics_path = shared_graph_path + ".build_metrics";
             DiskPayloadStore payload_store(payload_path, vecsize * full_record_size);
             FvecMmap base_vectors(path_data, vecsize, vecdim);
+            cout << "quantized_graph_build_setup"
+                 << " payload_path=" << payload_path
+                 << " full_record_bytes=" << full_record_size
+                 << " compact_record_bytes=" << compact_record_size
+                 << " payload_bytes=" << vecsize * full_record_size
+                 << " compact_payload_bytes="
+                 << (reuse_quantized_graph ? 0 : vecsize * compact_record_size)
+                 << " shared_graph_path=" << shared_graph_path
+                 << " reuse_graph=" << (reuse_quantized_graph ? 1 : 0)
+                 << "\n";
             if (reuse_quantized_graph) {
                 cout << "Loading shared " << build_distance_mode
                      << " graph from " << shared_graph_path << "\n";
@@ -1835,8 +1854,14 @@ void sift_test1B() {
             }
             StopW encode_timer;
             double encode_cpu_us = 0.0;
-            StopW graph_timer;
-            const size_t report_every = 100000;
+            double payload_write_cpu_us = 0.0;
+            vector<char> compact_payloads;
+            if (!reuse_quantized_graph) {
+                compact_payloads.assign(vecsize * compact_record_size, 0);
+            }
+            cout << "Entering payload encode loop"
+                 << " count=" << vecsize
+                 << "\n";
 #pragma omp parallel for
             for (int64_t label = 0; label < static_cast<int64_t>(vecsize); ++label) {
                 const float *raw = base_vectors.vector(static_cast<size_t>(label));
@@ -1846,35 +1871,69 @@ void sift_test1B() {
                 const uint8_t centroid_id = appr_alg->space().assignCentroid(raw);
                 appr_alg->space().encodeVectorFullWithCentroid(raw, centroid_id, full.data());
                 appr_alg->space().copyCompactPayloadFromFull(full.data(), compact.data());
-                payload_store.writeRecord(static_cast<size_t>(label), full.data(), full_record_size);
                 const double local_encode_us = local_encode_timer.getElapsedTimeMicro();
+                StopW local_write_timer;
+                payload_store.writeRecord(static_cast<size_t>(label), full.data(), full_record_size);
+                const double local_write_us = local_write_timer.getElapsedTimeMicro();
+                if (!reuse_quantized_graph) {
+                    std::memcpy(
+                        compact_payloads.data() + static_cast<size_t>(label) * compact_record_size,
+                        compact.data(),
+                        compact_record_size);
+                }
 #pragma omp atomic
                 encode_cpu_us += local_encode_us;
 #pragma omp atomic
+                payload_write_cpu_us += local_write_us;
+#pragma omp atomic
                 centroid_counts[centroid_id]++;
-                if (!reuse_quantized_graph) {
-                    if (asymmetric4_build) {
-                        appr_alg->addPointAsymmetric(
-                            raw, static_cast<labeltype>(label), compact.data());
-                    } else {
-                        appr_alg->index().addPoint(
-                            compact.data(), static_cast<labeltype>(label));
-                    }
-                }
-                if ((static_cast<size_t>(label) + 1U) % report_every == 0U) {
-#pragma omp critical
-                    cout << (asymmetric4_build ? "Asymmetric" : "Symmetric")
-                         << " graph progress label=" << (label + 1)
-                         << " count=" << appr_alg->index().cur_element_count << "\n";
-                }
             }
-            const double graph_build_us = graph_timer.getElapsedTimeMicro();
             const double encode_wall_us = encode_timer.getElapsedTimeMicro();
             cout << "build_stage=payload_encode"
                  << " cpu_us=" << encode_cpu_us
-                 << " wall_us=" << encode_wall_us
                  << " count=" << vecsize
-                 << " record_bytes=" << full_record_size << "\n";
+                 << " full_record_bytes=" << full_record_size
+                 << " compact_record_bytes=" << compact_record_size << "\n";
+            cout << "build_stage=payload_write"
+                 << " cpu_us=" << payload_write_cpu_us
+                 << " payload_bytes=" << vecsize * full_record_size
+                 << "\n";
+            cout << "build_stage=payload_encode_and_write_wall"
+                 << " wall_us=" << encode_wall_us
+                 << "\n";
+
+            double graph_build_us = 0.0;
+            if (!reuse_quantized_graph) {
+                StopW graph_timer;
+                const size_t report_every = getenv_size_t("RABITQ_BUILD_REPORT_EVERY", 0);
+                cout << "Entering " << (asymmetric4_build ? "asymmetric" : "symmetric")
+                     << " graph addpoint loop"
+                     << " count=" << vecsize
+                     << " report_every=" << report_every
+                     << "\n";
+#pragma omp parallel for
+                for (int64_t label = 0; label < static_cast<int64_t>(vecsize); ++label) {
+                    const float *raw = base_vectors.vector(static_cast<size_t>(label));
+                    const char *compact =
+                        compact_payloads.data() + static_cast<size_t>(label) * compact_record_size;
+                    if (asymmetric4_build) {
+                        appr_alg->addPointAsymmetric(
+                            raw, static_cast<labeltype>(label), compact);
+                    } else {
+                        appr_alg->index().addPoint(
+                            compact, static_cast<labeltype>(label));
+                    }
+                    if (report_every != 0U &&
+                        (static_cast<size_t>(label) + 1U) % report_every == 0U) {
+#pragma omp critical
+                        cout << (asymmetric4_build ? "Asymmetric" : "Symmetric")
+                             << " graph addpoint progress label=" << (label + 1)
+                             << " count=" << appr_alg->index().cur_element_count << "\n";
+                    }
+                }
+                graph_build_us = graph_timer.getElapsedTimeMicro();
+                vector<char>().swap(compact_payloads);
+            }
             StopW residual_timer;
             if (reuse_quantized_graph) {
                 double ignored_total_us = -1.0;
@@ -1938,9 +1997,6 @@ void sift_test1B() {
             print_index_file_size(path_index, query_mode);
         } else {
 
-        int j1 = 0;
-        StopW stopw;
-        StopW float_graph_timer;
         const size_t report_every = 100000;
         const size_t payload_record_size = external_residual_storage
             ? appr_alg->space().get_full_data_size()
@@ -1970,6 +2026,7 @@ void sift_test1B() {
             "RABITQ_FLOAT_GRAPH_PATH",
             join_path(index_dir, dataset.name + "_float_ef_" +
                 std::to_string(efConstruction) + "_M_" + std::to_string(M) + ".bin"));
+        const string float_graph_metrics_path = float_graph_path + ".build_metrics";
         const bool reuse_float_graph = exists_test(float_graph_path);
         unique_ptr<HierarchicalNSW<float>> float_index;
         if (reuse_float_graph) {
@@ -1984,82 +2041,82 @@ void sift_test1B() {
                 &float_space, vecsize, M, efConstruction, random_seed));
         }
 
-        vector<float> first(vecdim);
-        read_fvec_as_float(input, first.data(), vecdim);
-        {
-            StopW payload_timer;
-            vector<char> encoded_first(payload_record_size, 0);
-            const uint8_t centroid_id = appr_alg->space().assignCentroid(first.data());
-            ++centroid_counts[centroid_id];
-            if (external_residual_storage) {
-                appr_alg->space().encodeVectorFullWithCentroid(first.data(), centroid_id, encoded_first.data());
-            } else {
-                appr_alg->space().encodeVector(first.data(), encoded_first.data());
+        cout << "Loading base vectors before graph timing:\n";
+        vector<float> massB = load_fvecs_raw(path_data, vecsize, vecdim);
+        input.close();
+        cout << "Loaded base vectors"
+             << " count=" << vecsize
+             << " bytes=" << massB.size() * sizeof(float)
+             << " Mem: " << getCurrentRSS() / 1000000 << " Mb\n";
+
+        double float_graph_build_us = -1.0;
+        if (reuse_float_graph) {
+            double ignored_total_us = -1.0;
+            load_build_metrics(float_graph_metrics_path, float_graph_build_us, ignored_total_us);
+            reported_graph_construction_us = float_graph_build_us;
+            cout << "build_stage=float_graph_reuse"
+                 << " us=0"
+                 << " source=" << float_graph_path << "\n";
+        } else {
+            StopW float_graph_timer;
+            float_index->addPoint(massB.data(), (size_t)0);
+#pragma omp parallel for
+            for (int i = 1; i < static_cast<int>(vecsize); i++) {
+                float_index->addPoint(
+                    massB.data() + static_cast<size_t>(i) * vecdim,
+                    (size_t)i);
+                if ((static_cast<size_t>(i) + 1U) % report_every == 0U) {
+#pragma omp critical
+                    cout << (static_cast<size_t>(i) + 1U) / (0.01 * vecsize) << " %, "
+                         << kips_from_count_us(
+                                static_cast<size_t>(i) + 1U,
+                                float_graph_timer.getElapsedTimeMicro())
+                         << " kips "
+                         << " Mem: " << getCurrentRSS() / 1000000 << " Mb \n";
+                }
             }
-            if (payload_disk_mode) {
-                disk_payload->writeRecord(0, encoded_first.data(), payload_record_size);
-            } else {
-                std::memcpy(payloads.data(), encoded_first.data(), payload_record_size);
-            }
-            payload_encode_cpu_us += payload_timer.getElapsedTimeMicro();
-        }
-        if (!reuse_float_graph) {
-            float_index->addPoint(first.data(), (size_t)0);
+            float_graph_build_us = float_graph_timer.getElapsedTimeMicro();
+            reported_graph_construction_us = float_graph_build_us;
+            float_index->saveIndex(float_graph_path);
+            save_build_metrics(float_graph_metrics_path, float_graph_build_us, float_graph_build_us);
+            cout << "Saved shared Float32 graph to " << float_graph_path << "\n";
         }
 
         StopW payload_encode_wall_timer;
 #pragma omp parallel for
-        for (int i = 1; i < static_cast<int>(vecsize); i++) {
-            vector<float> local_mass(vecdim);
-            int label = 0;
-#pragma omp critical
-            {
-                read_fvec_as_float(input, local_mass.data(), vecdim);
-                j1++;
-                label = j1;
-                if (j1 % report_every == 0) {
-                    cout << j1 / (0.01 * vecsize) << " %, "
-                         << report_every / (1000.0 * 1e-6 * stopw.getElapsedTimeMicro()) << " kips "
-                         << " Mem: " << getCurrentRSS() / 1000000 << " Mb \n";
-                    stopw.reset();
-                }
-            }
+        for (int i = 0; i < static_cast<int>(vecsize); i++) {
+            const size_t label = static_cast<size_t>(i);
+            const float *raw = massB.data() + label * vecdim;
             StopW payload_timer;
             vector<char> encoded_payload(payload_record_size, 0);
-            const uint8_t centroid_id = appr_alg->space().assignCentroid(local_mass.data());
+            const uint8_t centroid_id = appr_alg->space().assignCentroid(raw);
 #pragma omp atomic
             centroid_counts[centroid_id]++;
             if (external_residual_storage) {
-                appr_alg->space().encodeVectorFullWithCentroid(local_mass.data(), centroid_id, encoded_payload.data());
+                appr_alg->space().encodeVectorFullWithCentroid(raw, centroid_id, encoded_payload.data());
             } else {
-                appr_alg->space().encodeVector(local_mass.data(), encoded_payload.data());
+                appr_alg->space().encodeVector(raw, encoded_payload.data());
             }
             if (payload_disk_mode) {
-                disk_payload->writeRecord(static_cast<size_t>(label), encoded_payload.data(), payload_record_size);
+                disk_payload->writeRecord(label, encoded_payload.data(), payload_record_size);
             } else {
                 std::memcpy(
-                    payloads.data() + static_cast<size_t>(label) * payload_record_size,
+                    payloads.data() + label * payload_record_size,
                     encoded_payload.data(),
                     payload_record_size);
             }
             const double local_payload_encode_us = payload_timer.getElapsedTimeMicro();
 #pragma omp atomic
             payload_encode_cpu_us += local_payload_encode_us;
-            if (!reuse_float_graph) {
-                float_index->addPoint(local_mass.data(), (size_t)label);
-            }
         }
         const double payload_encode_wall_us = payload_encode_wall_timer.getElapsedTimeMicro();
 
-        input.close();
-        const double float_graph_build_us = float_graph_timer.getElapsedTimeMicro();
-        reported_graph_construction_us = float_graph_build_us;
-        if (!reuse_float_graph) {
-            float_index->saveIndex(float_graph_path);
-            cout << "Saved shared Float32 graph to " << float_graph_path << "\n";
-        }
-        cout << "Float graph build time:" << 1e-6 * float_graph_build_us
-             << " seconds; importing graph and writing 4-bit payloads\n";
+        cout << "Float graph build time:";
+        if (float_graph_build_us >= 0.0)
+            cout << 1e-6 * float_graph_build_us << " seconds";
+        else
+            cout << " unavailable (shared graph without build metrics)";
+        cout << "; importing graph and writing 4-bit payloads\n";
         cout << "build_stage=float_graph_build"
              << " us=" << float_graph_build_us
              << " kips=" << kips_from_count_us(vecsize, float_graph_build_us)

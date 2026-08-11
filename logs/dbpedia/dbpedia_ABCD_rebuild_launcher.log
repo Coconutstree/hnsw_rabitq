@@ -1,0 +1,31 @@
+[2026-08-11T11:45:34+08:00] dbpedia ABCD rebuild started
+[2026-08-11T11:45:34+08:00] start case A
+  log=/home/kai3/coco/hnsw_rabitq/logs/dbpedia/dbpedia_A_ef_200_M_16.log
+  OMP_NUM_THREADS=64
+  RABITQ_BUILD_DISTANCE=asymmetric4
+[2026-08-11T12:11:40+08:00] done case A
+[2026-08-11T12:11:40+08:00] start case B
+  log=/home/kai3/coco/hnsw_rabitq/logs/dbpedia/dbpedia_B_ef_200_M_16.log
+  OMP_NUM_THREADS=64
+  RABITQ_BUILD_DISTANCE=asymmetric4
+[2026-08-11T12:37:48+08:00] done case B
+[2026-08-11T12:38:52+08:00] dbpedia ABCD rebuild resumed cases=C D
+[2026-08-11T12:38:52+08:00] start case C
+  log=/home/kai3/coco/hnsw_rabitq/logs/dbpedia/dbpedia_C_ef_200_M_16.log
+  OMP_NUM_THREADS=64
+  OMP_PROC_BIND=close
+  OMP_PLACES=cores
+  RABITQ_FORCE_REBUILD=1
+  RABITQ_BUILD_REPORT_EVERY=50000
+  RABITQ_BUILD_DISTANCE=asymmetric4
+[2026-08-11T12:49:40+08:00] done case C
+[2026-08-11T12:49:40+08:00] start case D
+  log=/home/kai3/coco/hnsw_rabitq/logs/dbpedia/dbpedia_D_ef_200_M_16.log
+  OMP_NUM_THREADS=64
+  OMP_PROC_BIND=close
+  OMP_PLACES=cores
+  RABITQ_FORCE_REBUILD=1
+  RABITQ_BUILD_REPORT_EVERY=50000
+  RABITQ_BUILD_DISTANCE=symmetric4
+[2026-08-11T13:04:03+08:00] done case D
+[2026-08-11T13:04:03+08:00] dbpedia ABCD rebuild finished

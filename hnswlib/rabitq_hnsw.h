@@ -420,10 +420,9 @@ class RaBitQHierarchicalNSW {
         const float *raw_vector,
         labeltype label,
         const void *compact_encoded = nullptr) {
-        if (space_.get_centroid_count() != 1 ||
-            space_.get_code_layout() != RaBitQCodeLayout::SequentialNibble)
+        if (space_.get_centroid_count() != 1)
             throw std::runtime_error(
-                "asymmetric 4-bit construction requires K=1 and Sequential layout");
+                "asymmetric 4-bit construction requires K=1");
         if (compact_encoded != nullptr) {
             index_.addPointAsymmetric(compact_encoded, raw_vector, label);
             return;

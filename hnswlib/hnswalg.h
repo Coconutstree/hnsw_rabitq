@@ -701,38 +701,92 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             }
 #endif
 
-            for (size_t j = 0; j < size; j++) {
-                tableint candidate_id = *(datal + j);
+            if (asymmetric_query_context && size > 0) {
+                thread_local std::vector<tableint> build_candidate_ids;
+                thread_local std::vector<const void *> build_candidate_data;
+                thread_local std::vector<dist_t> build_candidate_distances;
+                build_candidate_ids.clear();
+                build_candidate_data.clear();
+                build_candidate_distances.clear();
+                build_candidate_ids.reserve(size);
+                build_candidate_data.reserve(size);
+                build_candidate_distances.reserve(size);
+                for (size_t j = 0; j < size; j++) {
+                    tableint candidate_id = *(datal + j);
 //                    if (candidate_id == 0) continue;
 #ifdef USE_SSE
-                if (j + 1 < size) {
-                    _mm_prefetch((char *) (visited_array + datal[j + 1]), _MM_HINT_T0);
-                    _mm_prefetch(getDataByInternalId(datal[j + 1]), _MM_HINT_T0);
+                    if (j + 1 < size) {
+                        _mm_prefetch((char *) (visited_array + datal[j + 1]), _MM_HINT_T0);
+                        _mm_prefetch(getDataByInternalId(datal[j + 1]), _MM_HINT_T0);
+                    }
+#endif
+                    if (visited_array[candidate_id] == visited_array_tag) continue;
+                    visited_array[candidate_id] = visited_array_tag;
+                    build_candidate_ids.push_back(candidate_id);
+                    build_candidate_data.push_back(getDataByInternalId(candidate_id));
                 }
-#endif
-                if (visited_array[candidate_id] == visited_array_tag) continue;
-                visited_array[candidate_id] = visited_array_tag;
-                char *currObj1 = (getDataByInternalId(candidate_id));
-
-                dist_t dist1 = asymmetric_query_context
-                    ? space_->query_distance(asymmetric_query_context, currObj1)
-                    : fstdistfunc_(data_point, currObj1, dist_func_param_);
-                if (asymmetric_query_context) ++asymmetric_build_distance_calls_;
-                else ++encoded_build_distance_calls_;
-                if (top_candidates.size() < ef_construction_ || lowerBound > dist1) {
-                    candidateSet.emplace(-dist1, candidate_id);
+                if (!build_candidate_data.empty()) {
+                    build_candidate_distances.resize(build_candidate_data.size());
+                    space_->query_distance_batch_k1(
+                        asymmetric_query_context,
+                        build_candidate_data.data(),
+                        build_candidate_data.size(),
+                        build_candidate_distances.data(),
+                        2);
+                    asymmetric_build_distance_calls_.fetch_add(
+                        static_cast<uint64_t>(build_candidate_data.size()),
+                        std::memory_order_relaxed);
+                }
+                for (size_t j = 0; j < build_candidate_ids.size(); ++j) {
+                    const tableint candidate_id = build_candidate_ids[j];
+                    const dist_t dist1 = build_candidate_distances[j];
+                    if (top_candidates.size() < ef_construction_ || lowerBound > dist1) {
+                        candidateSet.emplace(-dist1, candidate_id);
 #ifdef USE_SSE
-                    _mm_prefetch(getDataByInternalId(candidateSet.top().second), _MM_HINT_T0);
+                        _mm_prefetch(getDataByInternalId(candidateSet.top().second), _MM_HINT_T0);
 #endif
 
-                    if (!isMarkedDeleted(candidate_id))
-                        top_candidates.emplace(dist1, candidate_id);
+                        if (!isMarkedDeleted(candidate_id))
+                            top_candidates.emplace(dist1, candidate_id);
 
-                    if (top_candidates.size() > ef_construction_)
-                        top_candidates.pop();
+                        if (top_candidates.size() > ef_construction_)
+                            top_candidates.pop();
 
-                    if (!top_candidates.empty())
-                        lowerBound = top_candidates.top().first;
+                        if (!top_candidates.empty())
+                            lowerBound = top_candidates.top().first;
+                    }
+                }
+            } else {
+                for (size_t j = 0; j < size; j++) {
+                    tableint candidate_id = *(datal + j);
+//                    if (candidate_id == 0) continue;
+#ifdef USE_SSE
+                    if (j + 1 < size) {
+                        _mm_prefetch((char *) (visited_array + datal[j + 1]), _MM_HINT_T0);
+                        _mm_prefetch(getDataByInternalId(datal[j + 1]), _MM_HINT_T0);
+                    }
+#endif
+                    if (visited_array[candidate_id] == visited_array_tag) continue;
+                    visited_array[candidate_id] = visited_array_tag;
+                    char *currObj1 = (getDataByInternalId(candidate_id));
+
+                    dist_t dist1 = fstdistfunc_(data_point, currObj1, dist_func_param_);
+                    ++encoded_build_distance_calls_;
+                    if (top_candidates.size() < ef_construction_ || lowerBound > dist1) {
+                        candidateSet.emplace(-dist1, candidate_id);
+#ifdef USE_SSE
+                        _mm_prefetch(getDataByInternalId(candidateSet.top().second), _MM_HINT_T0);
+#endif
+
+                        if (!isMarkedDeleted(candidate_id))
+                            top_candidates.emplace(dist1, candidate_id);
+
+                        if (top_candidates.size() > ef_construction_)
+                            top_candidates.pop();
+
+                        if (!top_candidates.empty())
+                            lowerBound = top_candidates.top().first;
+                    }
                 }
             }
         }
