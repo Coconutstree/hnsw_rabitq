@@ -48,7 +48,7 @@ https://storage.googleapis.com/ann-filtered-benchmark/datasets/dbpedia_openai_1M
 ### 1. 进入仓库并创建文件夹
 
 ```bash
-cd /home/lyx_20251022/hnsw_rabitq
+cd /home/kai3/coco/hnsw_rabitq
 mkdir -p downloads
 mkdir -p dbpedia_1M
 mkdir -p logs/dbpedia
@@ -130,7 +130,7 @@ ls -lh \
 默认数据目录为：
 
 ```text
-/home/lyx_20251022/hnsw_rabitq/dbpedia_1M
+/home/kai3/coco/data/dbpedia_openai1536
 ```
 
 若将转换结果放在其他目录，运行实验前设置：
@@ -144,14 +144,52 @@ export RABITQ_GT_PATH=/path/to/dbpedia_openai1536_groundtruth.ivecs
 ## 编译
 
 ```bash
+cd /home/kai3/coco/hnsw_rabitq
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake --build build --target main rabitq_hnsw_smoke_test distance_kernel_benchmark -j 64
+ctest --test-dir build -R '^rabitq_hnsw_smoke$' --output-on-failure
 ```
 
 ## 运行
 
 为公平比较构图时间，四组实验都设置`RABITQ_FORCE_REBUILD=1`。该开关会忽略已有最终索引、共享图和质心缓存，确保日志记录的是本次真实构建时间。四组命令应在同一台机器、相同线程和系统负载下依次运行。
+
+### 当前D实验：M=32，efConstruction=400
+
+D使用`4-bit primary -> 4-bit primary`对称距离构图，block16 residual4只用于最终rerank。下面命令对应当前DBpedia实验日志：
+
+```text
+logs/dbpedia/dbpedia_D_ef_400_M_32.log
+```
+
+运行命令：
+
+```bash
+cd /home/kai3/coco/hnsw_rabitq
+
+mkdir -p logs/dbpedia
+
+RABITQ_FORCE_REBUILD=1 \
+RABITQ_EF_CONSTRUCTION=400 \
+RABITQ_M=32 \
+RABITQ_BUILD_DISTANCE=symmetric4 \
+RABITQ_ABC_ABLATION=D \
+RABITQ_PAPER_PRUNE_COMPARE=active \
+RABITQ_PAPER_EPSILON0=1.9 \
+./build/main > logs/dbpedia/dbpedia_D_ef_400_M_32.log 2>&1
+```
+
+如果希望构图阶段也持续输出进度，在运行命令中额外加入：
+
+```bash
+RABITQ_BUILD_REPORT_EVERY=10000
+```
+
+没有这项时默认是`0`，`symmetric graph addpoint loop`中间不会打印过程；看日志里的`reuse_graph=0`可确认没有复用共享图。
+
+如果需要严格复现`dbpedia_D_ef_400_M_32.log`里的64线程运行环境，在命令前额外加上`OMP_NUM_THREADS=64 OMP_PROC_BIND=close OMP_PLACES=cores`即可。`RABITQ_DATASET`、`RABITQ_INDEX_DIR`和三个DBpedia路径可以省略，因为当前程序默认使用`/home/kai3/coco/data/dbpedia_openai1536`和`build/indexes/dbpedia_ablation`。
+
+
 
 ### A
 

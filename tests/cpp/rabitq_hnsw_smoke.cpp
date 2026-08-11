@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cmath>
@@ -128,6 +129,78 @@ static void run_residual_bits_smoke(size_t residual_bits) {
     std::remove(tmp_external_bfs_residual);
 }
 
+static void test_shared_graph_residual_internal_id_mapping() {
+    constexpr size_t dim = 4;
+    constexpr size_t count = 4;
+    const std::vector<float> data = {
+        1.0f, 0.2f, -0.1f, 0.4f,
+        -0.3f, 1.1f, 0.5f, -0.2f,
+        0.6f, -0.4f, 1.3f, 0.1f,
+        -0.7f, 0.3f, 0.2f, 1.5f,
+    };
+    const std::vector<size_t> insertion_order = {2, 0, 3, 1};
+    const std::string payload_path = "/tmp/rabitq_shared_mapping.payload";
+    const std::string imported_residual_path = "/tmp/rabitq_shared_mapping.imported.residual";
+    const std::string reference_residual_path = "/tmp/rabitq_shared_mapping.reference.residual";
+    std::remove(payload_path.c_str());
+    std::remove(imported_residual_path.c_str());
+    std::remove(reference_residual_path.c_str());
+
+    hnswlib::L2Space float_space(dim);
+    hnswlib::HierarchicalNSW<float> source_graph(&float_space, count, 4, 16, 7);
+    for (const size_t label : insertion_order) {
+        source_graph.addPoint(data.data() + label * dim, label);
+    }
+
+    hnswlib::RaBitQSpace::ResidualQuantizationConfig residual_config;
+    residual_config.bits = hnswlib::RaBitQSpace::ResidualQuantizationBits::B4;
+    residual_config.block_size = 16;
+    residual_config.mse_optimal_scale = true;
+    residual_config.scale_fp16 = true;
+    hnswlib::RaBitQHierarchicalNSW imported(
+        dim, count, 1, 4, 16, 7, false, true, residual_config);
+    hnswlib::RaBitQHierarchicalNSW reference(
+        dim, count, 1, 4, 16, 7, false, true, residual_config);
+    imported.space().setIdentityRotation();
+    reference.space().setIdentityRotation();
+
+    {
+        std::ofstream payload(payload_path, std::ios::binary);
+        assert(payload.is_open());
+        std::vector<char> full(imported.space().get_full_data_size(), 0);
+        for (size_t label = 0; label < count; ++label) {
+            imported.space().encodeVectorFull(data.data() + label * dim, full.data());
+            payload.write(full.data(), static_cast<std::streamsize>(full.size()));
+        }
+        assert(payload.good());
+    }
+
+    imported.importGraphFromFloatIndexWithFullPayloadFileAndExternalResiduals(
+        source_graph,
+        payload_path,
+        imported_residual_path,
+        imported.space().get_full_data_size());
+
+    std::vector<char> full(reference.space().get_full_data_size(), 0);
+    std::vector<char> compact(reference.space().get_data_size(), 0);
+    for (const size_t label : insertion_order) {
+        reference.space().encodeVectorFull(data.data() + label * dim, full.data());
+        reference.space().copyCompactPayloadFromFull(full.data(), compact.data());
+        reference.index().addPoint(compact.data(), label);
+    }
+    reference.materializeExternalResidualsFromFullPayloadFile(
+        payload_path,
+        reference_residual_path,
+        reference.space().get_full_data_size());
+
+    assert(imported.payloadFingerprintByLabel() == reference.payloadFingerprintByLabel());
+    assert(imported.residualFingerprintByLabel() == reference.residualFingerprintByLabel());
+
+    std::remove(payload_path.c_str());
+    std::remove(imported_residual_path.c_str());
+    std::remove(reference_residual_path.c_str());
+}
+
 static void test_multimeans_eager_lazy_equivalence() {
     const size_t dim = 4;
     const std::vector<float> centroids = {
@@ -201,6 +274,28 @@ static void test_asymmetric_four_bit_construction() {
     const float expected = index.space().query_distance(prepared, encoded_reference.data());
     const float actual = index.space().asymmetric_build_distance(
         data.data(), encoded_reference.data());
+    const void *build_prepared =
+        index.space().prepare_asymmetric_build_query(data.data());
+    const float prepared_build_actual =
+        index.space().asymmetric_build_distance_prepared(
+            build_prepared, encoded_reference.data());
+    assert(std::memcmp(&actual, &prepared_build_actual, sizeof(float)) == 0);
+
+    // A nested build context must not overwrite the normal insertion/search
+    // query context, and two live build contexts must remain independent.
+    const void *second_build_prepared =
+        index.space().prepare_asymmetric_build_query(data.data() + 2 * dim);
+    const float second_build_actual =
+        index.space().asymmetric_build_distance_prepared(
+            second_build_prepared, encoded_reference.data());
+    const float second_build_expected = index.space().asymmetric_build_distance(
+        data.data() + 2 * dim, encoded_reference.data());
+    assert(std::memcmp(&second_build_actual, &second_build_expected, sizeof(float)) == 0);
+    const float outer_after_nested = index.space().query_distance(
+        prepared, encoded_reference.data());
+    assert(std::memcmp(&expected, &outer_after_nested, sizeof(float)) == 0);
+    index.space().release_asymmetric_build_query(build_prepared);
+    index.space().release_asymmetric_build_query(second_build_prepared);
     index.space().release_query(prepared);
     assert(std::fabs(expected - actual) < 1e-6f);
     index.setAsymmetricBuildRawProvider(
@@ -262,18 +357,65 @@ static void test_symmetric_four_bit_construction() {
     const float self_distance = distance(lhs.data(), lhs.data(), distance_param);
     const float lhs_rhs = distance(lhs.data(), rhs.data(), distance_param);
     const float rhs_lhs = distance(rhs.data(), lhs.data(), distance_param);
+    const float scalar_lhs_rhs =
+        index.space().symmetric_distance_scalar_reference(lhs.data(), rhs.data());
+    const void *symmetric_prepared =
+        index.space().prepare_symmetric_build_query(lhs.data());
+    const float prepared_lhs_rhs =
+        index.space().symmetric_build_distance_prepared(
+            symmetric_prepared, rhs.data());
+    index.space().release_symmetric_build_query(symmetric_prepared);
     assert(std::fabs(self_distance) < 1e-6f);
     assert(std::isfinite(lhs_rhs));
     assert(lhs_rhs >= 0.0f && lhs_rhs <= 4.0f);
     assert(std::fabs(lhs_rhs - rhs_lhs) < 1e-6f);
+    assert(std::memcmp(&lhs_rhs, &scalar_lhs_rhs, sizeof(float)) == 0);
+    assert(std::memcmp(&lhs_rhs, &prepared_lhs_rhs, sizeof(float)) == 0);
 
+    index.setSymmetricBuildPrepared(true);
     for (size_t label = 0; label < count; ++label)
         index.addPoint(data.data() + label * dim, label);
+    index.setSymmetricBuildPrepared(false);
     assert(index.asymmetricBuildDistanceCalls() == 0);
     assert(index.encodedBuildDistanceCalls() > 0);
+    assert(index.symmetricPreparedBuildDistanceCalls() > 0);
     auto result = index.searchKnn(data.data(), 1);
     assert(!result.empty());
     assert(result.top().second == 0);
+}
+
+static void test_symmetric_simd_matches_scalar_reference() {
+    constexpr size_t dim = 1536;
+    constexpr size_t count = 10;
+    std::vector<float> data(count * dim, 0.0f);
+    for (size_t point = 0; point < count; ++point) {
+        for (size_t lane = 0; lane < dim; ++lane) {
+            const float x = static_cast<float>((point + 1U) * (lane + 3U));
+            data[point * dim + lane] =
+                std::sin(x * 0.00137f) + 0.25f * std::cos(x * 0.00491f);
+        }
+    }
+
+    hnswlib::RaBitQHierarchicalNSW index(dim, count, 1, 8, 32, 100);
+    std::vector<std::vector<char>> encoded;
+    encoded.reserve(count);
+    for (size_t point = 0; point < count; ++point) {
+        encoded.push_back(index.space().encodeVector(data.data() + point * dim));
+    }
+    const auto distance = index.space().get_dist_func();
+    const void *param = index.space().get_dist_func_param();
+    for (size_t lhs = 0; lhs < count; ++lhs) {
+        for (size_t rhs = 0; rhs < count; ++rhs) {
+            const float simd = distance(
+                encoded[lhs].data(), encoded[rhs].data(), param);
+            const float scalar = index.space().symmetric_distance_scalar_reference(
+                encoded[lhs].data(), encoded[rhs].data());
+            assert(std::memcmp(&simd, &scalar, sizeof(float)) == 0);
+            const float reverse = distance(
+                encoded[rhs].data(), encoded[lhs].data(), param);
+            assert(std::memcmp(&simd, &reverse, sizeof(float)) == 0);
+        }
+    }
 }
 
 static void test_turbo128_layout() {
@@ -315,7 +457,8 @@ static void test_turbo128_layout() {
         const void *turbo_query = turbo_index.space().prepare_query(query.data());
         const float seq_distance = seq_index.space().query_distance(seq_query, seq_encoded.data());
         const float turbo_distance = turbo_index.space().query_distance(turbo_query, turbo_encoded.data());
-        assert(std::fabs(seq_distance - turbo_distance) <= 1e-4f);
+        assert(std::fabs(seq_distance - turbo_distance) <=
+               1e-6f * std::max(1.0f, std::fabs(seq_distance)));
         seq_index.space().release_query(seq_query);
         turbo_index.space().release_query(turbo_query);
         if (dim == 128) {
@@ -336,6 +479,8 @@ static void test_turbo128_layout() {
 int main() {
     test_asymmetric_four_bit_construction();
     test_symmetric_four_bit_construction();
+    test_symmetric_simd_matches_scalar_reference();
+    test_shared_graph_residual_internal_id_mapping();
     assert(!hnswlib::HierarchicalNSW<float>::baselineWouldAccept(1.0f, 1.0f, 10, 10));
     assert(hnswlib::HierarchicalNSW<float>::baselineWouldAccept(1.0f, 1.0f, 9, 10));
     assert(hnswlib::HierarchicalNSW<float>::baselineWouldAccept(0.9f, 1.0f, 10, 10));
@@ -602,6 +747,11 @@ int main() {
     const auto batch_result = payload_build_index.searchKnnPlainThenResidualRerank(
         data.data(), 2, 2, nullptr, &batch_metrics);
     assert(batch_metrics.distance_computations > 0);
+    hnswlib::RaBitQSearchMetrics primary_only_metrics;
+    const auto primary_only_result = payload_build_index.searchKnnPrimaryOnly(
+        data.data(), 2, nullptr, &primary_only_metrics);
+    assert(!primary_only_result.empty());
+    assert(primary_only_metrics.distance_computations > 0);
     turbo_config.short_shadow = true;
     payload_build_index.setEf(1);
     payload_build_index.setGraphTurboConfig(turbo_config);
@@ -658,6 +808,7 @@ int main() {
     turbo_config.route_bits = 6;
     turbo_config.top_p = 2;
     payload_build_index.setGraphTurboConfig(turbo_config);
+    payload_build_index.setEf(2);
     hnswlib::RaBitQSearchMetrics route_metrics;
     const auto route_result = payload_build_index.searchKnnPlainThenResidualRerank(
         data.data(), 2, 2, nullptr, &route_metrics);

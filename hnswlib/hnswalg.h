@@ -2,6 +2,7 @@
 
 #include "visited_list_pool.h"
 #include "hnswlib.h"
+#include <array>
 #include <atomic>
 #include <random>
 #include <stdlib.h>
@@ -13,6 +14,10 @@
 #include <limits>
 #include <cmath>
 #include <chrono>
+#include <thread>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 //hnsw索引算法本体 
 namespace hnswlib {
@@ -87,9 +92,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     size_t paper_msb_stride_{0};
 
     bool asymmetric_build_enabled_{false};
+    bool symmetric_build_prepared_enabled_{false};
     std::function<const void *(labeltype)> asymmetric_build_raw_by_label_;
-    mutable std::atomic<uint64_t> asymmetric_build_distance_calls_{0};
-    mutable std::atomic<uint64_t> encoded_build_distance_calls_{0};
+    struct alignas(64) BuildDistanceCounterStripe {
+        std::atomic<uint64_t> asymmetric{0};
+        std::atomic<uint64_t> encoded{0};
+        std::atomic<uint64_t> symmetric_prepared{0};
+    };
+    static constexpr size_t kBuildDistanceCounterStripes = 256;
+    mutable std::array<BuildDistanceCounterStripe, kBuildDistanceCounterStripes>
+        build_distance_counter_stripes_{};
 
     std::mutex deleted_elements_lock;  // lock for deleted_elements
     std::unordered_set<tableint> deleted_elements;  // contains internal ids of deleted elements
@@ -618,12 +630,89 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         asymmetric_build_enabled_ = false;
     }
 
+    void setSymmetricBuildPrepared(bool enabled) {
+        if (enabled && !space_->supports_symmetric_build_prepared())
+            throw std::runtime_error("space does not support symmetric prepared build distance");
+        symmetric_build_prepared_enabled_ = enabled;
+    }
+
+    bool symmetricBuildPreparedEnabled() const {
+        return symmetric_build_prepared_enabled_;
+    }
+
     uint64_t asymmetricBuildDistanceCalls() const {
-        return asymmetric_build_distance_calls_.load();
+        uint64_t total = 0;
+        for (const auto &stripe : build_distance_counter_stripes_) {
+            total += stripe.asymmetric.load(std::memory_order_relaxed);
+        }
+        return total;
     }
 
     uint64_t encodedBuildDistanceCalls() const {
-        return encoded_build_distance_calls_.load();
+        uint64_t total = 0;
+        for (const auto &stripe : build_distance_counter_stripes_) {
+            total += stripe.encoded.load(std::memory_order_relaxed);
+        }
+        return total;
+    }
+
+    uint64_t symmetricPreparedBuildDistanceCalls() const {
+        uint64_t total = 0;
+        for (const auto &stripe : build_distance_counter_stripes_) {
+            total += stripe.symmetric_prepared.load(std::memory_order_relaxed);
+        }
+        return total;
+    }
+
+    size_t buildDistanceCounterStripeIndex() const {
+#ifdef _OPENMP
+        const int thread_id = omp_get_thread_num();
+        if (thread_id >= 0)
+            return static_cast<size_t>(thread_id) % kBuildDistanceCounterStripes;
+#endif
+        static thread_local const size_t stripe =
+            std::hash<std::thread::id>{}(std::this_thread::get_id()) %
+            kBuildDistanceCounterStripes;
+        return stripe;
+    }
+
+    void addBuildDistanceCounts(
+        uint64_t asymmetric_count,
+        uint64_t encoded_count,
+        uint64_t symmetric_prepared_count) const {
+        if ((asymmetric_count | encoded_count | symmetric_prepared_count) == 0)
+            return;
+        BuildDistanceCounterStripe &stripe =
+            build_distance_counter_stripes_[buildDistanceCounterStripeIndex()];
+        if (asymmetric_count != 0) {
+            stripe.asymmetric.fetch_add(asymmetric_count, std::memory_order_relaxed);
+        }
+        if (encoded_count != 0) {
+            stripe.encoded.fetch_add(encoded_count, std::memory_order_relaxed);
+        }
+        if (symmetric_prepared_count != 0) {
+            stripe.symmetric_prepared.fetch_add(
+                symmetric_prepared_count, std::memory_order_relaxed);
+        }
+    }
+
+    dist_t queryToInternalBuildDistance(
+        const void *data_point,
+        tableint database_id,
+        const void *asymmetric_query_context,
+        const void *symmetric_query_context) const {
+        if (asymmetric_query_context != nullptr) {
+            addBuildDistanceCounts(1, 0, 0);
+            return space_->query_distance(
+                asymmetric_query_context, getDataByInternalId(database_id));
+        }
+        if (symmetric_query_context != nullptr) {
+            addBuildDistanceCounts(0, 1, 1);
+            return space_->symmetric_build_distance_prepared(
+                symmetric_query_context, getDataByInternalId(database_id));
+        }
+        addBuildDistanceCounts(0, 1, 0);
+        return fstdistfunc_(data_point, getDataByInternalId(database_id), dist_func_param_);
     }
 
     dist_t asymmetricDistanceByInternalId(tableint query_id, tableint database_id) const {
@@ -632,21 +721,39 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         const void *raw_query = asymmetric_build_raw_by_label_(getExternalLabel(query_id));
         if (raw_query == nullptr)
             throw std::runtime_error("asymmetric construction raw-vector provider returned null");
-        ++asymmetric_build_distance_calls_;
+        addBuildDistanceCounts(1, 0, 0);
         return space_->asymmetric_build_distance(raw_query, getDataByInternalId(database_id));
     }
 
     dist_t buildDistanceBetweenInternalIds(tableint query_id, tableint database_id) const {
         if (asymmetric_build_enabled_)
             return asymmetricDistanceByInternalId(query_id, database_id);
-        ++encoded_build_distance_calls_;
+        if (symmetric_build_prepared_enabled_) {
+            const void *query_context =
+                space_->prepare_symmetric_build_query(getDataByInternalId(query_id));
+            dist_t distance{};
+            try {
+                distance = space_->symmetric_build_distance_prepared(
+                    query_context, getDataByInternalId(database_id));
+            } catch (...) {
+                space_->release_symmetric_build_query(query_context);
+                throw;
+            }
+            space_->release_symmetric_build_query(query_context);
+            addBuildDistanceCounts(0, 1, 1);
+            return distance;
+        }
+        addBuildDistanceCounts(0, 1, 0);
         return fstdistfunc_(getDataByInternalId(query_id),
                            getDataByInternalId(database_id), dist_func_param_);
     }
 
     std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
     searchBaseLayer(tableint ep_id, const void *data_point, int layer,
-                    const void *asymmetric_query_context = nullptr) {
+                    const void *asymmetric_query_context = nullptr,
+                    const void *symmetric_query_context = nullptr) {
+        if (asymmetric_query_context != nullptr && symmetric_query_context != nullptr)
+            throw std::runtime_error("construction received both asymmetric and symmetric query contexts");
         VisitedList *vl = visited_list_pool_->getFreeVisitedList();
         vl_type *visited_array = vl->mass;
         vl_type visited_array_tag = vl->curV;
@@ -656,11 +763,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
         dist_t lowerBound;
         if (!isMarkedDeleted(ep_id)) {
-            dist_t dist = asymmetric_query_context
-                ? space_->query_distance(asymmetric_query_context, getDataByInternalId(ep_id))
-                : fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
-            if (asymmetric_query_context) ++asymmetric_build_distance_calls_;
-            else ++encoded_build_distance_calls_;
+            dist_t dist = queryToInternalBuildDistance(
+                data_point, ep_id, asymmetric_query_context, symmetric_query_context);
             top_candidates.emplace(dist, ep_id);
             lowerBound = dist;
             candidateSet.emplace(-dist, ep_id);
@@ -701,7 +805,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             }
 #endif
 
-            if (asymmetric_query_context && size > 0) {
+            if ((asymmetric_query_context || symmetric_query_context) && size > 0) {
                 thread_local std::vector<tableint> build_candidate_ids;
                 thread_local std::vector<const void *> build_candidate_data;
                 thread_local std::vector<dist_t> build_candidate_distances;
@@ -727,15 +831,27 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 }
                 if (!build_candidate_data.empty()) {
                     build_candidate_distances.resize(build_candidate_data.size());
-                    space_->query_distance_batch_k1(
-                        asymmetric_query_context,
-                        build_candidate_data.data(),
-                        build_candidate_data.size(),
-                        build_candidate_distances.data(),
-                        2);
-                    asymmetric_build_distance_calls_.fetch_add(
-                        static_cast<uint64_t>(build_candidate_data.size()),
-                        std::memory_order_relaxed);
+                    if (asymmetric_query_context) {
+                        space_->query_distance_batch_k1(
+                            asymmetric_query_context,
+                            build_candidate_data.data(),
+                            build_candidate_data.size(),
+                            build_candidate_distances.data(),
+                            2);
+                        addBuildDistanceCounts(
+                            static_cast<uint64_t>(build_candidate_data.size()), 0, 0);
+                    } else {
+                        space_->symmetric_build_distance_batch(
+                            symmetric_query_context,
+                            build_candidate_data.data(),
+                            build_candidate_data.size(),
+                            build_candidate_distances.data(),
+                            2);
+                        addBuildDistanceCounts(
+                            0,
+                            static_cast<uint64_t>(build_candidate_data.size()),
+                            static_cast<uint64_t>(build_candidate_data.size()));
+                    }
                 }
                 for (size_t j = 0; j < build_candidate_ids.size(); ++j) {
                     const tableint candidate_id = build_candidate_ids[j];
@@ -771,7 +887,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     char *currObj1 = (getDataByInternalId(candidate_id));
 
                     dist_t dist1 = fstdistfunc_(data_point, currObj1, dist_func_param_);
-                    ++encoded_build_distance_calls_;
+                    addBuildDistanceCounts(0, 1, 0);
                     if (top_candidates.size() < ef_construction_ || lowerBound > dist1) {
                         candidateSet.emplace(-dist1, candidate_id);
 #ifdef USE_SSE
@@ -1321,12 +1437,36 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             queue_closest.pop();
             bool good = true;
 
-            for (std::pair<dist_t, tableint> second_pair : return_list) {
-                dist_t curdist = buildDistanceBetweenInternalIds(
-                    curent_pair.second, second_pair.second);
-                if (curdist < dist_to_query) {
-                    good = false;
-                    break;
+            if (symmetric_build_prepared_enabled_ && !asymmetric_build_enabled_ &&
+                !return_list.empty()) {
+                const void *query_context =
+                    space_->prepare_symmetric_build_query(
+                        getDataByInternalId(curent_pair.second));
+                uint64_t local_distance_count = 0;
+                try {
+                    for (const auto &second_pair : return_list) {
+                        dist_t curdist = space_->symmetric_build_distance_prepared(
+                            query_context, getDataByInternalId(second_pair.second));
+                        ++local_distance_count;
+                        if (curdist < dist_to_query) {
+                            good = false;
+                            break;
+                        }
+                    }
+                } catch (...) {
+                    space_->release_symmetric_build_query(query_context);
+                    throw;
+                }
+                space_->release_symmetric_build_query(query_context);
+                addBuildDistanceCounts(0, local_distance_count, local_distance_count);
+            } else {
+                for (std::pair<dist_t, tableint> second_pair : return_list) {
+                    dist_t curdist = buildDistanceBetweenInternalIds(
+                        curent_pair.second, second_pair.second);
+                    if (curdist < dist_to_query) {
+                        good = false;
+                        break;
+                    }
                 }
             }
             if (good) {
@@ -1445,15 +1585,54 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     setListCount(ll_other, sz_link_list_other + 1);
                 } else {
                     // finding the "weakest" element to replace it with the new one
-                    dist_t d_max = buildDistanceBetweenInternalIds(
-                        selectedNeighbors[idx], cur_c);
                     // Heuristic:
                     std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidates;
-                    candidates.emplace(d_max, cur_c);
+                    if (symmetric_build_prepared_enabled_ && !asymmetric_build_enabled_) {
+                        thread_local std::vector<tableint> reconnect_ids;
+                        thread_local std::vector<const void *> reconnect_data;
+                        thread_local std::vector<dist_t> reconnect_distances;
+                        reconnect_ids.clear();
+                        reconnect_data.clear();
+                        reconnect_distances.clear();
+                        reconnect_ids.reserve(sz_link_list_other + 1U);
+                        reconnect_data.reserve(sz_link_list_other + 1U);
+                        reconnect_ids.push_back(cur_c);
+                        reconnect_data.push_back(getDataByInternalId(cur_c));
+                        for (size_t j = 0; j < sz_link_list_other; j++) {
+                            reconnect_ids.push_back(data[j]);
+                            reconnect_data.push_back(getDataByInternalId(data[j]));
+                        }
+                        reconnect_distances.resize(reconnect_data.size());
+                        const void *query_context = space_->prepare_symmetric_build_query(
+                            getDataByInternalId(selectedNeighbors[idx]));
+                        try {
+                            space_->symmetric_build_distance_batch(
+                                query_context,
+                                reconnect_data.data(),
+                                reconnect_data.size(),
+                                reconnect_distances.data(),
+                                2);
+                        } catch (...) {
+                            space_->release_symmetric_build_query(query_context);
+                            throw;
+                        }
+                        space_->release_symmetric_build_query(query_context);
+                        addBuildDistanceCounts(
+                            0,
+                            static_cast<uint64_t>(reconnect_data.size()),
+                            static_cast<uint64_t>(reconnect_data.size()));
+                        for (size_t j = 0; j < reconnect_ids.size(); ++j) {
+                            candidates.emplace(reconnect_distances[j], reconnect_ids[j]);
+                        }
+                    } else {
+                        dist_t d_max = buildDistanceBetweenInternalIds(
+                            selectedNeighbors[idx], cur_c);
+                        candidates.emplace(d_max, cur_c);
 
-                    for (size_t j = 0; j < sz_link_list_other; j++) {
-                        candidates.emplace(
-                            buildDistanceBetweenInternalIds(selectedNeighbors[idx], data[j]), data[j]);
+                        for (size_t j = 0; j < sz_link_list_other; j++) {
+                            candidates.emplace(
+                                buildDistanceBetweenInternalIds(selectedNeighbors[idx], data[j]), data[j]);
+                        }
                     }
 
                     getNeighborsByHeuristic2(candidates, Mcurmax);
@@ -1816,7 +1995,18 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         // lock all operations with element by label
         std::unique_lock <std::mutex> lock_label(getLabelOpMutex(label));
         if (!replace_deleted) {
-            addPoint(data_point, label, -1);
+            if (symmetric_build_prepared_enabled_) {
+                const void *query_context = space_->prepare_symmetric_build_query(data_point);
+                try {
+                    addPoint(data_point, label, -1, nullptr, query_context);
+                } catch (...) {
+                    space_->release_symmetric_build_query(query_context);
+                    throw;
+                }
+                space_->release_symmetric_build_query(query_context);
+            } else {
+                addPoint(data_point, label, -1);
+            }
             return;
         }
         // check if there is vacant place
@@ -1857,14 +2047,14 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         if (encoded_data_point == nullptr || raw_data_point == nullptr)
             throw std::invalid_argument("asymmetric construction received null data");
         std::unique_lock<std::mutex> lock_label(getLabelOpMutex(label));
-        const void *query_context = space_->prepare_query(raw_data_point);
+        const void *query_context = space_->prepare_asymmetric_build_query(raw_data_point);
         try {
             addPoint(encoded_data_point, label, -1, query_context);
         } catch (...) {
-            space_->release_query(query_context);
+            space_->release_asymmetric_build_query(query_context);
             throw;
         }
-        space_->release_query(query_context);
+        space_->release_asymmetric_build_query(query_context);
     }
 
 
@@ -2033,7 +2223,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         const void *data_point,
         labeltype label,
         int level,
-        const void *asymmetric_query_context = nullptr) {
+        const void *asymmetric_query_context = nullptr,
+        const void *symmetric_query_context = nullptr) {
+        if (asymmetric_query_context != nullptr && symmetric_query_context != nullptr)
+            throw std::runtime_error("construction received both asymmetric and symmetric query contexts");
         if (graph_turbo_topology_frozen_)
             throw std::runtime_error("Graph-Turbo route topology is frozen; insertion is disabled");
         tableint cur_c = 0;
@@ -2098,11 +2291,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
         if ((signed)currObj != -1) {
             if (curlevel < maxlevelcopy) {
-                dist_t curdist = asymmetric_query_context
-                    ? space_->query_distance(asymmetric_query_context, getDataByInternalId(currObj))
-                    : fstdistfunc_(data_point, getDataByInternalId(currObj), dist_func_param_);
-                if (asymmetric_query_context) ++asymmetric_build_distance_calls_;
-                else ++encoded_build_distance_calls_;
+                dist_t curdist = queryToInternalBuildDistance(
+                    data_point, currObj, asymmetric_query_context, symmetric_query_context);
                 for (int level = maxlevelcopy; level > curlevel; level--) {
                     bool changed = true;
                     while (changed) {
@@ -2117,11 +2307,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                             tableint cand = datal[i];
                             if (cand < 0 || cand > max_elements_)
                                 throw std::runtime_error("cand error");
-                            dist_t d = asymmetric_query_context
-                                ? space_->query_distance(asymmetric_query_context, getDataByInternalId(cand))
-                                : fstdistfunc_(data_point, getDataByInternalId(cand), dist_func_param_);
-                            if (asymmetric_query_context) ++asymmetric_build_distance_calls_;
-                            else ++encoded_build_distance_calls_;
+                            dist_t d = queryToInternalBuildDistance(
+                                data_point, cand, asymmetric_query_context, symmetric_query_context);
                             if (d < curdist) {
                                 curdist = d;
                                 currObj = cand;
@@ -2138,13 +2325,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     throw std::runtime_error("Level error");
 
                 std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates = searchBaseLayer(
-                        currObj, data_point, level, asymmetric_query_context);
+                        currObj, data_point, level,
+                        asymmetric_query_context, symmetric_query_context);
                 if (epDeleted) {
-                    const dist_t entry_distance = asymmetric_query_context
-                        ? space_->query_distance(asymmetric_query_context, getDataByInternalId(enterpoint_copy))
-                        : fstdistfunc_(data_point, getDataByInternalId(enterpoint_copy), dist_func_param_);
-                    if (asymmetric_query_context) ++asymmetric_build_distance_calls_;
-                    else ++encoded_build_distance_calls_;
+                    const dist_t entry_distance = queryToInternalBuildDistance(
+                        data_point, enterpoint_copy,
+                        asymmetric_query_context, symmetric_query_context);
                     top_candidates.emplace(entry_distance, enterpoint_copy);
                     if (top_candidates.size() > ef_construction_)
                         top_candidates.pop();

@@ -420,13 +420,75 @@ class SpaceInterface {
     // Construction-only asymmetric distance: an uncompressed query against an
     // encoded database payload. Spaces that support quantized construction
     // override this without changing the normal encoded-to-encoded DISTFUNC.
+    virtual const void *prepare_asymmetric_build_query(const void *raw_query) {
+        return prepare_query(raw_query);
+    }
+
+    virtual MTYPE asymmetric_build_distance_prepared(
+        const void *prepared_query,
+        const void *encoded_database) {
+        return query_distance(prepared_query, encoded_database);
+    }
+
+    virtual void release_asymmetric_build_query(const void *prepared_query) {
+        release_query(prepared_query);
+    }
+
     virtual MTYPE asymmetric_build_distance(
         const void *raw_query,
         const void *encoded_database) {
-        const void *prepared = prepare_query(raw_query);
-        const MTYPE distance = query_distance(prepared, encoded_database);
-        release_query(prepared);
+        const void *prepared = prepare_asymmetric_build_query(raw_query);
+        MTYPE distance{};
+        try {
+            distance = asymmetric_build_distance_prepared(prepared, encoded_database);
+        } catch (...) {
+            release_asymmetric_build_query(prepared);
+            throw;
+        }
+        release_asymmetric_build_query(prepared);
         return distance;
+    }
+
+    // Construction-only symmetric prepared distance: an encoded query against
+    // encoded database payloads. Spaces can override this to cache query-side
+    // decoding/header work during HNSW construction without changing DISTFUNC.
+    virtual bool supports_symmetric_build_prepared() const {
+        return false;
+    }
+
+    virtual const void *prepare_symmetric_build_query(const void *encoded_query) {
+        (void) encoded_query;
+        throw std::runtime_error("symmetric prepared build distance is unsupported");
+    }
+
+    virtual MTYPE symmetric_build_distance_prepared(
+        const void *prepared_query,
+        const void *encoded_database) {
+        (void) prepared_query;
+        (void) encoded_database;
+        throw std::runtime_error("symmetric prepared build distance is unsupported");
+    }
+
+    virtual void symmetric_build_distance_batch(
+        const void *prepared_query,
+        const void *const *data_points,
+        size_t count,
+        MTYPE *distances,
+        size_t prefetch_distance) {
+        for (size_t i = 0; i < count; ++i) {
+            const size_t pf = i + prefetch_distance;
+            if (pf < count) {
+#if defined(__GNUC__) || defined(__clang__)
+                __builtin_prefetch(data_points[pf], 0, 1);
+#endif
+            }
+            distances[i] = symmetric_build_distance_prepared(
+                prepared_query, data_points[i]);
+        }
+    }
+
+    virtual void release_symmetric_build_query(const void *prepared_query) {
+        (void) prepared_query;
     }
 
     virtual MTYPE result_distance(const void *prepared_query, const void *data_point) {

@@ -416,6 +416,10 @@ class RaBitQHierarchicalNSW {
         index_.clearAsymmetricBuildRawProvider();
     }
 
+    void setSymmetricBuildPrepared(bool enabled) {
+        index_.setSymmetricBuildPrepared(enabled);
+    }
+
     void addPointAsymmetric(
         const float *raw_vector,
         labeltype label,
@@ -437,6 +441,10 @@ class RaBitQHierarchicalNSW {
 
     uint64_t encodedBuildDistanceCalls() const {
         return index_.encodedBuildDistanceCalls();
+    }
+
+    uint64_t symmetricPreparedBuildDistanceCalls() const {
+        return index_.symmetricPreparedBuildDistanceCalls();
     }
 
     void importGraphFromFloatIndexWithPayloads(
@@ -597,7 +605,7 @@ class RaBitQHierarchicalNSW {
 
                 size_t written = 0;
                 const size_t record_size = residual_record.size();
-                const off_t base_offset = static_cast<off_t>(label * record_size);
+                const off_t base_offset = static_cast<off_t>(source_internal_id * record_size);
                 while (written < record_size) {
                     const ssize_t n = ::pwrite(
                         residual_fd,

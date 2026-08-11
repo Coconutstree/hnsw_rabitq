@@ -103,6 +103,10 @@ if(HNSWLIB_EXAMPLES)
 
     add_executable(rabitq_hnsw_smoke_test tests/cpp/rabitq_hnsw_smoke.cpp)
     target_link_libraries(rabitq_hnsw_smoke_test hnswlib)
+    target_compile_definitions(rabitq_hnsw_smoke_test PRIVATE HNSWLIB_RABITQ_TESTING)
+    if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(rabitq_hnsw_smoke_test PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME rabitq_hnsw_smoke COMMAND rabitq_hnsw_smoke_test)
 
     add_executable(rabitq_distance_accuracy tests/cpp/rabitq_distance_accuracy.cpp)
@@ -111,7 +115,15 @@ if(HNSWLIB_EXAMPLES)
     add_executable(rabitq_turbo_benchmark tests/cpp/rabitq_turbo_benchmark.cpp)
     target_link_libraries(rabitq_turbo_benchmark hnswlib)
 
+    add_executable(distance_kernel_benchmark tests/cpp/distance_kernel_benchmark.cpp)
+    target_link_libraries(distance_kernel_benchmark hnswlib)
+
     add_executable(main tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
     target_link_libraries(main hnswlib)
+
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/float32_build_baseline.cpp")
+      add_executable(float32_build_baseline tests/cpp/float32_build_baseline.cpp)
+      target_link_libraries(float32_build_baseline hnswlib)
+    endif()
 
 endif()

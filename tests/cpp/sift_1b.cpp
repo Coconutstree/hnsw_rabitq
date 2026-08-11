@@ -1573,7 +1573,7 @@ void sift_test1B() {
         efConstruction,
         M);
     const string default_index_dir = paper_prune_profile
-        ? "/home/lyx_20251022/hnsw_rabitq/build/indexes/dbpedia_ablation"
+        ? "build/indexes/dbpedia_ablation"
         : (residual_bits == 8
             ? "build/trueK256_train10m_residual8"
             : "build/trueK256_train10m");
@@ -1816,7 +1816,9 @@ void sift_test1B() {
                  << " build_query=" << (asymmetric4_build ? "float32" : "primary4")
                  << " build_database=primary4"
                  << " build_residual_used=0"
-                 << " build_float32_retained=0\n";
+                 << " build_float32_retained=0"
+                 << " symmetric_build_prepared=" << (symmetric4_build ? 1 : 0)
+                 << "\n";
             const size_t full_record_size = appr_alg->space().get_full_data_size();
             const size_t compact_record_size = appr_alg->space().get_data_size();
             const string payload_path = string(path_index) + ".payload.tmp";
@@ -1851,6 +1853,8 @@ void sift_test1B() {
                     [&base_vectors](labeltype label) -> const void * {
                         return base_vectors.vector(static_cast<size_t>(label));
                     });
+            } else if (symmetric4_build) {
+                appr_alg->setSymmetricBuildPrepared(true);
             }
             StopW encode_timer;
             double encode_cpu_us = 0.0;
@@ -1958,12 +1962,15 @@ void sift_test1B() {
                      << " us=" << graph_build_us
                      << " kips=" << kips_from_count_us(vecsize, graph_build_us)
                      << " asymmetric_distance_calls=" << appr_alg->asymmetricBuildDistanceCalls()
-                     << " encoded_distance_calls=" << appr_alg->encodedBuildDistanceCalls() << "\n";
+                     << " encoded_distance_calls=" << appr_alg->encodedBuildDistanceCalls()
+                     << " symmetric_prepared_distance_calls="
+                     << appr_alg->symmetricPreparedBuildDistanceCalls() << "\n";
                 if (asymmetric4_build && appr_alg->encodedBuildDistanceCalls() != 0)
                     throw runtime_error("asymmetric construction used encoded-to-encoded distance");
                 if (symmetric4_build &&
                     (appr_alg->asymmetricBuildDistanceCalls() != 0 ||
-                     appr_alg->encodedBuildDistanceCalls() == 0))
+                     appr_alg->encodedBuildDistanceCalls() == 0 ||
+                     appr_alg->symmetricPreparedBuildDistanceCalls() == 0))
                     throw runtime_error("symmetric construction did not exclusively use encoded distance");
                 appr_alg->index().saveIndex(shared_graph_path);
                 save_build_metrics(
@@ -1984,6 +1991,8 @@ void sift_test1B() {
                  << " count=" << vecsize << "\n";
             if (asymmetric4_build && !reuse_quantized_graph)
                 appr_alg->clearAsymmetricBuildRawProvider();
+            if (symmetric4_build && !reuse_quantized_graph)
+                appr_alg->setSymmetricBuildPrepared(false);
             std::remove(payload_path.c_str());
             StopW save_index_timer;
             appr_alg->saveIndex(path_index);
