@@ -234,6 +234,7 @@ class ContiguousRouteCodeStorage final : public RouteCodeStorage {
 struct RaBitQSearchMetrics {
     size_t visited_nodes{0};
     size_t distance_computations{0};
+    size_t hops{0};
     size_t active_centroids{0};
     double prepare_query_us{0.0};
     double traversal_us{0.0};

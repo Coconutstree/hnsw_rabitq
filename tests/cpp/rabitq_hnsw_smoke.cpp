@@ -7,10 +7,12 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "../../hnswlib/hnswlib.h"
 #include "../../hnswlib/rabitq_hnsw.h"
+#include "../../hnswlib/rabitq_vamana.h"
 
 static void test_residual_pack_roundtrip() {
     const std::vector<size_t> bits_list = {1, 2, 4, 8, 16};
@@ -384,6 +386,126 @@ static void test_symmetric_four_bit_construction() {
     assert(result.top().second == 0);
 }
 
+static void test_vamana_four_bit_symmetric_build() {
+    constexpr size_t dim = 8;
+    constexpr size_t count = 48;
+    std::vector<float> data(count * dim, 0.0f);
+    for (size_t i = 0; i < count; ++i) {
+        for (size_t d = 0; d < dim; ++d) {
+            data[i * dim + d] =
+                std::sin(static_cast<float>((i + 1U) * (d + 3U)) * 0.13f) +
+                std::cos(static_cast<float>((i + 5U) * (d + 1U)) * 0.07f);
+        }
+    }
+
+    hnswlib::RaBitQVamanaIndex index(dim, count, 1, 0, false);
+    index.space().setIdentityRotation();
+    std::vector<std::vector<char>> encoded(count);
+    for (size_t i = 0; i < count; ++i) {
+        encoded[i] = index.space().encodeVector(data.data() + i * dim);
+        index.addPointEncodedSymmetric(encoded[i].data(), i);
+    }
+
+    for (size_t lhs = 0; lhs < 8; ++lhs) {
+        const void *prepared = index.space().prepare_symmetric_build_query(encoded[lhs].data());
+        hnswlib::VamanaIndex::BuildEvaluator build_eval(
+            index.space(), index.index(), static_cast<hnswlib::vamana::NodeId>(lhs));
+        for (size_t rhs = 0; rhs < 8; ++rhs) {
+            const float old_distance = index.space().symmetric_build_distance_prepared(
+                prepared, encoded[rhs].data());
+            const float new_distance = build_eval.distance(
+                static_cast<hnswlib::vamana::NodeId>(rhs));
+            assert(std::memcmp(&old_distance, &new_distance, sizeof(float)) == 0);
+        }
+        index.space().release_symmetric_build_query(prepared);
+    }
+
+    hnswlib::VamanaIndex::QueryEvaluator query_eval(index.space(), index.index(), data.data());
+    const void *old_query = index.space().prepare_query(data.data());
+    for (size_t rhs = 0; rhs < 8; ++rhs) {
+        const float old_distance = index.space().query_distance(old_query, encoded[rhs].data());
+        const float new_distance = query_eval.distance(
+            static_cast<hnswlib::vamana::NodeId>(rhs));
+        assert(std::memcmp(&old_distance, &new_distance, sizeof(float)) == 0);
+    }
+    index.space().release_query(old_query);
+
+    const auto &graph = index.index().graph();
+    assert(graph.size() == count);
+    for (size_t id = 0; id < graph.size(); ++id) {
+        assert(graph[id].size() <= hnswlib::VamanaIndex::kDefaultR);
+        std::unordered_set<hnswlib::vamana::NodeId> seen;
+        for (hnswlib::vamana::NodeId neighbor : graph[id]) {
+            assert(neighbor != id);
+            assert(neighbor < graph.size());
+            assert(seen.insert(neighbor).second);
+        }
+    }
+
+    hnswlib::RaBitQVamanaIndex bulk_index(dim, count, 1, 0, false);
+    bulk_index.space().setIdentityRotation();
+    std::vector<char> compact_payloads(count * bulk_index.space().get_data_size(), 0);
+    for (size_t i = 0; i < count; ++i) {
+        std::memcpy(
+            compact_payloads.data() + i * bulk_index.space().get_data_size(),
+            encoded[i].data(),
+            bulk_index.space().get_data_size());
+    }
+    bulk_index.buildEncodedSymmetricBulk(compact_payloads.data(), count, 12);
+    const auto &bulk_graph = bulk_index.index().graph();
+    assert(bulk_graph.size() == count);
+    for (size_t id = 0; id < bulk_graph.size(); ++id) {
+        assert(bulk_graph[id].size() <= hnswlib::VamanaIndex::kDefaultR);
+        std::unordered_set<hnswlib::vamana::NodeId> seen;
+        for (hnswlib::vamana::NodeId neighbor : bulk_graph[id]) {
+            assert(neighbor != id);
+            assert(neighbor < bulk_graph.size());
+            assert(seen.insert(neighbor).second);
+        }
+    }
+    bulk_index.refineGraphSymmetric(1, 12);
+    const auto &refined_graph = bulk_index.index().graph();
+    assert(refined_graph.size() == count);
+    for (size_t id = 0; id < refined_graph.size(); ++id) {
+        assert(refined_graph[id].size() <= hnswlib::VamanaIndex::kDefaultR);
+        std::unordered_set<hnswlib::vamana::NodeId> seen;
+        for (hnswlib::vamana::NodeId neighbor : refined_graph[id]) {
+            assert(neighbor != id);
+            assert(neighbor < refined_graph.size());
+            assert(seen.insert(neighbor).second);
+        }
+    }
+    bulk_index.setLSearch(20);
+    hnswlib::RaBitQSearchMetrics bulk_metrics;
+    auto bulk_result = bulk_index.searchKnnPrimaryOnly(data.data(), 4, nullptr, &bulk_metrics);
+    assert(!bulk_result.empty());
+    assert(std::isfinite(bulk_result.top().first));
+    assert(bulk_metrics.visited_nodes > 0);
+    assert(bulk_metrics.distance_computations > 0);
+
+    index.setLSearch(20);
+    hnswlib::RaBitQSearchMetrics metrics;
+    auto result = index.searchKnnPrimaryOnly(data.data(), 4, nullptr, &metrics);
+    assert(!result.empty());
+    assert(std::isfinite(result.top().first));
+    assert(metrics.visited_nodes > 0);
+    assert(metrics.distance_computations > 0);
+
+    const char *tmp_index = "/tmp/rabitq_vamana_smoke.index";
+    const char *tmp_state = "/tmp/rabitq_vamana_smoke.index.rabitq";
+    std::remove(tmp_index);
+    std::remove(tmp_state);
+    index.saveIndex(tmp_index);
+    hnswlib::RaBitQVamanaIndex loaded(dim, count, 1, 0, false);
+    loaded.loadIndex(tmp_index, count);
+    loaded.setLSearch(20);
+    auto loaded_result = loaded.searchKnnPrimaryOnly(data.data(), 4);
+    assert(!loaded_result.empty());
+    assert(loaded.index().degreeStats().max_degree <= hnswlib::VamanaIndex::kDefaultR);
+    std::remove(tmp_index);
+    std::remove(tmp_state);
+}
+
 static void test_symmetric_simd_matches_scalar_reference() {
     constexpr size_t dim = 1536;
     constexpr size_t count = 10;
@@ -479,6 +601,7 @@ static void test_turbo128_layout() {
 int main() {
     test_asymmetric_four_bit_construction();
     test_symmetric_four_bit_construction();
+    test_vamana_four_bit_symmetric_build();
     test_symmetric_simd_matches_scalar_reference();
     test_shared_graph_residual_internal_id_mapping();
     assert(!hnswlib::HierarchicalNSW<float>::baselineWouldAccept(1.0f, 1.0f, 10, 10));

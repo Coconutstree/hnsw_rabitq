@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -33,6 +34,7 @@
 
 #include "../../hnswlib/hnswlib.h"
 #include "../../hnswlib/rabitq_hnsw.h"
+#include "../../hnswlib/rabitq_vamana.h"
 
 using namespace std;
 using namespace hnswlib;
@@ -91,12 +93,15 @@ const char *query_mode_name(QueryMode mode) {
 }
 
 QueryMode parse_query_mode(const string &value) {
+    if (value == "primary4_only" || value == "primary_only") {
+        return QueryMode::PrimaryOnly;
+    }
     if (value == "residual4" || value == "residual8" ||
         value == "primary4_residual4" || value == "primary4_residual8") {
         return QueryMode::ResidualRerank;
     }
     throw runtime_error(
-        "RABITQ_RERANK_MODE only supports residual4/residual8");
+        "RABITQ_RERANK_MODE only supports primary4_only/residual4/residual8");
 }
 
 QueryMode configured_query_mode() {
@@ -1338,6 +1343,929 @@ static void test_vs_recall(
     }
 }
 
+struct VamanaSearchReport {
+    float recall{0.0f};
+    double total_us_per_query{0.0};
+    double qps{0.0};
+    double p50_us{0.0};
+    double p95_us{0.0};
+    double p99_us{0.0};
+    double avg_visited_nodes{0.0};
+    double avg_distance_computations{0.0};
+    double avg_hops{0.0};
+    double avg_active_centroids{0.0};
+    double traversal_us_per_query{0.0};
+    double rerank_us_per_query{0.0};
+    double prefetch_issued_per_query{0.0};
+    size_t rerank_candidates{0};
+    double avg_residual_rerank_count{0.0};
+    double paper_checked_per_query{0.0};
+    double paper_would_prune_per_query{0.0};
+    double paper_not_pruned_per_query{0.0};
+    double paper_full_saved_per_query{0.0};
+    double paper_msb_kernel_calls_per_query{0.0};
+    double paper_remaining_kernel_calls_per_query{0.0};
+    double paper_short_time_us_per_query{0.0};
+    double paper_remaining_time_us_per_query{0.0};
+    long long cache_misses{-1};
+    long long dtlb_load_misses{-1};
+};
+
+struct VamanaStorageSummary {
+    size_t index_bytes{0};
+    size_t auxiliary_bytes{0};
+    size_t residual_bytes{0};
+    size_t total_bytes{0};
+    double index_mb{0.0};
+    double auxiliary_mb{0.0};
+    double residual_mb{0.0};
+    double total_mb{0.0};
+};
+
+static VamanaStorageSummary vamana_storage_summary(const string &index_path) {
+    const double mb = 1000000.0;
+    VamanaStorageSummary summary;
+    summary.index_bytes = file_size_bytes(index_path);
+    summary.auxiliary_bytes = file_size_bytes(quantizer_state_path(index_path));
+    summary.residual_bytes = file_size_bytes(residual_state_path(index_path));
+    summary.total_bytes =
+        summary.index_bytes + summary.auxiliary_bytes + summary.residual_bytes;
+    summary.index_mb = summary.index_bytes / mb;
+    summary.auxiliary_mb = summary.auxiliary_bytes / mb;
+    summary.residual_mb = summary.residual_bytes / mb;
+    summary.total_mb = summary.total_bytes / mb;
+    return summary;
+}
+
+static void print_vamana_run_config(
+    const char *dataset_name,
+    size_t vecsize,
+    size_t qsize,
+    size_t vecdim,
+    int centroid_count,
+    int random_seed,
+    size_t residual_bits,
+    size_t residual_block_size,
+    const char *residual_scale_mode,
+    const char *residual_scale_storage,
+    QueryMode query_mode,
+    size_t rerank_candidates,
+    size_t refine_passes,
+    bool paper_prune_active,
+    float paper_epsilon0,
+    const char *path_index,
+    const char *path_data,
+    const char *path_q,
+    const char *path_gt) {
+    cout << "Run config:\n";
+    cout << "  graph=Vamana\n";
+    cout << "  payload=ExRaBitQ4\n";
+    cout << "  build_distance=ExRaBitQ4_symmetric\n";
+    cout << "  query_distance=Float32_to_ExRaBitQ4\n";
+    cout << "  dataset=" << dataset_name << "\n";
+    cout << "  base_count=" << vecsize << "\n";
+    cout << "  query_count=" << qsize << "\n";
+    cout << "  dimension=" << vecdim << "\n";
+    cout << "  R=" << hnswlib::VamanaIndex::kDefaultR
+         << " L_build=" << hnswlib::VamanaIndex::kDefaultLBuild
+         << " alpha=" << hnswlib::VamanaIndex::kDefaultAlpha
+         << " beam_width=" << hnswlib::VamanaIndex::kDefaultBeamWidth << "\n";
+    cout << "  quantizer=4-bit ExRaBitQ centroid_count=" << centroid_count
+         << " random_seed=" << random_seed
+         << " code_layout=sequential\n";
+    cout << "  residual_bits=" << residual_bits
+         << " residual_block_size=" << residual_block_size
+         << " residual_scale_mode=" << residual_scale_mode
+         << " residual_scale_storage=" << residual_scale_storage
+         << " residual_rerank=" << (query_mode == QueryMode::ResidualRerank ? 1 : 0)
+         << " rerank_candidates=" << rerank_candidates << "\n";
+    cout << "  vamana_refine_passes=" << refine_passes << "\n";
+    cout << "  vamana_paper_prune_active=" << (paper_prune_active ? 1 : 0)
+         << " paper_epsilon0=" << paper_epsilon0 << "\n";
+    cout << "  L_search_sweep=10..30,40..100(step10),140..adaptive_until_recall_0.995(step40)\n";
+    cout << "  base_path=" << path_data << "\n";
+    cout << "  query_path=" << path_q << "\n";
+    cout << "  gt_path=" << path_gt << "\n";
+    cout << "  index_path=" << path_index << "\n";
+}
+
+static void print_vamana_index_storage(
+    const string &index_path,
+    const hnswlib::RaBitQVamanaIndex &index) {
+    const double mb = 1000000.0;
+    const size_t graph_bytes = index.graphStorageBytes();
+    const size_t payload_bytes = index.payloadStorageBytes();
+    const size_t paper_sidecar_bytes = index.paperPruneSidecarBytes();
+    const size_t quantizer_bytes = file_size_bytes(quantizer_state_path(index_path));
+    const size_t residual_bytes = file_size_bytes(residual_state_path(index_path));
+    const VamanaStorageSummary storage = vamana_storage_summary(index_path);
+    cout << "index_storage"
+         << " graph=Vamana"
+         << " payload=ExRaBitQ4"
+         << " graph_size_MB=" << graph_bytes / mb
+         << " payload_size_MB=" << payload_bytes / mb
+         << " paper_msb_sidecar_MB=" << paper_sidecar_bytes / mb
+         << " quantizer_size_MB=" << quantizer_bytes / mb
+         << " residual_size_MB=" << residual_bytes / mb
+         << " total_index_size_MB=" << storage.total_mb
+         << " total_bytes=" << storage.total_bytes
+         << "\n";
+    cout << "Index storage size: " << storage.total_mb << " MB"
+         << " (index=" << storage.index_mb << " MB"
+         << ", auxiliary=" << storage.auxiliary_mb << " MB"
+         << ", residual=" << storage.residual_mb << " MB"
+         << ", total_bytes=" << storage.total_bytes << ")\n";
+}
+
+static VamanaSearchReport test_approx_vamana(
+    float *massQ,
+    size_t qsize,
+    hnswlib::RaBitQVamanaIndex &index,
+    vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
+    size_t k,
+    size_t l_search,
+    size_t rerank_candidates,
+    QueryMode query_mode) {
+    size_t correct = 0;
+    size_t total = 0;
+    double total_us = 0.0;
+    size_t visited_nodes = 0;
+    size_t distance_computations = 0;
+    size_t hops = 0;
+    size_t active_centroids = 0;
+    double traversal_us = 0.0;
+    double rerank_us = 0.0;
+    size_t prefetch_issued = 0;
+    size_t residual_rerank_count = 0;
+    size_t paper_checked = 0;
+    size_t paper_would_prune = 0;
+    size_t paper_not_pruned = 0;
+    size_t paper_full_saved = 0;
+    size_t paper_msb_kernel_calls = 0;
+    size_t paper_remaining_kernel_calls = 0;
+    double paper_short_time_us = 0.0;
+    double paper_remaining_time_us = 0.0;
+    vector<double> latencies(qsize, 0.0);
+
+    index.setLSearch(l_search);
+    if (index.paperPruneActive()) {
+        index.preparePaperPruneSidecar();
+    }
+    HardwareCounters hardware_counters;
+    hardware_counters.start();
+    const size_t vecdim = index.space().get_dim();
+#pragma omp parallel for schedule(dynamic, 16) reduction(+:correct,total,total_us,visited_nodes,distance_computations,hops,active_centroids,traversal_us,rerank_us,prefetch_issued,residual_rerank_count,paper_checked,paper_would_prune,paper_not_pruned,paper_full_saved,paper_msb_kernel_calls,paper_remaining_kernel_calls,paper_short_time_us,paper_remaining_time_us)
+    for (int64_t signed_i = 0; signed_i < static_cast<int64_t>(qsize); ++signed_i) {
+        const size_t i = static_cast<size_t>(signed_i);
+        StopW timer;
+        hnswlib::RaBitQSearchMetrics metrics;
+        vector<pair<float, labeltype>> results;
+        if (query_mode == QueryMode::PrimaryOnly) {
+            results = index.searchKnnPrimaryOnlyCloserFirst(
+                massQ + i * vecdim, k, nullptr, &metrics);
+        } else {
+            results = index.searchKnnPlainThenResidualRerankCloserFirst(
+                massQ + i * vecdim, k, rerank_candidates, nullptr, &metrics);
+        }
+        const double elapsed_us = timer.getElapsedTimeMicro();
+        total_us += elapsed_us;
+        latencies[i] = elapsed_us;
+        visited_nodes += metrics.visited_nodes;
+        distance_computations += metrics.distance_computations;
+        hops += metrics.hops;
+        active_centroids += metrics.active_centroids;
+        traversal_us += metrics.traversal_us;
+        rerank_us += metrics.rerank_us;
+        prefetch_issued += metrics.prefetch_issued;
+        residual_rerank_count += metrics.full_distance_count;
+        paper_checked += metrics.paper_checked;
+        paper_would_prune += metrics.paper_would_prune;
+        paper_not_pruned += metrics.paper_not_pruned;
+        paper_full_saved += metrics.paper_full_saved;
+        paper_msb_kernel_calls += metrics.paper_msb_kernel_calls;
+        paper_remaining_kernel_calls += metrics.paper_remaining_kernel_calls;
+        paper_short_time_us += metrics.paper_short_time_us;
+        paper_remaining_time_us += metrics.paper_remaining_time_us;
+
+        std::priority_queue<std::pair<float, labeltype>> gt(answers[i]);
+        unordered_set<labeltype> g;
+        total += gt.size();
+        while (!gt.empty()) {
+            g.insert(gt.top().second);
+            gt.pop();
+        }
+        for (const auto &entry : results) {
+            if (g.find(entry.second) != g.end()) {
+                ++correct;
+            }
+        }
+    }
+    const auto hardware_values = hardware_counters.stop();
+    std::sort(latencies.begin(), latencies.end());
+    const auto percentile = [&latencies](double p) {
+        if (latencies.empty()) return 0.0;
+        const size_t index = std::min(
+            latencies.size() - 1,
+            static_cast<size_t>(std::ceil(p * latencies.size())) - 1U);
+        return latencies[index];
+    };
+
+    VamanaSearchReport report;
+    report.recall = total == 0 ? 0.0f : static_cast<float>(correct) / static_cast<float>(total);
+    report.total_us_per_query = qsize == 0 ? 0.0 : total_us / static_cast<double>(qsize);
+    report.qps = report.total_us_per_query > 0.0 ? 1e6 / report.total_us_per_query : 0.0;
+    report.p50_us = percentile(0.50);
+    report.p95_us = percentile(0.95);
+    report.p99_us = percentile(0.99);
+    report.avg_visited_nodes = qsize == 0 ? 0.0 : static_cast<double>(visited_nodes) / qsize;
+    report.avg_distance_computations =
+        qsize == 0 ? 0.0 : static_cast<double>(distance_computations) / qsize;
+    report.avg_hops = qsize == 0 ? 0.0 : static_cast<double>(hops) / qsize;
+    report.avg_active_centroids = qsize == 0 ? 0.0 : static_cast<double>(active_centroids) / qsize;
+    report.traversal_us_per_query = qsize == 0 ? 0.0 : traversal_us / qsize;
+    report.rerank_us_per_query = qsize == 0 ? 0.0 : rerank_us / qsize;
+    report.prefetch_issued_per_query =
+        qsize == 0 ? 0.0 : static_cast<double>(prefetch_issued) / qsize;
+    report.rerank_candidates = rerank_candidates;
+    report.avg_residual_rerank_count =
+        qsize == 0 ? 0.0 : static_cast<double>(residual_rerank_count) / qsize;
+    report.paper_checked_per_query =
+        qsize == 0 ? 0.0 : static_cast<double>(paper_checked) / qsize;
+    report.paper_would_prune_per_query =
+        qsize == 0 ? 0.0 : static_cast<double>(paper_would_prune) / qsize;
+    report.paper_not_pruned_per_query =
+        qsize == 0 ? 0.0 : static_cast<double>(paper_not_pruned) / qsize;
+    report.paper_full_saved_per_query =
+        qsize == 0 ? 0.0 : static_cast<double>(paper_full_saved) / qsize;
+    report.paper_msb_kernel_calls_per_query =
+        qsize == 0 ? 0.0 : static_cast<double>(paper_msb_kernel_calls) / qsize;
+    report.paper_remaining_kernel_calls_per_query =
+        qsize == 0 ? 0.0 : static_cast<double>(paper_remaining_kernel_calls) / qsize;
+    report.paper_short_time_us_per_query = qsize == 0 ? 0.0 : paper_short_time_us / qsize;
+    report.paper_remaining_time_us_per_query =
+        qsize == 0 ? 0.0 : paper_remaining_time_us / qsize;
+    report.cache_misses = hardware_values.first;
+    report.dtlb_load_misses = hardware_values.second;
+    return report;
+}
+
+static size_t next_vamana_l_search(size_t current, size_t node_count) {
+    if (current < 140) return std::min<size_t>(140, node_count);
+    if (current < 1000) return std::min(current + 40, node_count);
+    if (current < 3000) return std::min(current + 100, node_count);
+    if (current < 10000) return std::min(current + 500, node_count);
+    if (current < 50000) return std::min(current + 5000, node_count);
+    if (current < 200000) return std::min(current + 25000, node_count);
+    return std::min(current + 100000, node_count);
+}
+
+static void test_vs_recall_vamana(
+    float *massQ,
+    size_t qsize,
+    hnswlib::RaBitQVamanaIndex &index,
+    vector<std::priority_queue<std::pair<float, labeltype>>> &answers,
+    size_t k,
+    const string &index_path,
+    double build_time_ms,
+    size_t rerank_candidates,
+    QueryMode query_mode,
+    size_t refine_passes,
+    bool paper_prune_active,
+    float paper_epsilon0) {
+    const vector<size_t> fixed_l_search_values = {
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+        40, 50, 60, 70, 80, 90, 100};
+    const float recall_target = getenv_float("RABITQ_RECALL_TARGET", 0.995f);
+    const size_t requested_l_search_cap =
+        getenv_size_t("RABITQ_LSEARCH_MAX", index.index().size());
+    const size_t l_search_cap =
+        std::max<size_t>(1, std::min(index.index().size(), requested_l_search_cap));
+    if (paper_prune_active) {
+        index.preparePaperPruneSidecar();
+        cout << "paper_experiment=paper_active"
+             << " epsilon0=" << paper_epsilon0
+             << " msb_remaining_physical_layout=split_msb_sidecar_plus_full_nibble"
+             << " paper_msb_sidecar_bytes=" << index.paperPruneSidecarBytes()
+             << " residual_sidecar_accessed_by_paper_prune=0\n";
+    }
+    const auto degree_stats = index.degreeStats();
+    const VamanaStorageSummary storage = vamana_storage_summary(index_path);
+    cout << "graph_summary"
+         << " graph=Vamana"
+         << " payload=ExRaBitQ4"
+         << " build_distance=ExRaBitQ4_symmetric"
+         << " query_distance=Float32_to_ExRaBitQ4"
+         << " R=" << hnswlib::VamanaIndex::kDefaultR
+         << " L_build=" << hnswlib::VamanaIndex::kDefaultLBuild
+         << " alpha=" << hnswlib::VamanaIndex::kDefaultAlpha
+         << " beam_width=" << hnswlib::VamanaIndex::kDefaultBeamWidth
+         << " start_node=" << index.index().start_node()
+         << " graph_fingerprint=" << index.graphFingerprint()
+         << " max_degree=" << degree_stats.max_degree
+         << " avg_degree=" << degree_stats.avg_degree
+         << " recall_target=" << recall_target
+         << " L_search_cap=" << l_search_cap
+         << " query_mode=" << query_mode_name(query_mode)
+         << " residual_rerank=" << (query_mode == QueryMode::ResidualRerank ? 1 : 0)
+         << " rerank_candidates=" << rerank_candidates
+         << " refine_passes=" << refine_passes
+         << " paper_prune_active=" << (paper_prune_active ? 1 : 0)
+         << " paper_epsilon0=" << paper_epsilon0
+         << "\n";
+    print_vamana_index_storage(index_path, index);
+
+    size_t fixed_index = 0;
+    size_t l_search = 0;
+    size_t last_l_search = 0;
+    float best_recall = 0.0f;
+    size_t best_l_search = 0;
+    while (true) {
+        if (fixed_index < fixed_l_search_values.size()) {
+            l_search = fixed_l_search_values[fixed_index++];
+        } else {
+            const size_t next = next_vamana_l_search(l_search, l_search_cap);
+            if (next == l_search) {
+                break;
+            }
+            l_search = next;
+        }
+        if (l_search > l_search_cap) {
+            l_search = l_search_cap;
+        }
+        if (l_search == last_l_search) {
+            if (l_search >= l_search_cap) {
+                break;
+            }
+            continue;
+        }
+        last_l_search = l_search;
+        const VamanaSearchReport report =
+            test_approx_vamana(
+                massQ, qsize, index, answers, k, l_search,
+                rerank_candidates, query_mode);
+        if (report.recall > best_recall) {
+            best_recall = report.recall;
+            best_l_search = l_search;
+        }
+        cout << "L_search=" << l_search
+             << "\trecall@" << k << "=" << report.recall
+             << "\tQPS=" << report.qps
+             << "\t" << report.total_us_per_query << " us"
+             << "\ttotal_us_per_query_us=" << report.total_us_per_query
+             << "\tp50_us=" << report.p50_us
+             << "\tp95_us=" << report.p95_us
+             << "\tp99_us=" << report.p99_us
+             << "\tgraph=Vamana"
+             << "\tpayload=ExRaBitQ4"
+             << "\tbuild_distance=ExRaBitQ4_symmetric"
+             << "\tquery_distance=Float32_to_ExRaBitQ4"
+             << "\tR=" << hnswlib::VamanaIndex::kDefaultR
+             << "\tL_build=" << hnswlib::VamanaIndex::kDefaultLBuild
+             << "\talpha=" << hnswlib::VamanaIndex::kDefaultAlpha
+             << "\tbeam_width=" << hnswlib::VamanaIndex::kDefaultBeamWidth
+             << "\trefine_passes=" << refine_passes
+             << "\tprefetch_issued=" << report.prefetch_issued_per_query
+             << "\tpaper_prune_active=" << (paper_prune_active ? 1 : 0)
+             << "\tpaper_epsilon0=" << paper_epsilon0
+             << "\tbuild_time_seconds=" << build_time_ms / 1000.0
+             << "\tgraph_size_MB=" << index.graphStorageBytes() / 1000000.0
+             << "\tpayload_size_MB=" << index.payloadStorageBytes() / 1000000.0
+             << "\tpaper_msb_sidecar_MB=" << index.paperPruneSidecarBytes() / 1000000.0
+             << "\tresidual_size_MB=" << file_size_bytes(residual_state_path(index_path)) / 1000000.0
+             << "\ttotal_index_size_MB=" << storage.total_mb
+             << "\tavg_visited_nodes=" << report.avg_visited_nodes
+             << "\tavg_distance_computations=" << report.avg_distance_computations
+             << "\tavg_hops=" << report.avg_hops
+             << "\tavg_active_centroids=" << report.avg_active_centroids
+             << "\tresidual_rerank=" << (query_mode == QueryMode::ResidualRerank ? 1 : 0)
+             << "\trerank_candidates=" << report.rerank_candidates
+             << "\tavg_residual_rerank_count=" << report.avg_residual_rerank_count
+             << "\ttraversal_us_per_query_us=" << report.traversal_us_per_query
+             << "\tresidual_rerank_us_per_query_us=" << report.rerank_us_per_query
+             << "\tpaper_checked=" << report.paper_checked_per_query
+             << "\tpaper_would_prune=" << report.paper_would_prune_per_query
+             << "\tpaper_not_pruned=" << report.paper_not_pruned_per_query
+             << "\tpaper_full_saved=" << report.paper_full_saved_per_query
+             << "\tpaper_msb_kernel_calls=" << report.paper_msb_kernel_calls_per_query
+             << "\tpaper_remaining_kernel_calls=" << report.paper_remaining_kernel_calls_per_query
+             << "\tpaper_short_time_us=" << report.paper_short_time_us_per_query
+             << "\tpaper_remaining_time_us=" << report.paper_remaining_time_us_per_query
+             << "\tpaper_prune_ratio="
+             << (report.paper_checked_per_query > 0.0
+                    ? report.paper_would_prune_per_query / report.paper_checked_per_query
+                    : 0.0)
+             << "\tpaper_saved_ratio="
+             << (report.paper_checked_per_query + report.paper_remaining_kernel_calls_per_query > 0.0
+                    ? report.paper_full_saved_per_query /
+                        (report.paper_checked_per_query +
+                         report.paper_remaining_kernel_calls_per_query)
+                    : 0.0)
+             << "\tpaper_false_prune=0"
+             << "\tmax_degree=" << degree_stats.max_degree
+             << "\tavg_degree=" << degree_stats.avg_degree
+             << "\tcache_misses=" << report.cache_misses
+             << "\tdtlb_load_misses=" << report.dtlb_load_misses
+             << "\tIndex storage size: " << storage.total_mb << " MB"
+             << " (index=" << storage.index_mb << " MB"
+             << ", auxiliary=" << storage.auxiliary_mb << " MB"
+             << ", residual=" << storage.residual_mb << " MB"
+             << ", total_bytes=" << storage.total_bytes << ")"
+             << "\n";
+        cout.flush();
+        if (report.recall >= recall_target) {
+            cout << "L_search_sweep_stop"
+                 << " reason=recall_target_reached"
+                 << " recall_target=" << recall_target
+                 << " L_search=" << l_search
+                 << " recall@" << k << "=" << report.recall
+                 << "\n";
+            return;
+        }
+        if (l_search >= l_search_cap) {
+            break;
+        }
+    }
+    cout << "L_search_sweep_stop"
+         << " reason=exhausted_L_search"
+         << " recall_target=" << recall_target
+         << " L_search_cap=" << l_search_cap
+         << " best_L_search=" << best_l_search
+         << " best_recall@" << k << "=" << best_recall
+         << "\n";
+}
+
+static void sift_vamana_test() {
+    const int centroid_count = 1;
+    const int random_seed = 100;
+    const QueryMode query_mode = configured_query_mode();
+    const size_t rerank_candidates =
+        getenv_size_t("RABITQ_RERANK_CANDIDATES", 100);
+    const size_t residual_bits = configured_residual_bits(4);
+    if (residual_bits != 4 && residual_bits != 8) {
+        throw runtime_error("Only primary4 residual configuration bits 4 or 8 are supported");
+    }
+
+    struct DatasetConfig {
+        string name;
+        size_t dim;
+        size_t gt_width;
+        string base_path;
+        string query_path;
+        string gt_path;
+        string index_prefix;
+    };
+
+    const string dbpedia_data_dir = "/home/kai3/coco/data/dbpedia_openai1536";
+    const string dataset_name_config = getenv_string(
+        "RABITQ_DATASET", "dbpedia_openai1536");
+    const bool is_dbpedia_dataset =
+        dataset_name_config == "dbpedia_openai1536" ||
+        dataset_name_config == "dbpedia" ||
+        dataset_name_config == "dbpedia-openai1536";
+    const DatasetConfig dataset{
+        dataset_name_config,
+        getenv_size_t("RABITQ_DIM", is_dbpedia_dataset ? 1536 : 128),
+        getenv_size_t("RABITQ_GT_WIDTH", 100),
+        getenv_string(
+            "RABITQ_BASE_PATH",
+            is_dbpedia_dataset
+                ? dbpedia_data_dir + "/dbpedia_openai1536_base.fvecs"
+                : "/home/kai3/coco/data/sift10m/sift10m_base.fvecs"),
+        getenv_string(
+            "RABITQ_QUERY_PATH",
+            is_dbpedia_dataset
+                ? dbpedia_data_dir + "/dbpedia_openai1536_query.fvecs"
+                : "/home/kai3/coco/data/sift10m/sift10m_query.fvecs"),
+        getenv_string(
+            "RABITQ_GT_PATH",
+            is_dbpedia_dataset
+                ? dbpedia_data_dir + "/dbpedia_openai1536_groundtruth.ivecs"
+                : "/home/kai3/coco/data/sift10m/sift10m_groundtruth.ivecs"),
+        dataset_name_config};
+
+    const size_t vecdim = dataset.dim;
+    const size_t gt_width = dataset.gt_width;
+    const bool external_residual_storage = true;
+    hnswlib::RaBitQSpace::ResidualQuantizationConfig residual_config;
+    residual_config.bits = residual_bits == 4
+        ? hnswlib::RaBitQSpace::ResidualQuantizationBits::B4
+        : hnswlib::RaBitQSpace::ResidualQuantizationBits::B8;
+    residual_config.block_size = getenv_size_t("RABITQ_RESIDUAL_BLOCK_SIZE", 16);
+    if (residual_config.block_size == 0) {
+        throw runtime_error("RABITQ_RESIDUAL_BLOCK_SIZE must be a positive integer");
+    }
+    residual_config.mse_optimal_scale = residual_bits == 4;
+    residual_config.scale_fp16 = residual_bits == 4;
+    if (const char *value = std::getenv("RABITQ_RESIDUAL_SCALE_MODE")) {
+        if (std::strcmp(value, "max_abs") == 0) {
+            residual_config.mse_optimal_scale = false;
+        } else if (std::strcmp(value, "mse") == 0 || std::strcmp(value, "mse_optimal") == 0) {
+            residual_config.mse_optimal_scale = true;
+        } else {
+            throw runtime_error("RABITQ_RESIDUAL_SCALE_MODE must be max_abs or mse");
+        }
+    }
+    if (const char *value = std::getenv("RABITQ_RESIDUAL_SCALE_STORAGE")) {
+        if (std::strcmp(value, "fp16") == 0) {
+            residual_config.scale_fp16 = true;
+        } else if (std::strcmp(value, "fp32") == 0) {
+            residual_config.scale_fp16 = false;
+        } else {
+            throw runtime_error("RABITQ_RESIDUAL_SCALE_STORAGE must be fp16 or fp32");
+        }
+    }
+    const char *residual_scale_mode =
+        residual_config.mse_optimal_scale ? "mse" : "max_abs";
+    const char *residual_scale_storage =
+        residual_config.scale_fp16 ? "fp16" : "fp32";
+
+    const char *path_q = dataset.query_path.c_str();
+    const char *path_data = dataset.base_path.c_str();
+    const char *path_gt = dataset.gt_path.c_str();
+    const size_t full_vecsize = fvec_count_from_file_size(path_data, vecdim);
+    const size_t base_limit = getenv_size_t("RABITQ_BASE_LIMIT", 0);
+    const size_t vecsize =
+        base_limit == 0 ? full_vecsize : std::min(full_vecsize, base_limit);
+    const size_t qsize = fvec_count_from_file_size(path_q, vecdim);
+    const bool force_rebuild = getenv_bool01_strict("RABITQ_FORCE_REBUILD", false);
+    const size_t refine_passes = getenv_size_t("RABITQ_VAMANA_REFINE_PASSES", 1);
+    const bool paper_prune_active =
+        getenv_bool01_strict("RABITQ_VAMANA_PAPER_PRUNE", true);
+    const float paper_epsilon0 =
+        getenv_float("RABITQ_VAMANA_PAPER_EPSILON0", 1.9f);
+    const size_t default_centroid_train_samples = dataset.name == "sift10m"
+        ? 10000000
+        : std::min<size_t>(100000, vecsize);
+    const size_t centroid_train_samples =
+        getenv_size_t("RABITQ_CENTROID_TRAIN_SAMPLES", default_centroid_train_samples);
+
+    const string index_dir = getenv_string("RABITQ_INDEX_DIR", "build/vamana_exrabitq4");
+    ensure_directory_exists(index_dir);
+    string index_prefix = dataset.index_prefix;
+    if (base_limit != 0) {
+        index_prefix += "_n_" + std::to_string(vecsize);
+    }
+    const string path_index_string = join_path(
+        index_dir,
+        index_prefix +
+            "_vamana_exrabitq4_R_32_Lbuild_" +
+            std::to_string(hnswlib::VamanaIndex::kDefaultLBuild) +
+            "_alpha_1p2_beam_1_refine_" +
+            std::to_string(refine_passes) + ".bin");
+    const char *path_index = path_index_string.c_str();
+
+    cout << "build_runtime"
+         << " omp_max_threads=" << omp_get_max_threads()
+         << " omp_dynamic=" << omp_get_dynamic()
+         << " full_base_count=" << full_vecsize
+         << " effective_base_count=" << vecsize
+         << " base_limit=" << base_limit
+         << "\n";
+
+    print_vamana_run_config(
+        dataset.name.c_str(),
+        vecsize,
+        qsize,
+        vecdim,
+        centroid_count,
+        random_seed,
+        residual_bits,
+        residual_config.block_size,
+        residual_scale_mode,
+        residual_scale_storage,
+        query_mode,
+        rerank_candidates,
+        refine_passes,
+        paper_prune_active,
+        paper_epsilon0,
+        path_index,
+        path_data,
+        path_q,
+        path_gt);
+
+    cout << "Loading GT:\n";
+    ifstream inputGT(path_gt, ios::binary);
+    if (!inputGT.is_open()) {
+        throw runtime_error("cannot open gt file");
+    }
+    unsigned int *massQA = new unsigned int[qsize * gt_width];
+    for (size_t i = 0; i < qsize; i++) {
+        int t = 0;
+        inputGT.read((char *)&t, 4);
+        if (!inputGT.good() || t != static_cast<int>(gt_width)) {
+            throw runtime_error("gt file error");
+        }
+        inputGT.read((char *)(massQA + gt_width * i), t * 4);
+        if (!inputGT.good()) {
+            throw runtime_error("gt file error");
+        }
+    }
+    inputGT.close();
+
+    cout << "Loading queries:\n";
+    float *massQ = new float[qsize * vecdim];
+    ifstream inputQ(path_q, ios::binary);
+    if (!inputQ.is_open()) {
+        throw runtime_error("cannot open query file");
+    }
+    for (size_t i = 0; i < qsize; i++) {
+        read_fvec_as_float(inputQ, massQ + i * vecdim, vecdim);
+    }
+    inputQ.close();
+
+    ifstream input(path_data, ios::binary);
+    if (!input.is_open()) {
+        throw runtime_error("cannot open base file");
+    }
+
+    hnswlib::RaBitQVamanaIndex index(
+        vecdim,
+        vecsize,
+        centroid_count,
+        random_seed,
+        external_residual_storage,
+        residual_config);
+    index.space().set_code_layout(hnswlib::RaBitQCodeLayout::SequentialNibble);
+    index.setPaperPrune(paper_prune_active, paper_epsilon0);
+
+    const string build_metrics_path = path_index_string + ".build_metrics";
+    double build_time_ms = -1.0;
+    bool need_build = true;
+    if (!force_rebuild && exists_test(path_index) && exists_test(quantizer_state_path(path_index))) {
+        cout << "Loading Vamana ExRaBitQ4 index from " << path_index << ":\n";
+        if (query_mode == QueryMode::ResidualRerank &&
+            !exists_test(residual_state_path(path_index, query_mode))) {
+            cout << "Missing Vamana residual sidecar; rebuilding staged-search index\n";
+        } else {
+            try {
+                index.loadIndex(path_index, vecsize);
+                need_build = false;
+                ifstream metrics(build_metrics_path);
+                if (metrics.is_open()) {
+                    metrics >> build_time_ms;
+                }
+            } catch (const std::exception &error) {
+                cout << "Existing Vamana index is incompatible: " << error.what() << "\n";
+                cout << "Rebuilding Vamana ExRaBitQ4 index\n";
+            }
+        }
+    }
+
+    if (need_build) {
+        StopW total_build_timer;
+        cout << "Building Vamana ExRaBitQ4 index:\n";
+        cout << "Training 1 ExRaBitQ centroid from "
+             << min(centroid_train_samples, vecsize) << " base vectors\n";
+        StopW train_center_timer;
+        vector<float> center = train_global_center(
+            input,
+            vecdim,
+            vecsize,
+            centroid_train_samples,
+            random_seed);
+        index.space().setGlobalCenter(center.data());
+        const string centroid_path = path_index_string + ".centroids";
+        ofstream centroid_output(centroid_path, ios::binary | ios::trunc);
+        if (!centroid_output.is_open()) {
+            throw runtime_error("cannot create centroid file: " + centroid_path);
+        }
+        index.space().saveCentroids(
+            centroid_output,
+            static_cast<uint32_t>(random_seed),
+            static_cast<uint64_t>(centroid_train_samples));
+        cout << "build_stage=train_center"
+             << " seconds=" << train_center_timer.getElapsedTimeMicro() / 1000000.0
+             << " seconds"
+             << "\n";
+
+        FvecMmap base_vectors(path_data, vecsize, vecdim);
+        const size_t full_record_size = index.space().get_full_data_size();
+        const size_t compact_record_size = index.space().get_data_size();
+        const string payload_path = path_index_string + ".payload.tmp";
+        std::unique_ptr<DiskPayloadStore> payload_store;
+        if (query_mode == QueryMode::ResidualRerank) {
+            payload_store.reset(new DiskPayloadStore(payload_path, vecsize * full_record_size));
+        }
+        vector<char> compact_payloads(vecsize * compact_record_size, 0);
+        vector<size_t> centroid_counts(1, 0);
+        cout << "quantized_vamana_build_setup"
+             << " graph=Vamana"
+             << " payload=ExRaBitQ4"
+             << " build_distance=ExRaBitQ4_symmetric"
+             << " query_distance=Float32_to_ExRaBitQ4"
+             << " R=" << hnswlib::VamanaIndex::kDefaultR
+             << " L_build=" << hnswlib::VamanaIndex::kDefaultLBuild
+             << " alpha=" << hnswlib::VamanaIndex::kDefaultAlpha
+             << " beam_width=" << hnswlib::VamanaIndex::kDefaultBeamWidth
+             << " full_record_bytes=" << full_record_size
+             << " compact_record_bytes=" << compact_record_size
+             << " residual_rerank=" << (query_mode == QueryMode::ResidualRerank ? 1 : 0)
+             << " rerank_candidates=" << rerank_candidates
+             << "\n";
+
+        StopW encode_timer;
+        double encode_cpu_us = 0.0;
+#pragma omp parallel for
+        for (int64_t label = 0; label < static_cast<int64_t>(vecsize); ++label) {
+            const float *raw = base_vectors.vector(static_cast<size_t>(label));
+            StopW local_timer;
+            vector<char> full(full_record_size, 0);
+            vector<char> compact(compact_record_size, 0);
+            const uint8_t centroid_id = index.space().assignCentroid(raw);
+            index.space().encodeVectorFullWithCentroid(raw, centroid_id, full.data());
+            index.space().copyCompactPayloadFromFull(full.data(), compact.data());
+            if (payload_store) {
+                payload_store->writeRecord(
+                    static_cast<size_t>(label), full.data(), full_record_size);
+            }
+            std::memcpy(
+                compact_payloads.data() + static_cast<size_t>(label) * compact_record_size,
+                compact.data(),
+                compact_record_size);
+#pragma omp atomic
+            encode_cpu_us += local_timer.getElapsedTimeMicro();
+#pragma omp atomic
+            centroid_counts[centroid_id]++;
+        }
+        const double encode_wall_us = encode_timer.getElapsedTimeMicro();
+        cout << "build_stage=payload_encode"
+             << " cpu_seconds=" << encode_cpu_us / 1000000.0
+             << " wall_seconds=" << encode_wall_us / 1000000.0
+             << " seconds"
+             << " count=" << vecsize
+             << " payload=ExRaBitQ4"
+             << " compact_record_bytes=" << compact_record_size
+             << "\n";
+
+        const size_t build_batch_size =
+            getenv_size_t("RABITQ_VAMANA_BUILD_BATCH", 4096);
+        StopW graph_timer;
+        cout << "Entering Vamana segmented parallel graph build"
+             << " count=" << vecsize
+             << " build_batch_size=" << build_batch_size
+             << " backedge_mode=grouped_parallel_batch_prune"
+             << " graph=Vamana"
+             << " payload=ExRaBitQ4"
+             << " build_distance=ExRaBitQ4_symmetric"
+             << " R=" << hnswlib::VamanaIndex::kDefaultR
+             << " L_build=" << hnswlib::VamanaIndex::kDefaultLBuild
+             << " alpha=" << hnswlib::VamanaIndex::kDefaultAlpha
+             << " beam_width=" << hnswlib::VamanaIndex::kDefaultBeamWidth
+             << "\n";
+        cout.flush();
+        const size_t report_every =
+            getenv_size_t("RABITQ_BUILD_REPORT_EVERY", 65536);
+        size_t next_report = report_every;
+        try {
+            index.buildEncodedSymmetricBulk(
+                std::move(compact_payloads),
+                vecsize,
+                build_batch_size,
+                [&](size_t built, size_t total) {
+                    if (report_every != 0U &&
+                        (built >= next_report || built == total)) {
+                        cout << "Vamana graph build progress"
+                             << " count=" << built
+                             << " total=" << total
+                             << " percent=" << (100.0 * static_cast<double>(built) /
+                                                static_cast<double>(total))
+                             << " kips=" << kips_from_count_us(
+                                 built, graph_timer.getElapsedTimeMicro())
+                             << " Mem=" << getCurrentRSS() / 1000000 << "MB\n";
+                        cout.flush();
+                        while (next_report <= built) {
+                            next_report += report_every;
+                        }
+                    }
+                });
+        } catch (const std::exception &error) {
+            cout << "build_stage=vamana_graph_build_failed"
+                 << " error=" << error.what()
+                 << " count=" << vecsize
+                 << " build_batch_size=" << build_batch_size
+                 << "\n";
+            cout.flush();
+            throw;
+        }
+        const double graph_build_ms = graph_timer.getElapsedTimeMicro() / 1000.0;
+        cout << "build_stage=vamana_graph_build"
+             << " seconds=" << graph_build_ms / 1000.0
+             << " seconds"
+             << " kips=" << kips_from_count_us(vecsize, graph_build_ms * 1000.0)
+             << " build_mode=segmented_parallel_grouped_backedge"
+             << " build_batch_size=" << build_batch_size
+             << "\n";
+
+        if (refine_passes != 0) {
+            StopW refine_timer;
+            cout << "Entering Vamana symmetric refine"
+                 << " count=" << vecsize
+                 << " refine_passes=" << refine_passes
+                 << " build_batch_size=" << build_batch_size
+                 << " backedge_mode=grouped_parallel_batch_prune"
+                 << " graph=Vamana"
+                 << " payload=ExRaBitQ4"
+                 << " refine_distance=ExRaBitQ4_symmetric"
+                 << " R=" << hnswlib::VamanaIndex::kDefaultR
+                 << " L_build=" << hnswlib::VamanaIndex::kDefaultLBuild
+                 << " alpha=" << hnswlib::VamanaIndex::kDefaultAlpha
+                 << " beam_width=" << hnswlib::VamanaIndex::kDefaultBeamWidth
+                 << "\n";
+            cout.flush();
+            size_t next_refine_report = report_every;
+            index.refineGraphSymmetric(
+                refine_passes,
+                build_batch_size,
+                [&](size_t done, size_t total) {
+                    if (report_every != 0U &&
+                        (done >= next_refine_report || done == total)) {
+                        cout << "Vamana graph refine progress"
+                             << " count=" << done
+                             << " total=" << total
+                             << " percent=" << (100.0 * static_cast<double>(done) /
+                                                static_cast<double>(total))
+                             << " kips=" << kips_from_count_us(
+                                 done, refine_timer.getElapsedTimeMicro())
+                             << " Mem=" << getCurrentRSS() / 1000000 << "MB\n";
+                        cout.flush();
+                        while (next_refine_report <= done) {
+                            next_refine_report += report_every;
+                        }
+                    }
+                });
+            const double refine_ms = refine_timer.getElapsedTimeMicro() / 1000.0;
+            cout << "build_stage=vamana_graph_refine"
+                 << " seconds=" << refine_ms / 1000.0
+                 << " seconds"
+                 << " kips=" << kips_from_count_us(
+                     vecsize * refine_passes, refine_ms * 1000.0)
+                 << " refine_passes=" << refine_passes
+                 << " build_mode=symmetric_full_graph_refine_grouped_backedge"
+                 << " build_batch_size=" << build_batch_size
+                 << "\n";
+        }
+
+        if (query_mode == QueryMode::ResidualRerank) {
+            StopW residual_timer;
+            const string residual_path = residual_state_path(path_index, query_mode);
+            index.materializeExternalResidualsFromFullPayloadFile(
+                payload_path,
+                residual_path,
+                full_record_size);
+            const double residual_ms = residual_timer.getElapsedTimeMicro() / 1000.0;
+            cout << "build_stage=materialize_residual_sidecar"
+                 << " seconds=" << residual_ms / 1000.0
+                 << " seconds"
+                 << " residual_path=" << residual_path
+                 << " residual_bytes=" << file_size_bytes(residual_path)
+                 << "\n";
+            std::remove(payload_path.c_str());
+        }
+
+        StopW save_timer;
+        index.saveIndex(path_index);
+        const double save_ms = save_timer.getElapsedTimeMicro() / 1000.0;
+        build_time_ms = total_build_timer.getElapsedTimeMicro() / 1000.0;
+        ofstream metrics(build_metrics_path, ios::trunc);
+        if (metrics.is_open()) {
+            metrics << build_time_ms << '\n';
+        }
+        cout << "build_stage=save_index"
+             << " seconds=" << save_ms / 1000.0
+             << " seconds\n";
+        cout << "build_time_seconds=" << build_time_ms / 1000.0
+             << " seconds\n";
+        print_vamana_index_storage(path_index_string, index);
+    }
+
+    if (build_time_ms < 0.0) {
+        build_time_ms = 0.0;
+    }
+
+    vector<std::priority_queue<std::pair<float, labeltype>>> answers;
+    const size_t k = 10;
+    cout << "Parsing gt:\n";
+    get_gt(massQA, qsize, gt_width, answers, k);
+    cout << "Loaded gt\n";
+    test_vs_recall_vamana(
+        massQ,
+        qsize,
+        index,
+        answers,
+        k,
+        path_index_string,
+        build_time_ms,
+        rerank_candidates,
+        query_mode,
+        refine_passes,
+        paper_prune_active,
+        paper_epsilon0);
+
+    delete[] massQA;
+    delete[] massQ;
+}
+
 static void report_paper_true_distance_coverage(
     float *massQ,
     size_t qsize,
@@ -1399,6 +2327,9 @@ static void report_paper_true_distance_coverage(
 }
 
 void sift_test1B() {
+    sift_vamana_test();
+    return;
+
     const string abc_ablation = getenv_string("RABITQ_ABC_ABLATION", "");
     if (!abc_ablation.empty() && abc_ablation != "A" &&
         abc_ablation != "B" && abc_ablation != "C" && abc_ablation != "D")
