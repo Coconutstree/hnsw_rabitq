@@ -1,0 +1,4 @@
+method,method_name,graph_build_seconds,total_build_seconds,storage_mb,best_recall,best_search_width,best_qps,first_search_width_recall_ge_0995,qps_at_first_recall_ge_0995,latency_us_at_first_recall_ge_0995
+raw_hnsw,Raw HNSW,416.68,427.211,6356.12,0.9977,460,109.00323085576255,260,175.7886317491848,5688.65
+hnsw_rabitq_d,HNSW-RaBitQ D,103.086,131.367,2579.28,0.99535,460,164.805,380,190.992,5235.81
+vamana_refine2,Vamana ExRaBitQ4 refine2,107.378,318.615,2444.21,0.99501,580,121.936,580,121.936,8201.03
